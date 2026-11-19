@@ -47,6 +47,21 @@ async def integrity_exception_handler(
     )
 
 
+def format_validation_error_message(exc: RequestValidationError) -> str:
+    """Формирует короткое читаемое сообщение из ошибок валидации Pydantic."""
+    parts = []
+    for err in exc.errors():
+        raw_loc = [str(x) for x in err.get("loc", []) if x != "body"]
+        loc = " -> ".join(raw_loc)
+        msg = err.get("msg", "Ошибка валидации")
+        msg = msg.removeprefix("Value error, ")
+        if loc:
+            parts.append(f"{loc}: {msg}")
+        else:
+            parts.append(msg)
+    return "; ".join(parts) if parts else "Ошибка валидации данных запроса"
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
@@ -54,7 +69,7 @@ async def validation_exception_handler(
     """Единый формат ошибки валидации данных запроса (422 Unprocessable Content)."""
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        content={"detail": str(exc)},
+        content={"detail": format_validation_error_message(exc)},
     )
 
 

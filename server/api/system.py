@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from server.api.deps import format_utc_z, get_db, require_role
+from server.api.deps import (
+    format_utc_z,
+    get_current_user_optional,
+    get_db,
+    require_role,
+)
 from server.db.models import SystemSetting, User
 from shared.version import get_app_version
 
@@ -23,7 +28,9 @@ class SystemSettingsPatch(BaseModel):
 
 
 @router.get("/api/version", response_model=dict[str, str])
-def get_version() -> dict[str, str]:
+def get_version(
+    _client_user: Annotated[Any, Depends(get_current_user_optional)],
+) -> dict[str, str]:
     """4.6. GET /api/version.
 
     Публичный эндпоинт версии сервера для всех клиентов.

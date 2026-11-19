@@ -1,7 +1,7 @@
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 from sqlalchemy.orm import Session
 
 from server.api.deps import (
@@ -22,11 +22,18 @@ class InstallationCreate(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    name: str = Field(..., min_length=1, max_length=100)
-    culture_name: str = Field(..., min_length=1, max_length=100)
-    light_gpio_pin: int
-    flash_gpio_pin: int
+    name: str = Field(..., max_length=100)
+    culture_name: str = Field(..., max_length=100)
+    light_gpio_pin: int = Field(..., strict=True, ge=0, le=53)
+    flash_gpio_pin: int = Field(..., strict=True, ge=0, le=53)
     aruco_size_mm: float | None = Field(default=None, gt=0)
+
+    @field_validator("name", "culture_name")
+    @classmethod
+    def validate_non_empty(cls, v: str, info: ValidationInfo) -> str:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(f"Поле {info.field_name} не может быть пустым")
+        return v.strip()
 
 
 class InstallationPatch(BaseModel):
@@ -34,11 +41,22 @@ class InstallationPatch(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    name: str | None = Field(default=None, min_length=1, max_length=100)
-    culture_name: str | None = Field(default=None, min_length=1, max_length=100)
-    light_gpio_pin: int | None = None
-    flash_gpio_pin: int | None = None
+    name: str | None = Field(default=None, max_length=100)
+    culture_name: str | None = Field(default=None, max_length=100)
+    light_gpio_pin: int | None = Field(default=None, strict=True, ge=0, le=53)
+    flash_gpio_pin: int | None = Field(default=None, strict=True, ge=0, le=53)
     aruco_size_mm: float | None = Field(default=None, gt=0)
+
+    @field_validator("name", "culture_name", "light_gpio_pin", "flash_gpio_pin")
+    @classmethod
+    def validate_not_null(cls, v: Any, info: ValidationInfo) -> Any:
+        if v is None:
+            raise ValueError(f"Поле {info.field_name} не может быть null")
+        if info.field_name in ("name", "culture_name"):
+            if not isinstance(v, str) or not v.strip():
+                raise ValueError(f"Поле {info.field_name} не может быть пустым")
+            return v.strip()
+        return v
 
 
 def get_installation_last_area_display(
@@ -267,11 +285,14 @@ def patch_installation(
         inst.culture_name = update_data["culture_name"]
 
     # Валидация пинов (только Developer)
-    new_light = update_data.get("light_gpio_pin", inst.light_gpio_pin)
-    new_flash = update_data.get("flash_gpio_pin", inst.flash_gpio_pin)
-    if (
-        "light_gpio_pin" in update_data or "flash_gpio_pin" in update_data
-    ) and not inst.is_archived:
+    if "light_gpio_pin" in update_data or "flash_gpio_pin" in update_data:
+        if inst.is_archived:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Установка в архиве",
+            )
+        new_light = update_data.get("light_gpio_pin", inst.light_gpio_pin)
+        new_flash = update_data.get("flash_gpio_pin", inst.flash_gpio_pin)
         validate_pin_uniqueness(new_light, new_flash, db, exclude_id=inst.id)
         inst.light_gpio_pin = new_light
         inst.flash_gpio_pin = new_flash

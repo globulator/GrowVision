@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
 from sqlalchemy.orm import Session
 
 from server.api.deps import (
@@ -28,6 +28,13 @@ class LoginRequest(BaseModel):
     external_id: str
     login: str
     password: str
+
+    @field_validator("login", "external_id")
+    @classmethod
+    def validate_non_empty(cls, v: str, info: ValidationInfo) -> str:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(f"Поле {info.field_name} не может быть пустым")
+        return v.strip()
 
 
 class LoginResponse(BaseModel):
