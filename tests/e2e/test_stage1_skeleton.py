@@ -25,6 +25,7 @@ from shared.schemas import (
     CommandResult,
     HeartbeatRequest,
     HeartbeatResponse,
+    PlantMeasurementMeta,
 )
 from shared.version import get_app_version
 
@@ -243,6 +244,53 @@ def test_schemas_capture_meta_validation():
         )
 
 
+def test_schemas_bounds_validation_e2e():
+    """Требование 3: PlantMeasurementMeta.area_px ge=0, CaptureMeta.aruco_area_px gt=0.
+
+    Значения -1 и 0 для aruco_area_px и -1 для area_px вызывают ValidationError.
+    """
+    # PlantMeasurementMeta: 0 разрешено, -1 вызывает ValidationError
+    m0 = PlantMeasurementMeta(plant_index=0, area_px=0.0)
+    assert m0.area_px == 0.0
+
+    with pytest.raises(ValidationError):
+        PlantMeasurementMeta(plant_index=0, area_px=-1.0)
+
+    # CaptureMeta: aruco_area_px=None разрешено, >0 разрешено
+    c_none = CaptureMeta(
+        installation_id=1,
+        camera_hardware_id="usb-cam-1",
+        captured_at="2026-11-19T10:00:00Z",
+        aruco_area_px=None,
+    )
+    assert c_none.aruco_area_px is None
+
+    c_valid = CaptureMeta(
+        installation_id=1,
+        camera_hardware_id="usb-cam-1",
+        captured_at="2026-11-19T10:00:00Z",
+        aruco_area_px=100.5,
+    )
+    assert c_valid.aruco_area_px == 100.5
+
+    # 0 и -1 для aruco_area_px вызывают ValidationError
+    with pytest.raises(ValidationError):
+        CaptureMeta(
+            installation_id=1,
+            camera_hardware_id="usb-cam-1",
+            captured_at="2026-11-19T10:00:00Z",
+            aruco_area_px=0.0,
+        )
+
+    with pytest.raises(ValidationError):
+        CaptureMeta(
+            installation_id=1,
+            camera_hardware_id="usb-cam-1",
+            captured_at="2026-11-19T10:00:00Z",
+            aruco_area_px=-1.0,
+        )
+
+
 # ==============================================================================
 # 5. Конфигурация сервера (Критерий 5)
 # ==============================================================================
@@ -456,7 +504,7 @@ def test_qa_camera_and_capture_relationships(qa_isolated_db):
     session.add(meas)
     session.commit()
 
-    # Попытка удалить установку при наличии кадров -> RESTRICT IntegrityError
+    # Требование 2: Попытка удалить установку при наличии кадров -> RESTRICT IntegrityError
     session.delete(inst)
     with pytest.raises(IntegrityError):
         session.commit()
@@ -475,16 +523,61 @@ def test_qa_camera_and_capture_relationships(qa_isolated_db):
         session.commit()
     session.rollback()
 
+    # Проверка SET NULL для captures.camera_id при удалении камеры
+    session.delete(cam)
+    session.commit()
+    reloaded_cap = session.get(Capture, cap.id)
+    assert reloaded_cap is not None
+    assert reloaded_cap.camera_id is None
+    assert session.get(Installation, inst.id) is not None
+
     # Удаление кадра -> каскадное удаление замера
-    cap_obj = session.get(Capture, cap.id)
-    session.delete(cap_obj)
+    session.delete(reloaded_cap)
     session.commit()
     assert session.get(PlantMeasurement, meas.id) is None
 
-    # Удаление камеры -> installation_id кадра не затронут, а если бы был кадр, camera_id стал бы NULL
-    session.delete(cam)
+    session.close()
+
+
+def test_qa_installation_delete_cascades_commands(qa_isolated_db):
+    """Требование 1: Удаление установки без кадров с командами удаляет команды."""
+    _, session_factory = qa_isolated_db
+    session = session_factory()
+
+    inst = Installation(
+        name="Inst Cmd Cascades",
+        culture_name="Салат",
+        light_gpio_pin=28,
+        flash_gpio_pin=29,
+        is_archived=False,
+    )
+    session.add(inst)
     session.commit()
-    assert session.get(Installation, inst.id) is not None
+
+    cmd1 = EdgeCommand(
+        command_type="SNAP",
+        installation_id=inst.id,
+        is_global=False,
+        status="pending",
+    )
+    cmd2 = EdgeCommand(
+        command_type="LIGHT_MAIN",
+        installation_id=inst.id,
+        is_global=False,
+        status="running",
+    )
+    session.add_all([cmd1, cmd2])
+    session.commit()
+    cmd1_id, cmd2_id = cmd1.id, cmd2.id
+
+    # Удаляем установку
+    session.delete(inst)
+    session.commit()
+
+    # Установка и связанные команды удалены
+    assert session.get(Installation, inst.id) is None
+    assert session.get(EdgeCommand, cmd1_id) is None
+    assert session.get(EdgeCommand, cmd2_id) is None
 
     session.close()
 
