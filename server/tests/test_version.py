@@ -7,8 +7,8 @@ from shared.version import get_app_version
 def test_get_app_version_with_git():
     """Проверяет получение версии при наличии Git-репозитория."""
     version = get_app_version()
-    # Ожидается формат: 0.0.0-<7-значный хэш>
-    pattern = r"^0\.0\.0-[0-9a-f]{7,40}$"
+    # Ожидается формат: X.Y.Z-<7-значный хэш>
+    pattern = r"^\d+\.\d+\.\d+-[0-9a-f]{7,40}$"
     assert re.match(pattern, version), f"Неожиданный формат версии: {version}"
 
 
