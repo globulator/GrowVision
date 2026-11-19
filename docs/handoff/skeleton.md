@@ -1,12 +1,18 @@
-# План реализации: Этап 1 / Каркас репозитория и модели БД
+# Handoff: Этап 1 / Каркас репозитория и модели БД
 
-1. Каркас каталогов и корневые файлы: .gitignore, VERSION, requirements-dev.txt (.gitkeep в пустых каталогах) (REPO_AND_VERSIONING.md разд. 2, PROJECT.md разд. 2).
-2. Зависимости и переменные окружения сервера: server/requirements.txt, server/.env.example (REPO_AND_VERSIONING.md разд. 2, п. 3.1).
-3. shared/version.py: get_app_version() с чтением VERSION и хэшем Git (REPO_AND_VERSIONING.md п. 6.1).
-4. shared/logger.py: единый логгер с поддержкой DEBUG_MODE (REPO_AND_VERSIONING.md разд. 2, API_CONTRACT.md п. 1.3).
-5. shared/schemas.py: Pydantic-модели Heartbeat, Command, CaptureMeta (API_CONTRACT.md разд. 3.1–3.4).
-6. server/config.py: загрузка и валидация конфигурации сервера (REPO_AND_VERSIONING.md п. 3.1).
-7. server/db/database.py: движок SQLite, события PRAGMA (foreign_keys, WAL, busy_timeout=5000), sessionmaker (DB_SCHEMA.md п. 4.1).
-8. server/db/models.py: 7 таблиц ORM со всеми связями, ON DELETE, autoincrement, CHECK и индексами (DB_SCHEMA.md разд. 3, 4).
-9. server/tests/: юнит-тесты на таблицы, PRAGMA, частичные индексы пинов, version.py и schemas.py (DB_SCHEMA.md разд. 4, карточка задачи).
-10. Проверка качества: pytest server/tests -q, ruff check ., ruff format --check . (PROJECT.md разд. 2).
+## План и реализация
+1. Каркас каталогов и корневые файлы (.gitignore, VERSION="0.0.0", requirements-dev.txt, .gitkeep) — выполнено (коммит `be84763`).
+2. server/requirements.txt и server/.env.example — выполнено (коммит `ef7d91e`).
+3. shared/version.py и shared/logger.py — выполнено (коммит `c7142af`).
+4. shared/schemas.py — Pydantic-модели Edge API (Heartbeat, Command, CaptureMeta) — выполнено (коммит `4737788`).
+5. server/config.py — загрузка и валидация конфигурации — выполнено (коммит `fa1a9da`).
+6. server/db/database.py и server/db/models.py — 7 таблиц ORM, PRAGMA SQLite, индексы, CHECK — выполнено (коммит `d0b97d1`).
+7. Стилистика и форматирование (ruff) — выполнено (коммит `39cedae`).
+8. server/tests/ — 20 юнит-тестов (модели, PRAGMA, частичные индексы, schemas, versioning, conftest) — выполнено (коммиты `5a34b8d`, `36c9cc1`).
+
+## Результаты проверок
+- `pytest server/tests -q`: 20 passed.
+- `ruff check .`: All checks passed!
+- `ruff format --check .`: 29 files already formatted.
+- Ветка: `stage-1/skeleton`.
+- Статус: `READY_FOR_QA`.
