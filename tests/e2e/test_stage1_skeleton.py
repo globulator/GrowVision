@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -39,7 +40,9 @@ def test_repo_structure_and_gitkeeps():
     # Проверка VERSION
     version_file = repo_root / "VERSION"
     assert version_file.is_file(), "VERSION file missing"
-    assert version_file.read_text(encoding="utf-8").strip() == "0.0.0"
+    assert re.match(
+        r"^\d+\.\d+\.\d+$", version_file.read_text(encoding="utf-8").strip()
+    )
 
     # Проверка requirements-dev.txt
     req_dev_file = repo_root / "requirements-dev.txt"
@@ -99,10 +102,13 @@ def test_repo_structure_and_gitkeeps():
 # ==============================================================================
 def test_version_git_and_fallback(tmp_path: Path):
     repo_root = Path(__file__).resolve().parent.parent.parent
+    base_version = (repo_root / "VERSION").read_text(encoding="utf-8").strip()
 
-    # В репозитории с Git: должно быть '0.0.0-<хэш>'
+    # В репозитории с Git: должно быть '<base_version>-<хэш>'
     version_git = get_app_version(repo_root)
-    assert version_git.startswith("0.0.0-"), f"Unexpected git version: {version_git}"
+    assert version_git.startswith(f"{base_version}-"), (
+        f"Unexpected git version: {version_git}"
+    )
     assert len(version_git.split("-")) == 2
 
     # Во временном каталоге без Git: должно быть '0.0.0'
