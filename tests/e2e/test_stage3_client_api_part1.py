@@ -552,3 +552,255 @@ def test_qa_system_endpoints(client_api_test_env):
         json={"capture_interval_hours": 0},
     )
     assert r_bad_interval.status_code == 422
+
+
+# ==============================================================================
+# 6. Проверка исправлений (Stage 3 Fixes)
+# ==============================================================================
+def test_qa_version_auth_rules(client_api_test_env):
+    """Критерий 1: GET /api/version с авторизацией: неверный ключ -> 401,
+
+    без заголовков и с верным ключом -> 200.
+    """
+    client, _ = client_api_test_env
+
+    # 1. Без заголовков (Гость) -> 200
+    r_no_header = client.get("/api/version")
+    assert r_no_header.status_code == 200
+    assert "server_version" in r_no_header.json()
+
+    # 2. С верным X-Client-Key -> 200
+    r_valid_key = client.get("/api/version", headers={"X-Client-Key": CLIENT_KEY})
+    assert r_valid_key.status_code == 200
+    assert "server_version" in r_valid_key.json()
+
+    # 3. С неверным X-Client-Key -> 401
+    r_bad_key = client.get("/api/version", headers={"X-Client-Key": "wrong-key"})
+    assert r_bad_key.status_code == 401
+    assert "detail" in r_bad_key.json()
+
+
+def test_qa_installation_patch_null_and_archive_pins(client_api_test_env):
+    """Критерии 2, 3: PATCH с null для обязательных полей -> 422, aruco_size_mm: null -> 200,
+
+    смена пинов в архиве -> 409.
+    """
+    client, session_factory = client_api_test_env
+    db = session_factory()
+
+    user_dev = User(
+        client_type="cli",
+        external_id="dev_patch_fixes",
+        login="Dev Patch",
+        role="developer",
+    )
+    inst = Installation(
+        name="Inst Patch Fixes",
+        culture_name="Салат",
+        light_gpio_pin=30,
+        flash_gpio_pin=31,
+        aruco_size_mm=35.0,
+        is_archived=False,
+    )
+    db.add_all([user_dev, inst])
+    db.commit()
+    inst_id = inst.id
+    db.close()
+
+    dev_headers = _make_headers(("cli", "dev_patch_fixes"))
+
+    # 1. Явный null для обязательных полей -> 422
+    for null_field in ["name", "culture_name", "light_gpio_pin", "flash_gpio_pin"]:
+        r_null = client.patch(
+            f"/api/installations/{inst_id}",
+            headers=dev_headers,
+            json={null_field: None},
+        )
+        assert r_null.status_code == 422, f"Expected 422 for {null_field}=None"
+
+    # 2. aruco_size_mm: null допустим и обнуляет поле в БД -> 200
+    r_aruco_null = client.patch(
+        f"/api/installations/{inst_id}",
+        headers=dev_headers,
+        json={"aruco_size_mm": None},
+    )
+    assert r_aruco_null.status_code == 200
+    assert r_aruco_null.json()["aruco_size_mm"] is None
+
+    check_db = session_factory()
+    assert check_db.get(Installation, inst_id).aruco_size_mm is None
+    check_db.close()
+
+    # 3. Архивируем установку
+    r_arch = client.post(f"/api/installations/{inst_id}/archive", headers=dev_headers)
+    assert r_arch.status_code == 200
+    assert r_arch.json()["is_archived"] is True
+
+    # 4. Попытка сменить пины у архивной установки -> 409 "Установка в архиве"
+    r_patch_light = client.patch(
+        f"/api/installations/{inst_id}",
+        headers=dev_headers,
+        json={"light_gpio_pin": 32},
+    )
+    assert r_patch_light.status_code == 409
+    assert "Установка в архиве" in r_patch_light.json()["detail"]
+
+    r_patch_flash = client.patch(
+        f"/api/installations/{inst_id}",
+        headers=dev_headers,
+        json={"flash_gpio_pin": 33},
+    )
+    assert r_patch_flash.status_code == 409
+    assert "Установка в архиве" in r_patch_flash.json()["detail"]
+
+    # При этом смена названия архивной установки разрешена -> 200
+    r_patch_name = client.patch(
+        f"/api/installations/{inst_id}",
+        headers=dev_headers,
+        json={"name": "Архивный Салат"},
+    )
+    assert r_patch_name.status_code == 200
+    assert r_patch_name.json()["name"] == "Архивный Салат"
+
+
+def test_qa_input_validation_empty_strings_and_pin_ranges(client_api_test_env):
+    """Критерий 4: Валидация непустых строк после strip() и диапазона GPIO 0..53 -> 422."""
+    client, session_factory = client_api_test_env
+    db = session_factory()
+
+    user_dev = User(
+        client_type="cli",
+        external_id="dev_validation_qa",
+        login="Dev Valid",
+        role="developer",
+    )
+    db.add(user_dev)
+    db.commit()
+    db.close()
+
+    dev_headers = _make_headers(("cli", "dev_validation_qa"))
+
+    # 1. POST /api/auth/login: пустые login или external_id -> 422
+    for bad_str in ["", "   ", "\t  \n"]:
+        r_login = client.post(
+            "/api/auth/login",
+            headers={"X-Client-Key": CLIENT_KEY},
+            json={
+                "client_type": "cli",
+                "external_id": "valid_ext",
+                "login": bad_str,
+                "password": DEV_PASS,
+            },
+        )
+        assert r_login.status_code == 422
+
+        r_ext = client.post(
+            "/api/auth/login",
+            headers={"X-Client-Key": CLIENT_KEY},
+            json={
+                "client_type": "cli",
+                "external_id": bad_str,
+                "login": "valid_login",
+                "password": DEV_PASS,
+            },
+        )
+        assert r_ext.status_code == 422
+
+    # 2. POST /api/installations: пустые строки name и culture_name -> 422
+    for bad_str in ["", "   "]:
+        r_bad_name = client.post(
+            "/api/installations",
+            headers=dev_headers,
+            json={
+                "name": bad_str,
+                "culture_name": "Томат",
+                "light_gpio_pin": 1,
+                "flash_gpio_pin": 2,
+            },
+        )
+        assert r_bad_name.status_code == 422
+
+        r_bad_culture = client.post(
+            "/api/installations",
+            headers=dev_headers,
+            json={
+                "name": "Хорошее Имя",
+                "culture_name": bad_str,
+                "light_gpio_pin": 1,
+                "flash_gpio_pin": 2,
+            },
+        )
+        assert r_bad_culture.status_code == 422
+
+    # 3. Диапазон GPIO 0..53: -1 и 54 вызывают 422
+    for invalid_pin in [-1, 54, 100]:
+        r_invalid_light = client.post(
+            "/api/installations",
+            headers=dev_headers,
+            json={
+                "name": "Pin Test Light",
+                "culture_name": "Томат",
+                "light_gpio_pin": invalid_pin,
+                "flash_gpio_pin": 2,
+            },
+        )
+        assert r_invalid_light.status_code == 422
+
+        r_invalid_flash = client.post(
+            "/api/installations",
+            headers=dev_headers,
+            json={
+                "name": "Pin Test Flash",
+                "culture_name": "Томат",
+                "light_gpio_pin": 1,
+                "flash_gpio_pin": invalid_pin,
+            },
+        )
+        assert r_invalid_flash.status_code == 422
+
+    # Граничные значения 0 и 53 разрешены -> 201
+    r_valid_boundary = client.post(
+        "/api/installations",
+        headers=dev_headers,
+        json={
+            "name": "Boundary GPIO",
+            "culture_name": "Томат",
+            "light_gpio_pin": 0,
+            "flash_gpio_pin": 53,
+        },
+    )
+    assert r_valid_boundary.status_code == 201
+
+
+def test_qa_request_validation_error_format(client_api_test_env):
+    """Критерий 5: Формат 422 RequestValidationError: лаконичный detail без трейсбеков,
+
+    путей файлов, номеров строк и словарей pydantic.
+    """
+    client, _ = client_api_test_env
+
+    # Отправляем запрос с невалидным телом
+    r = client.post(
+        "/api/auth/login",
+        headers={"X-Client-Key": CLIENT_KEY},
+        json={
+            "client_type": "invalid_client_type",
+            "external_id": "   ",
+            "login": "dev",
+            "password": DEV_PASS,
+        },
+    )
+    assert r.status_code == 422
+    data = r.json()
+    assert list(data.keys()) == ["detail"]
+    detail = data["detail"]
+    assert isinstance(detail, str)
+
+    # Запрещенные технические артефакты
+    assert "Traceback" not in detail
+    assert "File " not in detail
+    assert ".py" not in detail
+    assert "line " not in detail
+    assert "{'type':" not in detail
+    assert "'loc':" not in detail
+    assert "pydantic.dev" not in detail
