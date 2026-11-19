@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -15,12 +16,13 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import relationship
+
 from server.db.database import Base
 
 
 def utc_now() -> datetime:
     """Возвращает текущее время в UTC."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Installation(Base):
@@ -76,7 +78,7 @@ class Camera(Base):
     """3.2. cameras — Физические камеры на Raspberry Pi."""
 
     __tablename__ = "cameras"
-    __table_args__ = {"sqlite_autoincrement": True}
+    __table_args__ = ({"sqlite_autoincrement": True},)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     hardware_id = Column(String(255), unique=True, nullable=False)

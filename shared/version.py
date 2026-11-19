@@ -1,5 +1,5 @@
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 
 def get_app_version(repo_root: Path | None = None) -> str:
@@ -34,7 +34,7 @@ def get_app_version(repo_root: Path | None = None) -> str:
             short_hash = result.stdout.strip()
             if short_hash:
                 return f"{base_version}-{short_hash}"
-    except Exception:
-        pass
+    except (subprocess.SubprocessError, OSError):
+        return base_version
 
     return base_version

@@ -1,8 +1,10 @@
 import sqlite3
 from collections.abc import Generator
+
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
+
 from server.config import get_settings
 
 Base = declarative_base()

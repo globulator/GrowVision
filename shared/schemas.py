@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -71,7 +72,9 @@ class HeartbeatResponse(BaseModel):
 
     capture_interval_hours: int
     debug_mode: bool
-    active_installations: list[HeartbeatActiveInstallation] = Field(default_factory=list)
+    active_installations: list[HeartbeatActiveInstallation] = Field(
+        default_factory=list
+    )
 
 
 class CommandInstallation(BaseModel):
