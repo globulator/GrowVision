@@ -71,7 +71,11 @@ class Installation(Base):
 
     cameras = relationship("Camera", back_populates="installation")
     captures = relationship("Capture", back_populates="installation")
-    edge_commands = relationship("EdgeCommand", back_populates="installation")
+    edge_commands = relationship(
+        "EdgeCommand",
+        back_populates="installation",
+        passive_deletes=True,
+    )
 
 
 class Camera(Base):
