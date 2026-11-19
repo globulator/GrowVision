@@ -202,6 +202,20 @@ def test_control_rpi_offline_and_target_validations(test_env):
     )
     assert r_bad_target.status_code == 422
 
+    # 6. Регрессионный тест: boolean target (True / False) -> 422 для всех эндпоинтов управления
+    for endpoint, payload in (
+        ("/api/control/snap", {"target": True}),
+        ("/api/control/snap", {"target": False}),
+        ("/api/control/light/main", {"target": True, "state": True}),
+        ("/api/control/light/flash", {"target": True, "state": False}),
+        ("/api/control/relay-test", {"target": True}),
+    ):
+        r_bool = client.post(endpoint, headers=dev_headers, json=payload)
+        assert r_bool.status_code == 422, (
+            f"{endpoint} должен возвращать 422 на boolean target"
+        )
+        assert "target: target не может быть boolean" in r_bool.json()["detail"]
+
 
 def test_control_snap_lifecycle_and_debug_info(test_env, monkeypatch):
     """Критерий 1: SNAP lifecycle, captures, is_manual=True, debug_mode."""

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from server.api.deps import get_db, verify_edge_key
 from server.core.state import app_state
+from server.core.timeouts import expire_stale_commands
 from server.db.models import (
     Camera,
     Capture,
@@ -163,47 +164,10 @@ def edge_claim_command(
     одну самую старую команду pending, переводит в running и возвращает её агенту.
     """
     now = datetime.now(UTC)
-    active_installations_count = (
-        db.query(Installation).filter(Installation.is_archived.is_(False)).count()
-    )
-
-    # 1. Перевод просроченных running команд в timeout
-    running_commands = (
-        db.query(EdgeCommand).filter(EdgeCommand.status == "running").all()
-    )
-    for cmd in running_commands:
-        if not cmd.started_at:
-            continue
-        cmd_started = (
-            cmd.started_at
-            if cmd.started_at.tzinfo
-            else cmd.started_at.replace(tzinfo=UTC)
-        )
-        elapsed_sec = (now - cmd_started).total_seconds()
-        if cmd.is_global and cmd.command_type == "SNAP":
-            timeout_limit = (15 + 10 * active_installations_count) + 15
-        else:
-            timeout_limit = 60.0
-
-        if elapsed_sec > timeout_limit:
-            cmd.status = "timeout"
-
-    # 2. Перевод просроченных pending команд (>30 с) в timeout
-    pending_commands = (
-        db.query(EdgeCommand).filter(EdgeCommand.status == "pending").all()
-    )
-    for cmd in pending_commands:
-        cmd_created = (
-            cmd.created_at
-            if cmd.created_at.tzinfo
-            else cmd.created_at.replace(tzinfo=UTC)
-        )
-        if (now - cmd_created).total_seconds() > 30.0:
-            cmd.status = "timeout"
-
+    expire_stale_commands(db, now=now)
     db.flush()
 
-    # 3. Выборка одной самой старой команды pending
+    # 2. Выборка одной самой старой команды pending
     oldest_pending = (
         db.query(EdgeCommand)
         .filter(EdgeCommand.status == "pending")

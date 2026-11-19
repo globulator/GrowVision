@@ -23,11 +23,11 @@ class SnapRequest(BaseModel):
 
     target: int | Literal["all"]
 
-    @field_validator("target")
+    @field_validator("target", mode="before")
     @classmethod
     def validate_target(cls, v: Any) -> int | Literal["all"]:
         if isinstance(v, bool):
-            raise TypeError("target не может быть boolean")
+            raise ValueError("target не может быть boolean")  # noqa: TRY004
         if isinstance(v, int):
             if v <= 0:
                 raise ValueError("ID установки должен быть положительным числом")
@@ -45,11 +45,11 @@ class LightRequest(BaseModel):
     target: int | Literal["all"]
     state: bool = Field(..., strict=True)
 
-    @field_validator("target")
+    @field_validator("target", mode="before")
     @classmethod
     def validate_target(cls, v: Any) -> int | Literal["all"]:
         if isinstance(v, bool):
-            raise TypeError("target не может быть boolean")
+            raise ValueError("target не может быть boolean")  # noqa: TRY004
         if isinstance(v, int):
             if v <= 0:
                 raise ValueError("ID установки должен быть положительным числом")
@@ -66,11 +66,11 @@ class RelayTestRequest(BaseModel):
 
     target: int | Literal["all"]
 
-    @field_validator("target")
+    @field_validator("target", mode="before")
     @classmethod
     def validate_target(cls, v: Any) -> int | Literal["all"]:
         if isinstance(v, bool):
-            raise TypeError("target не может быть boolean")
+            raise ValueError("target не может быть boolean")  # noqa: TRY004
         if isinstance(v, int):
             if v <= 0:
                 raise ValueError("ID установки должен быть положительным числом")
