@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.venv
+
+# Environment & secrets
+.env
+*.env
+!.env.example
+
+# Database & SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Media & Models
+server/media/*
+!server/media/.gitkeep
+edge_agent/models/*
+!edge_agent/models/.gitkeep
+
+# ONNX Models
+*.onnx
+
+# Testing & Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
