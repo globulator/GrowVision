@@ -6,7 +6,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 
+from server.api.auth import router as auth_router
+from server.api.cameras import router as cameras_router
 from server.api.edge import router as edge_router
+from server.api.installations import router as installations_router
+from server.api.system import router as system_router
 from server.db.database import init_db
 from shared.version import get_app_version
 
@@ -26,6 +30,10 @@ app = FastAPI(
 
 # Подключение роутеров
 app.include_router(edge_router)
+app.include_router(auth_router)
+app.include_router(installations_router)
+app.include_router(cameras_router)
+app.include_router(system_router)
 
 
 @app.exception_handler(IntegrityError)
