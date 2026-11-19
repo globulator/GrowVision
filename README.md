@@ -68,3 +68,4 @@ server/.venv/bin/ruff format --check .
 - [docs/stage_reports/stage-1.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-1.md) — отчёт по этапу 1
 - [docs/stage_reports/stage-2.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-2.md) — отчёт по этапу 2
 - [docs/stage_reports/stage-3.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-3.md) — отчёт по этапу 3
+- [docs/stage_reports/stage-4.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-4.md) — отчёт по этапу 4
