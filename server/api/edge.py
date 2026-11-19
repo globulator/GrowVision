@@ -36,19 +36,30 @@ from shared.schemas import (
 router = APIRouter(prefix="/api/edge", tags=["edge"])
 
 
+def get_media_dir() -> Path:
+    """Возвращает базовую директорию для хранения медиафайлов."""
+    return Path(__file__).resolve().parent.parent / "media"
+
+
 def _normalize_utc_datetime(dt_val: datetime | str) -> datetime:
     """Приводит дату/время к UTC и нормализует до целых секунд."""
-    if isinstance(dt_val, str):
-        dt = datetime.fromisoformat(dt_val)
-    else:
-        dt = dt_val
+    try:
+        if isinstance(dt_val, str):
+            dt = datetime.fromisoformat(dt_val)
+        else:
+            dt = dt_val
 
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    else:
-        dt = dt.astimezone(UTC)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        else:
+            dt = dt.astimezone(UTC)
 
-    return dt.replace(microsecond=0)
+        return dt.replace(microsecond=0)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Невалидный формат даты/времени captured_at: {exc}",
+        ) from exc
 
 
 @router.post(
@@ -148,12 +159,36 @@ def edge_claim_command(
 ) -> list[dict[str, Any]]:
     """3.2. POST /api/edge/commands/claim.
 
-    Переводит просроченные команды pending в timeout, забирает одну самую старую
-    команду pending, переводит в running и возвращает её агенту.
+    Переводит просроченные команды pending и running в timeout, забирает
+    одну самую старую команду pending, переводит в running и возвращает её агенту.
     """
     now = datetime.now(UTC)
+    active_installations_count = (
+        db.query(Installation).filter(Installation.is_archived.is_(False)).count()
+    )
 
-    # 1. Перевод просроченных pending команд (>30 с) в timeout
+    # 1. Перевод просроченных running команд в timeout
+    running_commands = (
+        db.query(EdgeCommand).filter(EdgeCommand.status == "running").all()
+    )
+    for cmd in running_commands:
+        if not cmd.started_at:
+            continue
+        cmd_started = (
+            cmd.started_at
+            if cmd.started_at.tzinfo
+            else cmd.started_at.replace(tzinfo=UTC)
+        )
+        elapsed_sec = (now - cmd_started).total_seconds()
+        if cmd.is_global and cmd.command_type == "SNAP":
+            timeout_limit = (15 + 10 * active_installations_count) + 15
+        else:
+            timeout_limit = 60.0
+
+        if elapsed_sec > timeout_limit:
+            cmd.status = "timeout"
+
+    # 2. Перевод просроченных pending команд (>30 с) в timeout
     pending_commands = (
         db.query(EdgeCommand).filter(EdgeCommand.status == "pending").all()
     )
@@ -168,7 +203,7 @@ def edge_claim_command(
 
     db.flush()
 
-    # 2. Выборка одной самой старой команды pending
+    # 3. Выборка одной самой старой команды pending
     oldest_pending = (
         db.query(EdgeCommand)
         .filter(EdgeCommand.status == "pending")
@@ -180,14 +215,14 @@ def edge_claim_command(
         db.commit()
         return []
 
-    # 3. Перевод в running
+    # 4. Перевод в running
     oldest_pending.status = "running"
     oldest_pending.started_at = now
     oldest_pending.attempts += 1
     db.commit()
     db.refresh(oldest_pending)
 
-    # 4. Формирование структуры команды
+    # 5. Формирование структуры команды
     payload = json.loads(oldest_pending.payload) if oldest_pending.payload else None
 
     if oldest_pending.is_global:
@@ -269,7 +304,7 @@ def edge_command_result(
     cmd.completed_at = now
 
     # Для команды SCAN_CAMERAS регистрируем новые камеры и обновляем существующие
-    if cmd.command_type == "SCAN_CAMERAS" and body.scanned_cameras:
+    if cmd.command_type == "SCAN_CAMERAS" and body.scanned_cameras is not None:
         scanned_hw_ids: list[str] = []
         for cam_info in body.scanned_cameras:
             scanned_hw_ids.append(cam_info.hardware_id)
@@ -291,7 +326,7 @@ def edge_command_result(
                 )
                 db.add(new_cam)
 
-        # Сохраняем результат в памяти процесса
+        # Сохраняем результат в памяти процесса (даже при пустом списке)
         app_state.save_scanned_cameras(command_id, scanned_hw_ids)
 
     db.commit()
@@ -378,9 +413,7 @@ async def edge_upload_capture(
     db.flush()
 
     # Сохранение файлов на диск
-    media_dir = (
-        Path(__file__).resolve().parent.parent / "media" / str(meta.installation_id)
-    )
+    media_dir = get_media_dir() / str(meta.installation_id)
     media_dir.mkdir(parents=True, exist_ok=True)
 
     raw_filename = f"raw_{capture.id}.jpg"

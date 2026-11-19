@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 from server.api.edge import router as edge_router
 from server.db.database import init_db
+from shared.version import get_app_version
 
 
 @asynccontextmanager
@@ -19,7 +20,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="GrowVision Server",
-    version="0.1.0",
+    version=get_app_version(),
     lifespan=lifespan,
 )
 

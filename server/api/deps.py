@@ -20,7 +20,9 @@ def verify_edge_key(
             detail="Неверный или отсутствующий X-Edge-Key",
         )
 
-    if not secrets.compare_digest(x_edge_key, expected_key):
+    if not secrets.compare_digest(
+        x_edge_key.encode("utf-8"), expected_key.encode("utf-8")
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный или отсутствующий X-Edge-Key",
