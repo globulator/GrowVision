@@ -1,6 +1,5 @@
 import io
 import json
-import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -43,27 +42,31 @@ def edge_test_env(tmp_path: Path, monkeypatch):
     app.dependency_overrides[get_db] = override_get_db
     app_state.clear()
 
-    # 3. Тестовая директория для медиа
-    created_media_dirs: list[Path] = []
+    # 3. Изоляция media каталога в tmp_path
+    tmp_media_dir = tmp_path / "media"
+    tmp_media_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("server.api.edge.get_media_dir", lambda: tmp_media_dir)
+
     real_media_root = Path(__file__).resolve().parent.parent.parent / "server" / "media"
 
     client = TestClient(app)
 
-    yield client, session_factory, created_media_dirs
+    yield client, session_factory, tmp_media_dir
 
     # Очистка
     app.dependency_overrides.clear()
     app_state.clear()
     engine.dispose()
 
-    # Удаляем созданные тестовые директории в server/media/
-    for md in created_media_dirs:
-        if md.exists() and md.is_relative_to(real_media_root) and md != real_media_root:
-            shutil.rmtree(md, ignore_errors=True)
+    # Проверка: рабочий server/media не должен содержать посторонних файлов
+    non_gitkeep_items = [p for p in real_media_root.iterdir() if p.name != ".gitkeep"]
+    assert not non_gitkeep_items, (
+        f"Файлы обнаружены в рабочем server/media: {non_gitkeep_items}"
+    )
 
 
 # ==============================================================================
-# 1. Авторизация X-Edge-Key (Критерий 2)
+# 1. Авторизация X-Edge-Key и не-ASCII символы (Критерии 1, 2)
 # ==============================================================================
 def test_qa_edge_auth_all_endpoints(edge_test_env):
     client, _, _ = edge_test_env
@@ -79,17 +82,29 @@ def test_qa_edge_auth_all_endpoints(edge_test_env):
     ]
 
     for method, path, data in endpoints:
-        # Без заголовка
+        # Без заголовка -> 401
         r_no_key = client.request(method, path, json=data)
         assert r_no_key.status_code == 401, f"Expected 401 on {path} without key"
         assert "detail" in r_no_key.json()
 
-        # С неверным заголовком
+        # С неверным ASCII заголовком -> 401
         r_bad_key = client.request(
             method, path, json=data, headers={"X-Edge-Key": "wrong-key"}
         )
         assert r_bad_key.status_code == 401, f"Expected 401 on {path} with bad key"
         assert "detail" in r_bad_key.json()
+
+        # С не-ASCII заголовком (кириллица, emoji в байтах) -> 401, а не 500 (Критерий 1)
+        r_unicode = client.request(
+            method,
+            path,
+            json=data,
+            headers={"X-Edge-Key": "неверный-секрет-с-кириллицей-🔑".encode()},
+        )
+        assert r_unicode.status_code == 401, (
+            f"Expected 401 for non-ascii key on {path}, got {r_unicode.status_code}"
+        )
+        assert "detail" in r_unicode.json()
 
     # Проверка /api/edge/captures без ключа
     r_cap_no_key = client.post("/api/edge/captures")
@@ -207,7 +222,7 @@ def test_qa_edge_heartbeat_lifecycle(edge_test_env):
 
 
 # ==============================================================================
-# 3. Очередь команд: claim, timeout, global (Критерии 1.2, 5)
+# 3. Очередь команд: claim, таймауты pending и running (Критерии 1.2, 3)
 # ==============================================================================
 def test_qa_edge_commands_claim_and_timeout(edge_test_env):
     client, session_factory, _ = edge_test_env
@@ -225,17 +240,40 @@ def test_qa_edge_commands_claim_and_timeout(edge_test_env):
     inst_id = inst.id
 
     now = datetime.now(UTC)
-    old_time = now - timedelta(seconds=45)
 
-    # 1. Просроченная команда (>30 с)
-    cmd_timeout = EdgeCommand(
+    # 1. Просроченная pending команда (>30 с)
+    cmd_timeout_pending = EdgeCommand(
         command_type="LIGHT_MAIN",
         installation_id=inst_id,
         is_global=False,
         status="pending",
-        created_at=old_time,
+        created_at=now - timedelta(seconds=45),
     )
-    # 2. Свежая одиночная команда
+    # 2. Просроченная running одиночная команда (>60 с)
+    cmd_timeout_running = EdgeCommand(
+        command_type="LIGHT_FLASH",
+        installation_id=inst_id,
+        is_global=False,
+        status="running",
+        started_at=now - timedelta(seconds=70),
+    )
+    # 3. Активная running одиночная команда (не просрочена, 20 с)
+    cmd_active_running = EdgeCommand(
+        command_type="RELAY_TEST",
+        installation_id=inst_id,
+        is_global=False,
+        status="running",
+        started_at=now - timedelta(seconds=20),
+    )
+    # 4. Просроченный глобальный SNAP: N=1 -> лимит (15 + 10*1) + 15 = 40 с; started 50 с назад
+    cmd_timeout_snap_global = EdgeCommand(
+        command_type="SNAP",
+        installation_id=None,
+        is_global=True,
+        status="running",
+        started_at=now - timedelta(seconds=50),
+    )
+    # 5. Свежая pending одиночная команда
     cmd_fresh_single = EdgeCommand(
         command_type="SNAP",
         installation_id=inst_id,
@@ -243,10 +281,22 @@ def test_qa_edge_commands_claim_and_timeout(edge_test_env):
         status="pending",
         created_at=now,
     )
-    db.add_all([cmd_timeout, cmd_fresh_single])
+
+    db.add_all(
+        [
+            cmd_timeout_pending,
+            cmd_timeout_running,
+            cmd_active_running,
+            cmd_timeout_snap_global,
+            cmd_fresh_single,
+        ]
+    )
     db.commit()
-    cmd_timeout_id = cmd_timeout.id
-    cmd_fresh_id = cmd_fresh_single.id
+    t_pending_id = cmd_timeout_pending.id
+    t_running_id = cmd_timeout_running.id
+    act_running_id = cmd_active_running.id
+    t_snap_id = cmd_timeout_snap_global.id
+    fresh_id = cmd_fresh_single.id
     db.close()
 
     # Запрос claim
@@ -257,17 +307,19 @@ def test_qa_edge_commands_claim_and_timeout(edge_test_env):
     assert resp.status_code == 200
     claimed = resp.json()
     assert len(claimed) == 1
-    assert claimed[0]["id"] == cmd_fresh_id
+    assert claimed[0]["id"] == fresh_id
     assert claimed[0]["command_type"] == "SNAP"
     assert claimed[0]["is_global"] is False
     assert claimed[0]["installation"]["id"] == inst_id
 
     # Проверка статусов в БД
     check_db = session_factory()
-    c_t = check_db.get(EdgeCommand, cmd_timeout_id)
-    assert c_t.status == "timeout", "Просроченная команда должна стать timeout!"
+    assert check_db.get(EdgeCommand, t_pending_id).status == "timeout"
+    assert check_db.get(EdgeCommand, t_running_id).status == "timeout"
+    assert check_db.get(EdgeCommand, act_running_id).status == "running"
+    assert check_db.get(EdgeCommand, t_snap_id).status == "timeout"
 
-    c_f = check_db.get(EdgeCommand, cmd_fresh_id)
+    c_f = check_db.get(EdgeCommand, fresh_id)
     assert c_f.status == "running"
     assert c_f.attempts == 1
     assert c_f.started_at is not None
@@ -305,28 +357,35 @@ def test_qa_edge_commands_claim_and_timeout(edge_test_env):
 
 
 # ==============================================================================
-# 4. Отчёт о выполнении команд (Критерий 1.3)
+# 4. Отчёт о выполнении команд и пустой список камер (Критерии 1.3, 4)
 # ==============================================================================
 def test_qa_edge_command_result_and_scan_cameras(edge_test_env):
     client, session_factory, _ = edge_test_env
     db = session_factory()
 
-    # Команда SCAN_CAMERAS в статусе running
-    cmd_scan = EdgeCommand(
+    # 1. Команда SCAN_CAMERAS с обнаружением новой камеры
+    cmd_scan_1 = EdgeCommand(
         command_type="SCAN_CAMERAS",
         is_global=True,
         status="running",
     )
-    # Команда в статусе pending (не running)
+    # 2. Команда SCAN_CAMERAS с пустым списком обнаруженных камер
+    cmd_scan_empty = EdgeCommand(
+        command_type="SCAN_CAMERAS",
+        is_global=True,
+        status="running",
+    )
+    # 3. Команда в статусе pending (не running)
     cmd_pending = EdgeCommand(
         command_type="SNAP",
         installation_id=None,
         is_global=True,
         status="pending",
     )
-    db.add_all([cmd_scan, cmd_pending])
+    db.add_all([cmd_scan_1, cmd_scan_empty, cmd_pending])
     db.commit()
-    scan_id = cmd_scan.id
+    scan_1_id = cmd_scan_1.id
+    scan_empty_id = cmd_scan_empty.id
     pending_id = cmd_pending.id
     db.close()
 
@@ -350,14 +409,14 @@ def test_qa_edge_command_result_and_scan_cameras(edge_test_env):
     # 3. Успешный отчёт SCAN_CAMERAS с обнаружением новой камеры
     scan_result_payload = {
         "status": "done",
-        "result_message": "Сканирование завершено: найдена 1 камера",
+        "result_message": "Найдена 1 камера",
         "debug_log_line": "[INFO] scanned v4l devices",
         "scanned_cameras": [
             {"hardware_id": "new_usb_cam_scan_01", "auto_name": "Scan HD Pro"}
         ],
     }
     r_ok = client.post(
-        f"/api/edge/commands/{scan_id}/result",
+        f"/api/edge/commands/{scan_1_id}/result",
         json=scan_result_payload,
         headers={"X-Edge-Key": EDGE_KEY},
     )
@@ -375,21 +434,33 @@ def test_qa_edge_command_result_and_scan_cameras(edge_test_env):
     assert created_cam.auto_name == "Scan HD Pro"
     assert created_cam.is_online is True
 
-    # Проверка сохранения в InMemoryState (память процесса)
-    scanned_in_mem = app_state.get_scanned_cameras(scan_id)
-    assert scanned_in_mem == ["new_usb_cam_scan_01"]
+    # Проверка сохранения в памяти процесса
+    assert app_state.get_scanned_cameras(scan_1_id) == ["new_usb_cam_scan_01"]
+
+    # 4. Отчёт SCAN_CAMERAS с пустым списком камер (Критерий 4)
+    r_empty_scan = client.post(
+        f"/api/edge/commands/{scan_empty_id}/result",
+        json={
+            "status": "done",
+            "result_message": "Камеры не найдены",
+            "scanned_cameras": [],
+        },
+        headers={"X-Edge-Key": EDGE_KEY},
+    )
+    assert r_empty_scan.status_code == 200
+    # Результат сохранён в InMemoryState как пустой список []
+    assert app_state.get_scanned_cameras(scan_empty_id) == []
 
     check_db.close()
 
 
 # ==============================================================================
-# 5. Загрузка снимков, дедупликация и InMemory command_id связка (Критерии 1.4, 3, 6)
+# 5. Загрузка снимков, невалидная дата 422, изоляция медиа (Критерии 2, 6)
 # ==============================================================================
 def test_qa_edge_captures_full_flow(edge_test_env):
-    client, session_factory, created_media_dirs = edge_test_env
+    client, session_factory, tmp_media_dir = edge_test_env
     db = session_factory()
 
-    # Создаем установку и зарегистрированную камеру
     inst = Installation(
         name="Capture QA Inst",
         culture_name="Салат",
@@ -408,7 +479,6 @@ def test_qa_edge_captures_full_flow(edge_test_env):
     )
     db.add(cam)
 
-    # Архивная установка
     archived_inst = Installation(
         name="Archived QA Inst",
         culture_name="Укроп",
@@ -422,10 +492,6 @@ def test_qa_edge_captures_full_flow(edge_test_env):
     inst_id = inst.id
     arch_id = archived_inst.id
     db.close()
-
-    real_media_root = Path(__file__).resolve().parent.parent.parent / "server" / "media"
-    created_media_dirs.append(real_media_root / str(inst_id))
-    created_media_dirs.append(real_media_root / str(arch_id))
 
     raw_file = ("raw.jpg", io.BytesIO(b"fake_raw_jpg_bytes"), "image/jpeg")
     ann_file = ("ann.jpg", io.BytesIO(b"fake_ann_jpg_bytes"), "image/jpeg")
@@ -448,7 +514,23 @@ def test_qa_edge_captures_full_flow(edge_test_env):
         == "Камера не зарегистрирована, выполните сканирование камер"
     )
 
-    # 2. Несуществующая установка -> 404
+    # 2. Невалидный captured_at ("not-a-date") -> 422, а не 500 (Критерий 2)
+    meta_invalid_date = {
+        "installation_id": inst_id,
+        "camera_hardware_id": "cam_registered_qa",
+        "captured_at": "not-a-date",
+        "is_manual": False,
+    }
+    r_bad_date = client.post(
+        "/api/edge/captures",
+        data={"metadata": json.dumps(meta_invalid_date)},
+        files={"raw_image": raw_file, "annotated_image": ann_file},
+        headers={"X-Edge-Key": EDGE_KEY},
+    )
+    assert r_bad_date.status_code == 422
+    assert "detail" in r_bad_date.json()
+
+    # 3. Несуществующая установка -> 404
     meta_bad_inst = {
         "installation_id": 999999,
         "camera_hardware_id": "cam_registered_qa",
@@ -465,11 +547,11 @@ def test_qa_edge_captures_full_flow(edge_test_env):
     )
     assert r_bad_inst.status_code == 404
 
-    # 3. Успешная загрузка кадра с command_id и замерами (201 Created)
+    # 4. Успешная загрузка кадра с command_id и замерами (201 Created)
     meta_valid = {
         "installation_id": inst_id,
         "camera_hardware_id": "cam_registered_qa",
-        "captured_at": "2026-11-19T14:00:00.123456Z",  # с микросекундами (нормализуется)
+        "captured_at": "2026-11-19T14:00:00.123456Z",
         "is_manual": True,
         "aruco_area_px": 450.0,
         "command_id": 777,
@@ -495,18 +577,18 @@ def test_qa_edge_captures_full_flow(edge_test_env):
     # Проверка связки в памяти процесса InMemoryState
     assert app_state.get_capture_by_command(777) == cap_id
 
-    # Проверка файлов на диске
-    raw_path = real_media_root / str(inst_id) / f"raw_{cap_id}.jpg"
-    ann_path = real_media_root / str(inst_id) / f"ann_{cap_id}.jpg"
+    # Проверка файлов в изолированной тестовой директории
+    raw_path = tmp_media_dir / str(inst_id) / f"raw_{cap_id}.jpg"
+    ann_path = tmp_media_dir / str(inst_id) / f"ann_{cap_id}.jpg"
     assert raw_path.is_file()
     assert ann_path.is_file()
     assert raw_path.read_bytes() == b"raw_bytes_content"
 
-    # 4. Повторная загрузка дубликата (та же секунда UTC) -> 200 OK с прежним capture_id
+    # 5. Повторная загрузка дубликата (та же секунда UTC) -> 200 OK с прежним capture_id
     meta_dup = {
         "installation_id": inst_id,
         "camera_hardware_id": "cam_registered_qa",
-        "captured_at": "2026-11-19T14:00:00.999999Z",  # нормализуется к той же секунде
+        "captured_at": "2026-11-19T14:00:00.999999Z",
         "is_manual": True,
         "command_id": 888,
         "measurements": [{"plant_index": 0, "area_px": 99999.0}],
@@ -532,7 +614,7 @@ def test_qa_edge_captures_full_flow(edge_test_env):
     # Новая команда связалась с существующим кадром в InMemoryState
     assert app_state.get_capture_by_command(888) == cap_id
 
-    # 5. Загрузка кадра для архивной установки разрешена -> 201 Created
+    # 6. Загрузка кадра для архивной установки разрешена -> 201 Created
     meta_archived = {
         "installation_id": arch_id,
         "camera_hardware_id": "cam_registered_qa",
