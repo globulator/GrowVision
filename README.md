@@ -20,6 +20,7 @@ GrowVision/
 │   ├── cli/                    # Консольный интерфейс управления (Typer, rich)
 │   ├── telegram_bot/           # Telegram-бот для биологов и разработчиков (aiogram 3)
 │   └── web/                    # Веб-плеер таймлапса (чистый HTML/CSS/JS)
+├── tests/                      # Сквозные интеграционные тесты (E2E)
 ├── requirements-dev.txt        # Общие зависимости для тестов и линтинга (pytest, ruff)
 └── VERSION                     # Источник версии проекта
 ```
@@ -31,15 +32,24 @@ GrowVision/
 ```bash
 python3 -m venv server/.venv
 server/.venv/bin/pip install -r server/requirements.txt -r requirements-dev.txt
+cp server/.env.example server/.env
 ```
 
-### 2. Запуск тестов
+### 2. Запуск сервера
 
 ```bash
-server/.venv/bin/pytest server/tests -q
+server/.venv/bin/python -m server.main
 ```
 
-### 3. Проверка качества кода
+Документация OpenAPI (Swagger UI) доступна по адресу: `http://127.0.0.1:8000/docs`.
+
+### 3. Запуск тестов
+
+```bash
+server/.venv/bin/pytest server/tests tests/e2e -q
+```
+
+### 4. Проверка качества кода
 
 ```bash
 server/.venv/bin/ruff check .
@@ -56,3 +66,4 @@ server/.venv/bin/ruff format --check .
 - [docs/BOT_SPEC.md](file:///home/mcperchik/study/GrowVision/docs/BOT_SPEC.md) — спецификация Telegram-бота
 - [docs/WEB_SPEC.md](file:///home/mcperchik/study/GrowVision/docs/WEB_SPEC.md) — спецификация веб-плеера
 - [docs/stage_reports/stage-1.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-1.md) — отчёт по этапу 1
+- [docs/stage_reports/stage-2.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-2.md) — отчёт по этапу 2
