@@ -183,3 +183,50 @@ def test_capture_meta_missing_required_fields():
                 # отсутствует camera_hardware_id и captured_at
             }
         )
+
+
+def test_measurement_and_aruco_bounds_validation():
+    """Критерий: PlantMeasurementMeta.area_px: ge=0, CaptureMeta.aruco_area_px: gt=0.
+
+    Значения -1 и 0 для aruco_area_px и -1 для area_px вызывают ValidationError.
+    """
+    # 1. PlantMeasurementMeta: 0 разрешено, -1 вызывает ValidationError
+    m_valid = PlantMeasurementMeta(plant_index=0, area_px=0.0)
+    assert m_valid.area_px == 0.0
+
+    with pytest.raises(ValidationError):
+        PlantMeasurementMeta(plant_index=0, area_px=-1.0)
+
+    # 2. CaptureMeta: aruco_area_px=None разрешено, >0 разрешено
+    c_none = CaptureMeta(
+        installation_id=1,
+        camera_hardware_id="cam_01",
+        captured_at="2026-11-18T19:00:00Z",
+        aruco_area_px=None,
+    )
+    assert c_none.aruco_area_px is None
+
+    c_valid = CaptureMeta(
+        installation_id=1,
+        camera_hardware_id="cam_01",
+        captured_at="2026-11-18T19:00:00Z",
+        aruco_area_px=100.5,
+    )
+    assert c_valid.aruco_area_px == 100.5
+
+    # 0 и -1 для aruco_area_px вызывают ValidationError
+    with pytest.raises(ValidationError):
+        CaptureMeta(
+            installation_id=1,
+            camera_hardware_id="cam_01",
+            captured_at="2026-11-18T19:00:00Z",
+            aruco_area_px=0.0,
+        )
+
+    with pytest.raises(ValidationError):
+        CaptureMeta(
+            installation_id=1,
+            camera_hardware_id="cam_01",
+            captured_at="2026-11-18T19:00:00Z",
+            aruco_area_px=-1.0,
+        )

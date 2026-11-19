@@ -231,6 +231,53 @@ def test_foreign_key_and_delete_behaviors(test_db):
     session.close()
 
 
+def test_installation_delete_with_commands_cascades(test_db):
+    """Критерий: Удаление установки без кадров, но с командами,
+
+    проходит и каскадно удаляет связанные команды (passive_deletes=True).
+    """
+    _, session_factory = test_db
+    session = session_factory()
+
+    inst = Installation(
+        name="Установка для команд",
+        culture_name="Укроп",
+        light_gpio_pin=24,
+        flash_gpio_pin=25,
+        is_archived=False,
+    )
+    session.add(inst)
+    session.commit()
+
+    cmd1 = EdgeCommand(
+        command_type="SNAP",
+        installation_id=inst.id,
+        is_global=False,
+        status="pending",
+    )
+    cmd2 = EdgeCommand(
+        command_type="LIGHT_MAIN",
+        installation_id=inst.id,
+        is_global=False,
+        status="running",
+    )
+    session.add_all([cmd1, cmd2])
+    session.commit()
+    cmd1_id, cmd2_id = cmd1.id, cmd2.id
+
+    # Удаляем установку без кадров
+    session.delete(inst)
+    session.commit()
+
+    # Установка удалена
+    assert session.get(Installation, inst.id) is None
+    # Команды каскадно удалены
+    assert session.get(EdgeCommand, cmd1_id) is None
+    assert session.get(EdgeCommand, cmd2_id) is None
+
+    session.close()
+
+
 def test_edge_command_constraints(test_db):
     """Проверяет ограничения edge_commands: статус и согласованность is_global."""
     _, session_factory = test_db
