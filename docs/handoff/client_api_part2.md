@@ -9,11 +9,13 @@
      - pending старше 30 с -> timeout;
      - running одиночные старше 60 с -> timeout;
      - running глобальный SNAP старше `(15 + 10 * N) + 15` с -> timeout.
+   - Устранено дублирование: `expire_stale_commands(db, now)` используется и в фоновом таске `server/main.py`, и в `POST /api/edge/commands/claim` (`server/api/edge.py`).
 3. `server/main.py`:
    - Фоновая задача `cleanup_timeouts_task` раз в 5 секунд в `lifespan` FastAPI (с корректной отменой при остановке приложения).
    - Подключение роутеров `control_router` и `timelapse_router`.
    - Монтирование статики через `StaticFiles`: `/media` -> `server/media/` и `/` -> `clients/web/` (`html=True`) строго после всех API-роутеров.
 4. `server/api/control.py`:
+   - Валидация target с `mode="before"`: отклоняет boolean значения (`True`/`False`) кодом 422, принимает положительные int или `"all"`.
    - Проверка офлайна RPi (heartbeat > 90 с -> 503).
    - Валидация target (`target="all"` без активных установок -> 409, в архиве -> 409, не найдена -> 404).
    - Ожидание результата RPi (15 с для одиночной SNAP, `15 + 10 * N` с для SNAP target="all", 10 с для остальных; таймаут -> 504 с переводом pending в timeout).
@@ -26,10 +28,10 @@
 6. `server/api/timelapse.py`:
    - `GET /api/timelapse/{installation_id}/frames`: доступен Гостю; только плановые кадры (`is_manual=False`) в порядке `captured_at ASC`; `area_display` для `plant_index=0`.
    - `POST /api/timelapse/{installation_id}/video` (Biologist, Developer): синхронный эндпоинт (`def`); 0 кадров -> 404; 1 кадр -> 200 `image/jpeg`; >=2 кадров -> сборка `video/mp4` через ffmpeg с параметрами `libx264`, `preset veryfast`, `crf 28`, `scale=-2:min(720\,ih)`, без звука, расчет framerate `n / D` или `F`. Проверка одновременной съемки разными камерами (<=10 мин без `camera_id` -> 422).
-7. `server/tests/test_client_api_part2.py`: 9 комплексных тестов с изоляцией БД, лимитеров, app_state и медиа.
+7. `server/tests/test_client_api_part2.py`: комплексные тесты (включая регрессионный тест на отклонение boolean target) с изоляцией БД, лимитеров, app_state и медиа.
 
 ## Результаты верификации
-- `pytest server/tests`: 50 passed, 0 failed.
+- `pytest server/tests tests/e2e`: 87 passed, 0 failed.
 - `ruff check .`: All checks passed.
-- `ruff format --check .`: 69 files already formatted.
+- `ruff format --check .`: 70 files already formatted.
 - Статус: **READY_FOR_QA**
