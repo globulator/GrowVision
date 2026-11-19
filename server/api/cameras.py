@@ -1,3 +1,6 @@
+import asyncio
+import time
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -5,7 +8,8 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from server.api.deps import format_utc_z, get_db, require_role
-from server.db.models import Camera, Installation, User
+from server.core.state import app_state
+from server.db.models import Camera, EdgeCommand, Installation, SystemSetting, User
 
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
 
@@ -29,6 +33,147 @@ def serialize_camera(cam: Camera) -> dict[str, Any]:
         "installation_id": cam.installation_id,
         "installation_name": cam.installation.name if cam.installation else None,
     }
+
+
+def check_rpi_online_cameras(db: Session) -> None:
+    """Проверяет подключение Raspberry Pi (heartbeat <= 90 с)."""
+    hb_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == "rpi_last_heartbeat_at")
+        .first()
+    )
+    if not hb_setting or not hb_setting.value:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Raspberry Pi офлайн",
+        )
+
+    try:
+        hb_time = datetime.fromisoformat(hb_setting.value)
+        if hb_time.tzinfo is None:
+            hb_time = hb_time.replace(tzinfo=UTC)
+        if (datetime.now(UTC) - hb_time).total_seconds() > 90.0:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Raspberry Pi офлайн",
+            )
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Raspberry Pi офлайн",
+        ) from None
+
+
+def is_debug_mode_enabled_cameras(db: Session) -> bool:
+    """Возвращает признак включения debug_mode."""
+    setting = db.query(SystemSetting).filter(SystemSetting.key == "debug_mode").first()
+    return setting.value.lower() == "true" if setting and setting.value else False
+
+
+@router.post("/scan", response_model=dict[str, Any])
+async def scan_cameras(
+    current_user: Annotated[User, Depends(require_role("developer"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """4.3. POST /api/cameras/scan (Developer).
+
+    Запуск сканирования камер на Raspberry Pi (SCAN_CAMERAS) с ожиданием до 10 с.
+    """
+    check_rpi_online_cameras(db)
+
+    cmd = EdgeCommand(
+        command_type="SCAN_CAMERAS",
+        installation_id=None,
+        is_global=True,
+        payload=None,
+        status="pending",
+    )
+    db.add(cmd)
+    db.commit()
+    db.refresh(cmd)
+
+    start_time = time.monotonic()
+    finished_cmd = None
+    while time.monotonic() - start_time < 10.0:
+        await asyncio.sleep(0.05)
+        db.expire_all()
+        check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
+        if not check_cmd:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Команда не найдена",
+            )
+        if check_cmd.status in ("done", "error"):
+            finished_cmd = check_cmd
+            break
+
+    if not finished_cmd:
+        db.expire_all()
+        check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
+        if check_cmd and check_cmd.status == "pending":
+            check_cmd.status = "timeout"
+            db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Превышено время ожидания ответа Raspberry Pi",
+        )
+
+    resp: dict[str, Any] = {
+        "command_id": finished_cmd.id,
+        "status": finished_cmd.status,
+    }
+
+    debug_info = None
+    if is_debug_mode_enabled_cameras(db):
+        debug_info = {
+            "command": {
+                "id": finished_cmd.id,
+                "command_type": finished_cmd.command_type,
+                "target": "all",
+                "payload": None,
+            },
+            "log_line": finished_cmd.debug_log or "",
+        }
+
+    if finished_cmd.status == "error":
+        resp["result_message"] = finished_cmd.result_message or "Ошибка сканирования"
+        resp["cameras"] = []
+        if debug_info:
+            resp["debug_info"] = debug_info
+        return resp
+
+    # Извлечение результатов сканирования и очистка app_state
+    scanned_hw_ids = app_state.pop_scanned_cameras(finished_cmd.id) or []
+    now = datetime.now(UTC)
+
+    # Регистрация новых камер и обновление существующих
+    result_cameras: list[Camera] = []
+    for hw_id in scanned_hw_ids:
+        cam = db.query(Camera).filter(Camera.hardware_id == hw_id).first()
+        if not cam:
+            cam = Camera(
+                hardware_id=hw_id,
+                auto_name=hw_id,
+                is_online=True,
+                last_seen_at=now,
+                installation_id=None,
+            )
+            db.add(cam)
+            db.flush()
+        else:
+            cam.is_online = True
+            cam.last_seen_at = now
+        result_cameras.append(cam)
+
+    db.commit()
+
+    # Сортировка по id asc
+    result_cameras.sort(key=lambda c: c.id)
+    resp["cameras"] = [serialize_camera(c) for c in result_cameras]
+    if debug_info:
+        resp["debug_info"] = debug_info
+
+    return resp
 
 
 @router.get("", response_model=list[dict[str, Any]])

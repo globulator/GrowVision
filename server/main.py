@@ -1,25 +1,58 @@
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import IntegrityError
 
 from server.api.auth import router as auth_router
 from server.api.cameras import router as cameras_router
+from server.api.control import router as control_router
 from server.api.edge import router as edge_router
 from server.api.installations import router as installations_router
 from server.api.system import router as system_router
-from server.db.database import init_db
+from server.api.timelapse import router as timelapse_router
+from server.core.timeouts import expire_stale_commands
+from server.db.database import SessionLocal, init_db
+from shared.logger import get_logger
 from shared.version import get_app_version
+
+logger = get_logger("server.main")
+
+
+async def cleanup_timeouts_task() -> None:
+    """Фоновая периодическая очистка таймаутов команд раз в 5 секунд."""
+    while True:
+        try:
+            await asyncio.sleep(5)
+            db = SessionLocal()
+            try:
+                expire_stale_commands(db)
+            finally:
+                db.close()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Ошибка фоновой очистки таймаутов: %s", e)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Жизненный цикл приложения: инициализация БД."""
+    """Жизненный цикл приложения: инициализация БД и фоновая очистка таймаутов."""
     init_db()
-    yield
+    task = asyncio.create_task(cleanup_timeouts_task())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
@@ -28,12 +61,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Подключение роутеров
+# Подключение API-роутеров
 app.include_router(edge_router)
 app.include_router(auth_router)
 app.include_router(installations_router)
 app.include_router(cameras_router)
+app.include_router(control_router)
+app.include_router(timelapse_router)
 app.include_router(system_router)
+
+# Раздача статики строго после всех API-роутеров
+media_dir = Path(__file__).resolve().parent / "media"
+media_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/media", StaticFiles(directory=media_dir), name="media")
+
+web_dir = Path(__file__).resolve().parent.parent / "clients" / "web"
+web_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
 
 
 @app.exception_handler(IntegrityError)
