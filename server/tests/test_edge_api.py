@@ -21,6 +21,7 @@ from server.db.models import (
     SystemSetting,
 )
 from server.main import app
+from shared.version import get_app_version
 
 TEST_EDGE_KEY = "test-edge-secret-key-123"
 
@@ -33,6 +34,11 @@ def test_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     engine = create_engine(db_url, connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
     session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    # Изоляция медиа-директории в tmp_path
+    test_media_dir = tmp_path / "media"
+    test_media_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("server.api.edge.get_media_dir", lambda: test_media_dir)
 
     # Устанавливаем тестовый ключ Edge API
     monkeypatch.setattr(get_settings(), "edge_api_key", TEST_EDGE_KEY)
@@ -47,7 +53,7 @@ def test_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     app.dependency_overrides[get_db] = override_get_db
 
-    yield session_factory, engine
+    yield session_factory, engine, test_media_dir
 
     app.dependency_overrides.clear()
     app_state.clear()
@@ -60,8 +66,14 @@ def client(test_env) -> TestClient:
     return TestClient(app)
 
 
+def test_app_version_matches_get_app_version():
+    """Критерий 5: Версия приложения FastAPI получается из get_app_version()."""
+    expected = get_app_version()
+    assert app.version == expected
+
+
 def test_edge_api_key_auth(client: TestClient):
-    """Критерий 2: Неверный или отсутствующий заголовок X-Edge-Key на всех эндпоинтах -> 401."""
+    """Критерий 1, 2: Неверный, отсутствующий или не-ASCII X-Edge-Key -> 401."""
     endpoints = [
         ("POST", "/api/edge/heartbeat", {"json": {}}),
         ("POST", "/api/edge/commands/claim", {}),
@@ -86,13 +98,23 @@ def test_edge_api_key_auth(client: TestClient):
         assert res_bad_key.status_code == 401
         assert "detail" in res_bad_key.json()
 
+        # С не-ASCII символами в ключе -> 401, а не 500
+        res_non_ascii = client.request(
+            method,
+            path,
+            headers={"X-Edge-Key": "не-ascii-секрет-123".encode()},
+            **kwargs,
+        )
+        assert res_non_ascii.status_code == 401
+        assert "detail" in res_non_ascii.json()
+
 
 def test_heartbeat_endpoint(client: TestClient, test_env):
     """Критерий 1: POST /api/edge/heartbeat:
 
     сохранение телеметрии, обновление камер, active_installations.
     """
-    session_factory, _ = test_env
+    session_factory, _, _ = test_env
     db = session_factory()
 
     # 1. Создаем существующую камеру и активную установку
@@ -196,11 +218,11 @@ def test_heartbeat_endpoint(client: TestClient, test_env):
 
 
 def test_commands_claim_lifecycle_and_timeout(client: TestClient, test_env):
-    """Критерий 1, 5: POST /api/edge/commands/claim:
+    """Критерий 1, 3: POST /api/edge/commands/claim:
 
-    таймаут старых команд (>30 с), claim самой старой pending.
+    таймаут старых pending (>30 с), таймаут running команд, claim самой старой.
     """
-    session_factory, _ = test_env
+    session_factory, _, _ = test_env
     db = session_factory()
 
     inst = Installation(
@@ -213,17 +235,47 @@ def test_commands_claim_lifecycle_and_timeout(client: TestClient, test_env):
     db.add(inst)
     db.commit()
 
-    # 1. Просроченная команда (создана 40 секунд назад)
-    expired_time = datetime.now(UTC) - timedelta(seconds=45)
-    cmd_expired = EdgeCommand(
+    # 1. Просроченная pending команда (создана 45 секунд назад)
+    expired_pending_time = datetime.now(UTC) - timedelta(seconds=45)
+    cmd_expired_pending = EdgeCommand(
         command_type="SNAP",
         installation_id=inst.id,
         is_global=False,
         status="pending",
-        created_at=expired_time,
+        created_at=expired_pending_time,
     )
 
-    # 2. Актуальная команда 1 (создана 10 секунд назад)
+    # 2. Просроченная running команда (одиночная, started_at 70 секунд назад)
+    expired_running_time = datetime.now(UTC) - timedelta(seconds=70)
+    cmd_expired_running = EdgeCommand(
+        command_type="LIGHT_FLASH",
+        installation_id=inst.id,
+        is_global=False,
+        status="running",
+        started_at=expired_running_time,
+    )
+
+    # 3. Непросроченная running команда (started_at 10 секунд назад)
+    fresh_running_time = datetime.now(UTC) - timedelta(seconds=10)
+    cmd_fresh_running = EdgeCommand(
+        command_type="RELAY_TEST",
+        installation_id=inst.id,
+        is_global=False,
+        status="running",
+        started_at=fresh_running_time,
+    )
+
+    # 4. Просроченная глобальная SNAP running команда (N=1 активная установка, лимит (15+10*1)+15 = 40 с; started_at 45 с назад)
+    expired_global_running_time = datetime.now(UTC) - timedelta(seconds=45)
+    cmd_expired_global_running = EdgeCommand(
+        command_type="SNAP",
+        installation_id=None,
+        is_global=True,
+        status="running",
+        started_at=expired_global_running_time,
+    )
+
+    # 5. Актуальная pending команда 1 (создана 10 секунд назад)
     time1 = datetime.now(UTC) - timedelta(seconds=10)
     cmd1 = EdgeCommand(
         command_type="LIGHT_MAIN",
@@ -234,7 +286,7 @@ def test_commands_claim_lifecycle_and_timeout(client: TestClient, test_env):
         created_at=time1,
     )
 
-    # 3. Актуальная команда 2 (создана 5 секунд назад)
+    # 6. Актуальная pending команда 2 (создана 5 секунд назад)
     time2 = datetime.now(UTC) - timedelta(seconds=5)
     cmd2 = EdgeCommand(
         command_type="SNAP",
@@ -243,9 +295,21 @@ def test_commands_claim_lifecycle_and_timeout(client: TestClient, test_env):
         status="pending",
         created_at=time2,
     )
-    db.add_all([cmd_expired, cmd1, cmd2])
+    db.add_all(
+        [
+            cmd_expired_pending,
+            cmd_expired_running,
+            cmd_fresh_running,
+            cmd_expired_global_running,
+            cmd1,
+            cmd2,
+        ]
+    )
     db.commit()
-    cmd_expired_id = cmd_expired.id
+    cmd_exp_pending_id = cmd_expired_pending.id
+    cmd_exp_running_id = cmd_expired_running.id
+    cmd_fresh_running_id = cmd_fresh_running.id
+    cmd_exp_global_id = cmd_expired_global_running.id
     cmd1_id = cmd1.id
     cmd2_id = cmd2.id
     inst_id = inst.id
@@ -265,10 +329,12 @@ def test_commands_claim_lifecycle_and_timeout(client: TestClient, test_env):
     assert claimed[0]["installation"]["id"] == inst_id
     assert claimed[0]["payload"] == {"state": True}
 
-    # Проверяем, что просроченная ушла в timeout
+    # Проверяем статусы в БД
     db = session_factory()
-    exp_db = db.get(EdgeCommand, cmd_expired_id)
-    assert exp_db.status == "timeout"
+    assert db.get(EdgeCommand, cmd_exp_pending_id).status == "timeout"
+    assert db.get(EdgeCommand, cmd_exp_running_id).status == "timeout"
+    assert db.get(EdgeCommand, cmd_exp_global_id).status == "timeout"
+    assert db.get(EdgeCommand, cmd_fresh_running_id).status == "running"
 
     cmd1_db = db.get(EdgeCommand, cmd1_id)
     assert cmd1_db.status == "running"
@@ -297,11 +363,11 @@ def test_commands_claim_lifecycle_and_timeout(client: TestClient, test_env):
 
 
 def test_command_result_endpoint(client: TestClient, test_env):
-    """Критерий 1: POST /api/edge/commands/{command_id}/result.
+    """Критерий 1, 4: POST /api/edge/commands/{command_id}/result.
 
-    404, 409 для не-running, сохранение логов, SCAN_CAMERAS.
+    404, 409 для не-running, сохранение логов, SCAN_CAMERAS с пустым и непустым списком.
     """
-    session_factory, _ = test_env
+    session_factory, _, _ = test_env
     db = session_factory()
 
     inst = Installation(
@@ -326,17 +392,24 @@ def test_command_result_endpoint(client: TestClient, test_env):
         is_global=False,
         status="timeout",
     )
-    cmd_scan = EdgeCommand(
+    cmd_scan1 = EdgeCommand(
         command_type="SCAN_CAMERAS",
         installation_id=None,
         is_global=True,
         status="running",
     )
-    db.add_all([cmd_running, cmd_timeout, cmd_scan])
+    cmd_scan_empty = EdgeCommand(
+        command_type="SCAN_CAMERAS",
+        installation_id=None,
+        is_global=True,
+        status="running",
+    )
+    db.add_all([cmd_running, cmd_timeout, cmd_scan1, cmd_scan_empty])
     db.commit()
     cmd_running_id = cmd_running.id
     cmd_timeout_id = cmd_timeout.id
-    cmd_scan_id = cmd_scan.id
+    cmd_scan1_id = cmd_scan1.id
+    cmd_scan_empty_id = cmd_scan_empty.id
     db.close()
 
     # 1. Несуществующая команда -> 404
@@ -378,7 +451,7 @@ def test_command_result_endpoint(client: TestClient, test_env):
 
     # 4. SCAN_CAMERAS: регистрация новых камер и запись в app_state
     r_scan = client.post(
-        f"/api/edge/commands/{cmd_scan_id}/result",
+        f"/api/edge/commands/{cmd_scan1_id}/result",
         headers={"X-Edge-Key": TEST_EDGE_KEY},
         json={
             "status": "done",
@@ -398,20 +471,32 @@ def test_command_result_endpoint(client: TestClient, test_env):
     assert c1.is_online is True
 
     # Проверка сохранения в памяти процесса
-    cached = app_state.get_scanned_cameras(cmd_scan_id)
+    cached = app_state.get_scanned_cameras(cmd_scan1_id)
     assert cached == ["usb_scan_cam_1", "usb_scan_cam_2"]
     db.close()
 
+    # 5. SCAN_CAMERAS с пустым списком scanned_cameras: [] (Критерий 4)
+    r_empty = client.post(
+        f"/api/edge/commands/{cmd_scan_empty_id}/result",
+        headers={"X-Edge-Key": TEST_EDGE_KEY},
+        json={
+            "status": "done",
+            "result_message": "Камеры не обнаружены",
+            "scanned_cameras": [],
+        },
+    )
+    assert r_empty.status_code == 200
+    cached_empty = app_state.get_scanned_cameras(cmd_scan_empty_id)
+    assert cached_empty == []
 
-def test_captures_upload_and_deduplication(
-    client: TestClient, test_env, tmp_path: Path
-):
-    """Критерии 1, 3, 4, 6: POST /api/edge/captures:
 
-    multipart/form-data, нормализация времени, дедупликация (200),
-    404, 409, 422, сохранение файлов и command_id -> capture_id в app_state.
+def test_captures_upload_and_deduplication(client: TestClient, test_env):
+    """Критерии 1, 2, 3, 6: POST /api/edge/captures:
+
+    multipart/form-data, валидация captured_at (422), дедупликация (200),
+    404, 409, 422, сохранение файлов в tmp_path и command_id -> capture_id в app_state.
     """
-    session_factory, _ = test_env
+    session_factory, _, test_media_dir = test_env
     db = session_factory()
 
     inst = Installation(
@@ -478,7 +563,7 @@ def test_captures_upload_and_deduplication(
     )
     assert r_bad_inst.status_code == 404
 
-    # 3. Невалидные метаданные (невалидный JSON или схема) -> 422
+    # 3. Невалидные метаданные (невалидный JSON) -> 422
     r_422 = client.post(
         "/api/edge/captures",
         headers={"X-Edge-Key": TEST_EDGE_KEY},
@@ -487,7 +572,25 @@ def test_captures_upload_and_deduplication(
     )
     assert r_422.status_code == 422
 
-    # 4. Успешная загрузка первого кадра (201 Created)
+    # 4. Невалидный captured_at ("not-a-date") -> 422, а не 500 (Критерий 2)
+    meta_invalid_date = json.dumps(
+        {
+            "installation_id": inst_id,
+            "camera_hardware_id": "cam_capture_hw",
+            "captured_at": "not-a-date",
+            "is_manual": False,
+        }
+    )
+    r_bad_date = client.post(
+        "/api/edge/captures",
+        headers={"X-Edge-Key": TEST_EDGE_KEY},
+        data={"metadata": meta_invalid_date},
+        files={"raw_image": raw_file, "annotated_image": ann_file},
+    )
+    assert r_bad_date.status_code == 422
+    assert "detail" in r_bad_date.json()
+
+    # 5. Успешная загрузка первого кадра (201 Created)
     valid_meta = {
         "installation_id": inst_id,
         "camera_hardware_id": "cam_capture_hw",
@@ -507,10 +610,10 @@ def test_captures_upload_and_deduplication(
     cap_id = r_created.json()["capture_id"]
     assert cap_id is not None
 
-    # Проверяем связь command_id -> capture_id в памяти процесса (п. 6)
+    # Проверяем связь command_id -> capture_id в памяти процесса
     assert app_state.get_capture_by_command(42) == cap_id
 
-    # Проверяем БД и файлы
+    # Проверяем БД и файлы в test_media_dir (tmp_path)
     db = session_factory()
     cap = db.get(Capture, cap_id)
     assert cap.is_manual is True
@@ -520,14 +623,20 @@ def test_captures_upload_and_deduplication(
     assert len(cap.plant_measurements) == 1
     assert cap.plant_measurements[0].area_px == 1500.0
 
-    # Проверяем наличие файла на диске
-    server_media_path = Path("server") / cap.raw_image_path
-    assert server_media_path.is_file()
+    # Проверяем, что файл сохранён в изолированном test_media_dir
+    expected_raw_file = test_media_dir / str(inst_id) / f"raw_{cap_id}.jpg"
+    expected_ann_file = test_media_dir / str(inst_id) / f"ann_{cap_id}.jpg"
+    assert expected_raw_file.is_file()
+    assert expected_ann_file.is_file()
+
+    # Проверяем, что в рабочем server/media ничего не создавалось (Критерий 6)
+    assert not (Path("server/media") / str(inst_id)).exists()
+
     assert cap.raw_image_path.endswith(f"raw_{cap_id}.jpg")
     assert cap.annotated_image_path.endswith(f"ann_{cap_id}.jpg")
     db.close()
 
-    # 5. Повторная загрузка дубликата (те же installation_id, camera, captured_at) -> 200 OK
+    # 6. Повторная загрузка дубликата (те же installation_id, camera, captured_at) -> 200 OK
     valid_meta["command_id"] = 43  # новая команда, но тот же кадр
     r_dup = client.post(
         "/api/edge/captures",
@@ -548,7 +657,7 @@ def test_captures_upload_and_deduplication(
     assert total_meas == 1
     db.close()
 
-    # 6. Загрузка кадра для архивной установки -> успешно принимается (201)
+    # 7. Загрузка кадра для архивной установки -> успешно принимается (201)
     archived_meta = {
         "installation_id": archived_id,
         "camera_hardware_id": "cam_capture_hw",
@@ -563,9 +672,3 @@ def test_captures_upload_and_deduplication(
         files={"raw_image": raw_file, "annotated_image": ann_file},
     )
     assert r_arch.status_code == 201
-
-    # Очистка созданных медиафайлов теста
-    import shutil
-
-    shutil.rmtree(Path("server/media") / str(inst_id), ignore_errors=True)
-    shutil.rmtree(Path("server/media") / str(archived_id), ignore_errors=True)
