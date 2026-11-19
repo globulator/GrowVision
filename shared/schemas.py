@@ -122,7 +122,7 @@ class PlantMeasurementMeta(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     plant_index: int = 0
-    area_px: float
+    area_px: float = Field(..., ge=0)
 
 
 class CaptureMeta(BaseModel):
@@ -134,7 +134,7 @@ class CaptureMeta(BaseModel):
     camera_hardware_id: str
     captured_at: datetime | str
     is_manual: bool = False
-    aruco_area_px: float | None = None
+    aruco_area_px: float | None = Field(default=None, gt=0)
     command_id: int | None = None
     measurements: list[PlantMeasurementMeta] = Field(default_factory=list)
 
