@@ -1,9 +1,9 @@
 # Отчёт о реализации: Этап 5 — CLI-клиент
 
 - **Статус**: READY_FOR_QA
-- **Ветка**: `stage-5/cli`
+- **Ветка**: `stage-5/fixes`
 - **Компонент**: `cli`
-- **Карточка**: `docs/tasks/stage-5-cli.md`
+- **Карточка**: `docs/tasks/stage-5-fixes.md`
 - **Спецификация**: `docs/CLI_SPEC.md`
 - **Контракт API**: `docs/API_CONTRACT.md`
 
@@ -37,12 +37,21 @@
   `Ошибка (<контекст действия>): <дословный detail от сервера>\nРекомендация: <конкретное действие>`
 - Код возврата 1 при ошибках.
 
-### 1.6. Документация
-- Создано руководство пользователя `docs/USER_GUIDE.md` с подробным описанием установки, режимов запуска, команд и примеров.
+### 1.6. Доработка отображения телеметрии RPi (LIGHT-режим)
+- В `clients/cli/commands/system.py` реализован парсинг реальной структуры `rpi_telemetry` от `HeartbeatRequest`:
+  - `software`: `edge_version`, `python_version`, `model_name`;
+  - `hardware`: `board_model`, `os_info`, `uptime_sec`, `cpu_temp_c`, `cpu_usage_percent`, `ram_used_mb`, `ram_total_mb`, `disk_free_gb`, `gpio_mode`;
+  - Верхний уровень: `offline_queue_count`.
+- Сохранён fallback на плоский словарь для обратной совместимости.
+- Аптайм форматируется из секунд `uptime_sec` в `{ч} ч {мин} мин`.
+- Модель и ОС форматируются как `{board_model} ({os_info})`.
+- В `clients/cli/tests/test_system.py` обновлен тест `test_system_status_online` и добавлен `test_system_status_flat_fallback`.
+- В `tests/e2e/test_cli_e2e.py` добавлен сквозной тест `test_cli_e2e_system_status_telemetry`.
 
 ## 2. Результаты проверок
 
-- **Unit-тесты**: `timeout 300 ./clients/cli/.venv/bin/pytest clients/cli/tests -q` — **39 passed in 0.50s**.
+- **Unit-тесты CLI**: `timeout 300 ./clients/cli/.venv/bin/pytest clients/cli/tests -q` — **40 passed in 0.45s**.
+- **E2E-тесты CLI**: `timeout 300 ./server/.venv/bin/pytest tests/e2e/test_cli_e2e.py -q` — **5 passed in 9.29s**.
 - **Линтер**: `./server/.venv/bin/ruff check .` — **All checks passed!**
-- **Форматирование**: `./server/.venv/bin/ruff format --check .` — **99 files already formatted.**
-- **Изоляция импортов**: `grep -rn "from server|from shared|from edge_agent|import server|import shared" clients/cli` — **пусто (0 совпадений)**.
+- **Форматирование**: `./server/.venv/bin/ruff format --check .` — **104 files already formatted.**
+- **Изоляция импортов**: `grep -rn --include="*.py" "from server|from shared|from edge_agent|import server|import shared" clients/cli` — **пусто (0 совпадений)**.
