@@ -25,9 +25,11 @@ GrowVision/
 └── VERSION                     # Источник версии проекта
 ```
 
-## Быстрый старт: сервер и тесты
+## Быстрый старт
 
-### 1. Подготовка окружения
+### Сервер
+
+#### 1. Подготовка окружения сервера
 
 ```bash
 python3 -m venv server/.venv
@@ -35,21 +37,57 @@ server/.venv/bin/pip install -r server/requirements.txt -r requirements-dev.txt
 cp server/.env.example server/.env
 ```
 
-### 2. Запуск сервера
+#### 2. Запуск сервера
 
 ```bash
 server/.venv/bin/python -m server.main
 ```
 
-Документация OpenAPI (Swagger UI) доступна по адресу: `http://127.0.0.1:8000/docs`.
+- Веб-плеер таймлапса доступен по адресу: `http://127.0.0.1:8000/`
+- Документация OpenAPI (Swagger UI) доступна по адресу: `http://127.0.0.1:8000/docs`
 
-### 3. Запуск тестов
+#### 3. Запуск тестов сервера и E2E
 
 ```bash
 server/.venv/bin/pytest server/tests tests/e2e -q
 ```
 
-### 4. Проверка качества кода
+---
+
+### Консольный клиент (CLI)
+
+#### 1. Подготовка окружения CLI
+
+```bash
+python3 -m venv clients/cli/.venv
+clients/cli/.venv/bin/pip install -r clients/cli/requirements.txt -r requirements-dev.txt
+cp clients/cli/.env.example clients/cli/.env
+```
+
+#### 2. Запуск интерактивной оболочки (shell)
+
+```bash
+clients/cli/.venv/bin/python -m clients.cli.main shell
+```
+
+Внутри оболочки доступны все команды без префиксов (`unit list`, `snap take 1`, `system status`, `help` и др.).
+
+#### 3. Запуск одиночных команд
+
+```bash
+clients/cli/.venv/bin/python -m clients.cli.main unit list
+clients/cli/.venv/bin/python -m clients.cli.main version
+```
+
+#### 4. Запуск тестов CLI
+
+```bash
+clients/cli/.venv/bin/pytest clients/cli/tests -q
+```
+
+---
+
+### Проверка качества кода (линтер и форматирование)
 
 ```bash
 server/.venv/bin/ruff check .
@@ -59,6 +97,7 @@ server/.venv/bin/ruff format --check .
 ## Документация
 
 - [docs/PROJECT.md](file:///home/mcperchik/study/GrowVision/docs/PROJECT.md) — паспорт проекта и правила разработки
+- [docs/USER_GUIDE.md](file:///home/mcperchik/study/GrowVision/docs/USER_GUIDE.md) — руководство пользователя по работе с CLI
 - [docs/REPO_AND_VERSIONING.md](file:///home/mcperchik/study/GrowVision/docs/REPO_AND_VERSIONING.md) — структура монорепозитория и версионирование
 - [docs/DB_SCHEMA.md](file:///home/mcperchik/study/GrowVision/docs/DB_SCHEMA.md) — схема базы данных SQLite
 - [docs/API_CONTRACT.md](file:///home/mcperchik/study/GrowVision/docs/API_CONTRACT.md) — контракты Edge API и Client API
@@ -69,3 +108,4 @@ server/.venv/bin/ruff format --check .
 - [docs/stage_reports/stage-2.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-2.md) — отчёт по этапу 2
 - [docs/stage_reports/stage-3.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-3.md) — отчёт по этапу 3
 - [docs/stage_reports/stage-4.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-4.md) — отчёт по этапу 4
+- [docs/stage_reports/stage-5.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-5.md) — отчёт по этапу 5
