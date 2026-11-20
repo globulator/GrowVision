@@ -5,16 +5,21 @@ import pytest
 from edge_agent.config import EdgeConfig, load_config
 
 
-def test_default_config(tmp_path: Path):
+def test_default_config():
     """Проверка значений по умолчанию в конфигурации."""
     cfg = EdgeConfig()
     assert cfg.server_url == "http://127.0.0.1:8000"
     assert cfg.edge_api_key == ""
     assert cfg.hardware_mode == "mock"
     assert cfg.heartbeat_interval_sec == 30.0
+    assert cfg.command_poll_interval_sec == 2.0
     assert cfg.claim_poll_interval_sec == 2.0
     assert cfg.capture_interval_hours == 1
     assert cfg.debug_mode is False
+    assert cfg.relay_active_high is True
+    assert cfg.camera_warmup_frames == 5
+    assert cfg.relay_switch_delay_ms == 200
+    assert cfg.upload_timeout_sec == 60.0
 
 
 def test_validate_api_key():
@@ -24,7 +29,24 @@ def test_validate_api_key():
         cfg.validate_api_key()
 
     cfg_valid = EdgeConfig(edge_api_key="valid-secret")
-    cfg_valid.validate_api_key()  # Не должно вызывать исключений
+    cfg_valid.validate_api_key()
+
+
+def test_invalid_hardware_mode_raises_error(tmp_path: Path):
+    """Проверка падения при некорректном значении HARDWARE_MODE в файле."""
+    bad_env = tmp_path / "bad.env"
+    bad_env.write_text("HARDWARE_MODE=unsupported_mode\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Недопустимое значение HARDWARE_MODE"):
+        load_config(env_path=bad_env)
+
+
+def test_load_config_invalid_hardware_mode_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Проверка падения при недопустимом HARDWARE_MODE в env."""
+    monkeypatch.setenv("HARDWARE_MODE", "arduino_sim")
+    with pytest.raises(ValueError, match="Недопустимое значение HARDWARE_MODE"):
+        load_config(env_path=tmp_path / "test.env")
 
 
 def test_load_config_from_file(tmp_path: Path):
@@ -34,8 +56,12 @@ def test_load_config_from_file(tmp_path: Path):
         "SERVER_URL=https://custom-server.local:8443/\n"
         "EDGE_API_KEY=custom-key-999\n"
         "HARDWARE_MODE=mock\n"
+        "MODEL_PATH=/opt/models/custom_seg.onnx\n"
         "HEARTBEAT_INTERVAL_SEC=15\n"
-        "CLAIM_POLL_INTERVAL_SEC=1.5\n"
+        "COMMAND_POLL_INTERVAL_SEC=1.5\n"
+        "RELAY_SWITCH_DELAY_MS=350\n"
+        "CAMERA_WARMUP_FRAMES=7\n"
+        "RELAY_ACTIVE_HIGH=false\n"
         "CAPTURE_INTERVAL_HOURS=2\n"
         "DEBUG_MODE=true\n",
         encoding="utf-8",
@@ -45,8 +71,13 @@ def test_load_config_from_file(tmp_path: Path):
     assert cfg.server_url == "https://custom-server.local:8443"
     assert cfg.edge_api_key == "custom-key-999"
     assert cfg.hardware_mode == "mock"
+    assert cfg.model_path == Path("/opt/models/custom_seg.onnx")
+    assert cfg.model_name == "custom_seg.onnx"
     assert cfg.heartbeat_interval_sec == 15.0
-    assert cfg.claim_poll_interval_sec == 1.5
+    assert cfg.command_poll_interval_sec == 1.5
+    assert cfg.relay_switch_delay_ms == 350
+    assert cfg.camera_warmup_frames == 7
+    assert cfg.relay_active_high is False
     assert cfg.capture_interval_hours == 2
     assert cfg.debug_mode is True
 
@@ -55,11 +86,13 @@ def test_load_config_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     """Проверка переопределения значений через переменные окружения."""
     monkeypatch.setenv("SERVER_URL", "http://override-server:9000")
     monkeypatch.setenv("EDGE_API_KEY", "override-key")
-    monkeypatch.setenv("HARDWARE_MODE", "rpi")
+    monkeypatch.setenv("HARDWARE_MODE", "mock")
+    monkeypatch.setenv("COMMAND_POLL_INTERVAL_SEC", "3.5")
     monkeypatch.setenv("DEBUG_MODE", "1")
 
     cfg = load_config(env_path=tmp_path / "non_existent.env")
     assert cfg.server_url == "http://override-server:9000"
     assert cfg.edge_api_key == "override-key"
-    assert cfg.hardware_mode == "rpi"
+    assert cfg.hardware_mode == "mock"
+    assert cfg.command_poll_interval_sec == 3.5
     assert cfg.debug_mode is True
