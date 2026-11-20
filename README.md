@@ -103,7 +103,7 @@ cp edge_agent/.env.example edge_agent/.env
 HARDWARE_MODE=mock edge_agent/.venv/bin/python -m edge_agent.main
 ```
 
-Для развертывания на реальной плате Raspberry Pi 5 см. [docs/DEPLOYMENT_RPI.md](file:///home/mcperchik/study/GrowVision/docs/DEPLOYMENT_RPI.md) и схему подключения [docs/HARDWARE_WIRING.md](file:///home/mcperchik/study/GrowVision/docs/HARDWARE_WIRING.md).
+Для развертывания на реальной плате Raspberry Pi 5 см. руководство [docs/DEPLOYMENT_RPI.md](file:///home/mcperchik/study/GrowVision/docs/DEPLOYMENT_RPI.md), схему подключения [docs/HARDWARE_WIRING.md](file:///home/mcperchik/study/GrowVision/docs/HARDWARE_WIRING.md) и задачу проверки [docs/user_tasks.md](file:///home/mcperchik/study/GrowVision/docs/user_tasks.md) (T-001).
 
 #### 3. Запуск тестов Edge-агента
 

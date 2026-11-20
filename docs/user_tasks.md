@@ -3,30 +3,38 @@
 ## Открытые задачи
 
 ### T-001 | Статус: [ ] не выполнена | Блокирует: приемку этапа 6 (v0.3.0)
-**Зачем:** Подтвердить корректность работы Edge-агента с реальными GPIO-реле (свет, вспышка), USB/CSI-камерами и нейросетевой сегментацией на микрокомпьютере Raspberry Pi 5.
+**Зачем:** Подтвердить корректность работы Edge-агента в строгом боевом режиме (`HARDWARE_MODE=rpi`) с реальными GPIO-реле (свет, вспышка), USB-камерами (UVC, V4L2) и нейросетевой сегментацией на микрокомпьютере Raspberry Pi 5.
 **Шаги:**
-1. Подключите релейный модуль и камеры к Raspberry Pi 5 по схеме [docs/HARDWARE_WIRING.md](file:///home/mcperchik/study/GrowVision/docs/HARDWARE_WIRING.md).
-2. Настройте системные пакеты и права пользователя на Raspberry Pi 5 согласно [docs/DEPLOYMENT_RPI.md](file:///home/mcperchik/study/GrowVision/docs/DEPLOYMENT_RPI.md):
+1. Подключите релейный модуль и USB-камеры к Raspberry Pi 5 по схеме [docs/HARDWARE_WIRING.md](file:///home/mcperchik/study/GrowVision/docs/HARDWARE_WIRING.md). Убедитесь, что используются USB-камеры с поддержкой UVC (CSI-камеры не поддерживаются драйвером V4L2).
+2. Проверьте, что в системе определились камеры с постоянными путями:
+   ```bash
+   ls -la /dev/v4l/by-id/*-video-index0
+   ```
+3. Настройте системные пакеты и права пользователя на Raspberry Pi 5 согласно [docs/DEPLOYMENT_RPI.md](file:///home/mcperchik/study/GrowVision/docs/DEPLOYMENT_RPI.md):
    ```bash
    sudo apt install -y git python3-venv python3-pip v4l-utils libgl1 libglib2.0-0 python3-gpiozero python3-lgpio
    sudo usermod -aG video,gpio $USER
    ```
-3. Склонируйте репозиторий, создайте виртуальное окружение и установите зависимости:
+4. Склонируйте репозиторий, создайте виртуальное окружение и установите зависимости:
    ```bash
    python3 -m venv edge_agent/.venv
    edge_agent/.venv/bin/pip install -r edge_agent/requirements.txt
    edge_agent/.venv/bin/pip install opencv-python-headless onnxruntime gpiozero lgpio
    ```
-4. Создайте `edge_agent/.env` на базе `edge_agent/.env.example`, настроив `SERVER_URL`, `EDGE_API_KEY` и `HARDWARE_MODE=rpi`.
-5. Поместите файл обученной ONNX-модели в директорию `edge_agent/models/model.onnx`.
-6. Запустите агент:
+5. Скопируйте файл конфигурации `edge_agent/.env.example` в `edge_agent/.env`:
+   - Задайте рабочий `SERVER_URL` и общий `EDGE_API_KEY`.
+   - Укажите `HARDWARE_MODE=rpi`.
+   - Проверьте полярность реле: `RELAY_ACTIVE_HIGH=true` (или `false`, если плата с опторазвязкой управляется низким уровнем).
+   - Задайте путь к модели: `MODEL_PATH=edge_agent/models/model.onnx`.
+6. Поместите файл обученной ONNX-модели в директорию `edge_agent/models/model.onnx` (при отсутствии файла модель помечается `none`, а замеры площади передаются пустыми `measurements: []` без вымышленных значений).
+7. Запустите агент:
    ```bash
    edge_agent/.venv/bin/python -m edge_agent.main
    ```
 **Как проверить, что готово:**
-1. Выполните проверку статуса: `clients/cli/.venv/bin/python -m clients.cli.main system status` — статус `RPi: online`, отображаются реальные параметры платы (температура CPU, модель платы, аптайм).
-2. Выполните поиск камер: `clients/cli/.venv/bin/python -m clients.cli.main camera scan` — камеры обнаружены и зарегистрированы.
-3. Сделайте пробный снимок: `clients/cli/.venv/bin/python -m clients.cli.main snap take 1` — реле вспышки срабатывает, получен кадр с замером площади.
-**Если не получилось:** Пришлите последние 50 строк лога агента (`journalctl -u growvision-edge -n 50` или вывод терминала), а также вывод системных сообщений ядра `dmesg | tail -n 30`.
+1. Проверьте телеметрию: `clients/cli/.venv/bin/python -m clients.cli.main system status` — статус `RPi: online`, реальные температура CPU, аптайм, модель платы Raspberry Pi 5 и имя загруженной ONNX-модели в блоке ПО RPi.
+2. Проверьте обнаружение камер: `clients/cli/.venv/bin/python -m clients.cli.main camera scan` — найдены камеры по стабильным ID из `/dev/v4l/by-id`.
+3. Выполните пробный снимок: `clients/cli/.venv/bin/python -m clients.cli.main snap take 1` — основной свет временно выключается, вспышка включается, происходит съемка всех камер установки, затем свет возвращается в исходное состояние, а снимок и замеры сохраняются на сервере.
+**Если не получилось:** Пришлите последние 50 строк лога агента (`journalctl -u growvision-edge -n 50` или консольный вывод), а также системные логи ядра `dmesg | tail -n 30`.
 
 ## Выполненные задачи
