@@ -1,3 +1,6 @@
+import time
+from typing import Any
+
 import httpx
 
 from shared.logger import get_logger
@@ -20,11 +23,13 @@ class EdgeAPIClient:
         base_url: str,
         api_key: str,
         timeout: float = 15.0,
+        upload_timeout: float = 60.0,
         transport: httpx.BaseTransport | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self.upload_timeout = upload_timeout
         self.transport = transport
 
     def _get_headers(self) -> dict[str, str]:
@@ -33,12 +38,12 @@ class EdgeAPIClient:
             "X-Edge-Key": self.api_key,
         }
 
-    def _create_client(self) -> httpx.Client:
+    def _create_client(self, timeout: float | None = None) -> httpx.Client:
         """Создает экземпляр синхронного httpx.Client."""
         return httpx.Client(
             base_url=self.base_url,
             headers=self._get_headers(),
-            timeout=self.timeout,
+            timeout=timeout if timeout is not None else self.timeout,
             transport=self.transport,
         )
 
@@ -87,51 +92,66 @@ class EdgeAPIClient:
             logger.error(f"Ошибка при получении команд claim: {exc}")
             return []
 
-    def send_command_result(self, command_id: int, result: CommandResult) -> bool:
-        """Отправляет отчет о выполнении команды: POST /api/edge/commands/{command_id}/result."""
+    def send_command_result(
+        self,
+        command_id: int,
+        result: CommandResult,
+        max_retries: int = 3,
+        retry_delay_sec: float = 1.0,
+    ) -> bool:
+        """Отправляет отчет о выполнении команды: POST /api/edge/commands/{command_id}/result.
+
+        Выполняет до max_retries (по умолчанию 3) попыток при сетевых сбоях.
+        """
         url = f"/api/edge/commands/{command_id}/result"
-        try:
-            with self._create_client() as client:
-                resp = client.post(
-                    url,
-                    content=result.model_dump_json(),
-                    headers={"Content-Type": "application/json"},
-                )
-                if resp.status_code == 200:
-                    logger.info(
-                        f"Отчет по команде #{command_id} успешно доставлен: {result.status}"
+        payload_json = result.model_dump_json()
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                with self._create_client() as client:
+                    resp = client.post(
+                        url,
+                        content=payload_json,
+                        headers={"Content-Type": "application/json"},
                     )
-                    return True
-                if resp.status_code == 409:
+                    if resp.status_code == 200:
+                        logger.info(
+                            f"Отчет по команде #{command_id} успешно доставлен: {result.status}"
+                        )
+                        return True
+                    if resp.status_code == 409:
+                        logger.warning(
+                            f"Команда #{command_id} уже не running (409 Conflict, возможно timeout). Отчет отброшен."
+                        )
+                        return False
                     logger.warning(
-                        f"Команда #{command_id} уже не running (409 Conflict, возможно timeout). Отчет отброшен."
+                        f"Отправка результата #{command_id} вернула {resp.status_code}: {resp.text}"
                     )
                     return False
+            except httpx.RequestError as exc:
                 logger.warning(
-                    f"Отправка результата команды #{command_id} вернула {resp.status_code}: {resp.text}"
+                    f"Ошибка сети при отправке результата #{command_id} (попытка {attempt}/{max_retries}): {exc}"
+                )
+                if attempt < max_retries and retry_delay_sec > 0:
+                    time.sleep(retry_delay_sec)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    f"Неожиданная ошибка при отправке результата #{command_id}: {exc}"
                 )
                 return False
-        except httpx.RequestError as exc:
-            logger.warning(
-                f"Ошибка сети при отправке результата команды #{command_id}: {exc}"
-            )
-            return False
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                f"Неожиданная ошибка при отправке результата #{command_id}: {exc}"
-            )
-            return False
+
+        logger.error(
+            f"Не удалось отправить результат команды #{command_id} после {max_retries} попыток"
+        )
+        return False
 
     def upload_capture(
         self,
         metadata: CaptureMeta,
         raw_bytes: bytes,
         annotated_bytes: bytes,
-    ) -> tuple[int, dict[str, str | int]]:
-        """Загружает кадр и замеры на сервер: POST /api/edge/captures.
-
-        Возвращает (status_code, response_json). При ошибке соединения status_code = 0.
-        """
+    ) -> tuple[int, dict[str, Any]]:
+        """Загружает кадр и замеры на сервер: POST /api/edge/captures (таймаут 60 с)."""
         url = "/api/edge/captures"
         data = {
             "metadata": metadata.model_dump_json(),
@@ -141,7 +161,8 @@ class EdgeAPIClient:
             "annotated_image": ("ann.jpg", annotated_bytes, "image/jpeg"),
         }
         try:
-            with self._create_client() as client:
+            # Используем upload_timeout (60 с)
+            with self._create_client(timeout=self.upload_timeout) as client:
                 resp = client.post(url, data=data, files=files)
                 try:
                     resp_json = resp.json()

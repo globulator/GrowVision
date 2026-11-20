@@ -1,4 +1,5 @@
 import contextlib
+import os
 import platform
 import shutil
 import threading
@@ -31,24 +32,37 @@ MOCK_JPEG_FRAME = (
 class HardwareManager:
     """Менеджер аппаратного обеспечения (GPIO, камеры, телеметрия)."""
 
-    def __init__(self, mode: str = "mock"):
+    def __init__(
+        self,
+        mode: str = "mock",
+        relay_active_high: bool = True,
+        v4l_by_id_dir: Path | None = None,
+        sys_dir: Path | None = None,
+    ):
         self.mode = mode.lower()
+        if self.mode not in ("rpi", "mock"):
+            raise ValueError(
+                f"Недопустимый режим HARDWARE_MODE='{self.mode}'. Допустимы только 'rpi' или 'mock'."
+            )
+
+        self.relay_active_high = relay_active_high
+        self.v4l_by_id_dir = v4l_by_id_dir or Path("/dev/v4l/by-id")
+        self.sys_dir = sys_dir or Path("/sys")
+
         self.lock = threading.Lock()
         self._gpio_devices: dict[int, Any] = {}
         self._mock_pins: dict[int, bool] = {}
-        self._gpio_available = False
 
         if self.mode == "rpi":
             try:
                 import gpiozero  # noqa: F401
 
-                self._gpio_available = True
                 logger.info("Инициализирован аппаратный режим RPi (gpiozero доступен)")
-            except ImportError:
-                logger.warning(
-                    "gpiozero не найден. Переключение в fallback mock для GPIO."
-                )
-                self.mode = "mock"
+            except ImportError as exc:
+                # Строго без тихого отката в mock!
+                raise RuntimeError(
+                    "В режиме HARDWARE_MODE=rpi необходима библиотека gpiozero (python3-gpiozero / python3-lgpio)."
+                ) from exc
 
     def acquire_lock(self, blocking: bool = True, timeout: float = -1.0) -> bool:
         """Захватывает аппаратный мьютекс."""
@@ -60,32 +74,34 @@ class HardwareManager:
             self.lock.release()
 
     def get_pin_state(self, pin: int) -> bool:
-        """Возвращает текущее состояние пина (ВКЛ / ВЫКЛ)."""
-        if self.mode == "rpi" and self._gpio_available:
+        """Возвращает логическое состояние пина (True = включено, False = выключено)."""
+        if self.mode == "rpi":
             dev = self._get_gpio_device(pin)
             return bool(dev.value) if dev else False
         return self._mock_pins.get(pin, False)
 
     def _get_gpio_device(self, pin: int) -> Any:
-        """Получает или создает объект OutputDevice для указанного пина."""
+        """Получает или создает объект OutputDevice для указанного пина с учетом полярности."""
         if pin not in self._gpio_devices:
             try:
                 from gpiozero import OutputDevice
 
                 self._gpio_devices[pin] = OutputDevice(
-                    pin, active_high=True, initial_value=False
+                    pin,
+                    active_high=self.relay_active_high,
+                    initial_value=False,
                 )
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.error(f"Ошибка инициализации GPIO пина {pin}: {e}")
-                return None
+                raise
         return self._gpio_devices[pin]
 
     def set_pin(self, pin: int, state: bool) -> None:
-        """Устанавливает логическое состояние пина."""
+        """Устанавливает логическое состояние пина (True = ВКЛ, False = ВЫКЛ)."""
         logger.debug(
-            f"[GPIO] Pin {pin} -> {'ON' if state else 'OFF'} (mode={self.mode})"
+            f"[GPIO] Pin {pin} -> {'ON' if state else 'OFF'} (active_high={self.relay_active_high}, mode={self.mode})"
         )
-        if self.mode == "rpi" and self._gpio_available:
+        if self.mode == "rpi":
             dev = self._get_gpio_device(pin)
             if dev:
                 if state:
@@ -109,15 +125,27 @@ class HardwareManager:
         for pin in pins:
             self.set_pin(pin, True)
         try:
-            time.sleep(duration)
+            if duration > 0:
+                time.sleep(duration)
         finally:
             for pin in pins:
                 self.set_pin(pin, False)
             logger.info(f"[RELAY_TEST] Пины {pins} выключены")
 
-    def scan_cameras(self) -> list[DetectedCamera]:
-        """Сканирует подключенные камеры."""
-        if self.mode == "mock":
+    def scan_cameras(
+        self,
+        v4l_by_id_dir: Path | None = None,
+        sys_dir: Path | None = None,
+    ) -> list[DetectedCamera]:
+        """Сканирует подключенные камеры через /dev/v4l/by-id (*-video-index0)."""
+        search_dir = v4l_by_id_dir or self.v4l_by_id_dir
+
+        # В mock-режиме при системном пути по умолчанию всегда отдаем детерминированные моки
+        if self.mode == "mock" and (
+            search_dir == Path("/dev/v4l/by-id")
+            or not search_dir.exists()
+            or not list(search_dir.glob("*-video-index0"))
+        ):
             return [
                 DetectedCamera(
                     hardware_id="mock-usb-cam-1",
@@ -129,42 +157,20 @@ class HardwareManager:
                 ),
             ]
 
-        # Сканирование в режиме RPi через sysfs / video4linux
         cameras: list[DetectedCamera] = []
-        v4l_dir = Path("/sys/class/video4linux")
-        if v4l_dir.exists():
-            for dev_path in sorted(v4l_dir.glob("video*")):
-                try:
-                    name_file = dev_path / "name"
-                    dev_num = dev_path.name
-                    camera_name = (
-                        name_file.read_text(encoding="utf-8").strip()
-                        if name_file.exists()
-                        else f"Camera {dev_num}"
-                    )
-
-                    # Формируем стабильный hardware_id
-                    # Проверяем наличие uevent или device symlink
-                    device_link = dev_path / "device"
-                    hw_id = f"v4l2-{dev_num}"
-                    if device_link.exists():
-                        with contextlib.suppress(Exception):
-                            resolved = device_link.resolve().name
-                            hw_id = f"v4l2-{resolved}-{dev_num}"
-
-                    cameras.append(
-                        DetectedCamera(hardware_id=hw_id, auto_name=camera_name)
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.debug(f"Ошибка при сканировании {dev_path}: {e}")
-
-        if not cameras:
-            # Fallback на проверку /dev/video*
-            for dev in sorted(Path("/dev").glob("video*")):
+        if search_dir.exists():
+            for cam_file in sorted(search_dir.glob("*-video-index0")):
+                hw_id = cam_file.name
+                # Формируем автоимя из hardware_id
+                clean_name = (
+                    hw_id.replace("usb-", "")
+                    .replace("-video-index0", "")
+                    .replace("_", " ")
+                )
                 cameras.append(
                     DetectedCamera(
-                        hardware_id=f"dev-{dev.name}",
-                        auto_name=f"V4L2 {dev.name}",
+                        hardware_id=hw_id,
+                        auto_name=clean_name,
                     )
                 )
 
@@ -173,54 +179,81 @@ class HardwareManager:
     def capture_frame(
         self,
         camera_hardware_id: str,
-        flash_pin: int | None = None,
+        warmup_frames: int = 5,
     ) -> bytes:
-        """Захватывает кадр с камеры со вспышкой (если пин вспышки передан)."""
-        if flash_pin is not None:
-            self.set_flash(flash_pin, True)
+        """Захватывает сырой кадр с указанной камеры (с прогревом)."""
+        if self.mode == "mock":
+            return MOCK_JPEG_FRAME
+
+        # В режиме RPi строгая проверка OpenCV
+        try:
+            import cv2  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "В режиме HARDWARE_MODE=rpi необходима библиотека opencv-python-headless для захвата кадров."
+            ) from exc
+
+        cam_by_id_file = self.v4l_by_id_dir / camera_hardware_id
+        if not cam_by_id_file.exists():
+            raise RuntimeError(
+                f"Камера с hardware_id '{camera_hardware_id}' не найдена в {self.v4l_by_id_dir}. "
+                "Откат на дефолтные устройства запрещен."
+            )
+
+        real_dev_path = os.path.realpath(str(cam_by_id_file))
+        logger.debug(f"Открытие камеры {camera_hardware_id} по пути {real_dev_path}")
+
+        cap = cv2.VideoCapture(real_dev_path)
+        if not cap.isOpened():
+            raise RuntimeError(
+                f"Не удалось открыть видеоустройство {real_dev_path} ({camera_hardware_id})"
+            )
 
         try:
-            if self.mode == "mock":
-                # В mock-режиме возвращаем тестовый JPEG
-                return MOCK_JPEG_FRAME
+            # Прогрев камеры: считываем и отбрасываем первые N кадров
+            for _ in range(max(0, warmup_frames)):
+                cap.read()
 
-            # В режиме RPi пробуем захват через OpenCV
-            try:
-                import cv2  # type: ignore
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                raise RuntimeError(
+                    f"Не удалось прочитать целевой кадр с камеры {camera_hardware_id}"
+                )
 
-                # Определяем индекс видеоустройства
-                dev_idx = 0
-                if "video" in camera_hardware_id:
-                    digits = [
-                        c for c in camera_hardware_id.split("video")[-1] if c.isdigit()
-                    ]
-                    if digits:
-                        dev_idx = int("".join(digits))
-
-                cap = cv2.VideoCapture(dev_idx)
-                if not cap.isOpened():
-                    raise RuntimeError(
-                        f"Не удалось открыть камеру с индексом {dev_idx}"
-                    )
-
-                ret, frame = cap.read()
-                cap.release()
-
-                if not ret or frame is None:
-                    raise RuntimeError("Не удалось прочитать кадр с камеры")
-
-                success, enc_frame = cv2.imencode(".jpg", frame)
-                if not success:
-                    raise RuntimeError("Ошибка кодирования кадра в JPEG")
-                return enc_frame.tobytes()
-
-            except ImportError:
-                logger.warning("OpenCV не установлен в режиме RPi, возврат mock кадра")
-                return MOCK_JPEG_FRAME
-
+            success, enc_frame = cv2.imencode(".jpg", frame)
+            if not success:
+                raise RuntimeError("Ошибка кодирования кадра в JPEG")
+            return enc_frame.tobytes()
         finally:
-            if flash_pin is not None:
-                self.set_flash(flash_pin, False)
+            cap.release()
+
+    def capture_frame_with_sequence(
+        self,
+        camera_hardware_id: str,
+        light_pin: int,
+        flash_pin: int,
+        warmup_frames: int = 5,
+        switch_delay_ms: int = 200,
+    ) -> bytes:
+        """Последовательность съемки кадра со вспышкой:
+
+        1. Выключение основного света (light=0).
+        2. Включение вспышки (flash=1).
+        3. Задержка стабилизации света (switch_delay_ms).
+        4. Захват кадра с прогревом (warmup_frames).
+        5. Гарантированный возврат в исходное состояние (light=1, flash=0) в finally.
+        """
+        try:
+            self.set_light(light_pin, False)
+            self.set_flash(flash_pin, True)
+
+            if switch_delay_ms > 0:
+                time.sleep(switch_delay_ms / 1000.0)
+
+            return self.capture_frame(camera_hardware_id, warmup_frames=warmup_frames)
+        finally:
+            self.set_flash(flash_pin, False)
+            self.set_light(light_pin, True)
 
     def cleanup(self) -> None:
         """Очистка используемых ресурсов GPIO."""
@@ -248,7 +281,6 @@ def get_hardware_telemetry(gpio_mode: str = "mock") -> HeartbeatHardware:
     os_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
 
     # 3. Uptime
-    uptime_sec = 0
     uptime_path = Path("/proc/uptime")
     if uptime_path.exists():
         try:

@@ -36,16 +36,22 @@ class EdgeOrchestrator:
         self.client = client or EdgeAPIClient(
             base_url=config.server_url,
             api_key=config.edge_api_key,
+            upload_timeout=config.upload_timeout_sec,
         )
-        self.hardware = hardware or HardwareManager(mode=config.hardware_mode)
-        model_file = config.models_dir / config.model_name
+        self.hardware = hardware or HardwareManager(
+            mode=config.hardware_mode,
+            relay_active_high=config.relay_active_high,
+            v4l_by_id_dir=config.v4l_by_id_dir,
+            sys_dir=config.sys_dir,
+        )
         self.vision = vision or VisionPipeline(
-            model_path=model_file,
+            model_path=config.model_path,
             mock_mode=(config.hardware_mode == "mock"),
         )
 
         self.running = threading.Event()
         self.is_scheduled_capture_running = threading.Event()
+        self._flush_lock = threading.Lock()
 
         # Динамические настройки, получаемые от сервера
         self.capture_interval_hours = config.capture_interval_hours
@@ -56,7 +62,7 @@ class EdgeOrchestrator:
         self._command_thread: threading.Thread | None = None
         self._scheduler_thread: threading.Thread | None = None
 
-        self._last_scheduled_capture_time = 0.0
+        self._last_scheduled_hour: tuple[int, int, int, int] | None = None
 
     def start(self) -> None:
         """Запускает фоновые потоки оркестратора."""
@@ -100,16 +106,47 @@ class EdgeOrchestrator:
         self.hardware.cleanup()
         logger.info("Edge-агент остановлен")
 
+    def init_installations_light(self) -> None:
+        """Включает основной свет и выключает вспышку для активных установок (нормальное состояние)."""
+        for inst in self.active_installations:
+            self.hardware.set_light(inst.light_gpio_pin, True)
+            self.hardware.set_flash(inst.flash_gpio_pin, False)
+
+    def trigger_async_flush(self) -> None:
+        """Запускает выгрузку офлайн-очереди в отдельном потоке под замком (до 10 пакетов)."""
+
+        def _worker():
+            if not self._flush_lock.acquire(blocking=False):
+                logger.debug("Сброс очереди уже выполняется в другом потоке")
+                return
+            try:
+                sent, skipped, failed = flush_queue(
+                    self.config.offline_queue_dir,
+                    self.client.upload_capture,
+                    max_batch_size=10,
+                )
+                if sent > 0 or failed > 0:
+                    logger.info(
+                        f"Сброс офлайн-очереди (поток): отправлено={sent}, оставлено={skipped}, ошибок={failed}"
+                    )
+            finally:
+                self._flush_lock.release()
+
+        threading.Thread(target=_worker, name="QueueFlushWorker", daemon=True).start()
+
     def perform_heartbeat(self) -> None:
         """Выполняет одну итерацию отправки Heartbeat и применения конфигурации."""
         software_info = HeartbeatSoftware(
             edge_version=get_app_version(),
             python_version=platform.python_version(),
-            model_name=self.config.model_name,
+            model_name=self.vision.get_model_name(),
         )
         hardware_info = get_hardware_telemetry(gpio_mode=self.config.hardware_mode)
         queue_count = get_queue_count(self.config.offline_queue_dir)
-        detected_cams = self.hardware.scan_cameras()
+        detected_cams = self.hardware.scan_cameras(
+            v4l_by_id_dir=self.config.v4l_by_id_dir,
+            sys_dir=self.config.sys_dir,
+        )
 
         req = HeartbeatRequest(
             software=software_info,
@@ -128,16 +165,12 @@ class EdgeOrchestrator:
                 f"установок={len(self.active_installations)}"
             )
 
-            # Если в очереди есть неотправленные пакеты, пробуем выгрузить
+            # Переводим реле активных установок в нормальное состояние (свет ВКЛ)
+            self.init_installations_light()
+
+            # Если в очереди есть неотправленные пакеты, запускаем асинхронный сброс
             if queue_count > 0:
-                sent, skipped, failed = flush_queue(
-                    self.config.offline_queue_dir,
-                    self.client.upload_capture,
-                )
-                if sent > 0 or failed > 0:
-                    logger.info(
-                        f"Сброс офлайн-очереди: отправлено={sent}, оставлено={skipped}, ошибок={failed}"
-                    )
+                self.trigger_async_flush()
 
     def _heartbeat_loop(self) -> None:
         """Периодический цикл отправки Heartbeat."""
@@ -153,7 +186,7 @@ class EdgeOrchestrator:
     def _command_poll_loop(self) -> None:
         """Периодический цикл опроса команд."""
         while self.running.is_set():
-            time.sleep(self.config.claim_poll_interval_sec)
+            time.sleep(self.config.command_poll_interval_sec)
             if not self.running.is_set():
                 break
             try:
@@ -269,8 +302,8 @@ class EdgeOrchestrator:
             ),
         )
 
-    def _handle_relay_test(self, cmd: CommandItem) -> None:
-        """Обработка команды RELAY_TEST (3 секунды)."""
+    def _handle_relay_test(self, cmd: CommandItem, duration: float = 3.0) -> None:
+        """Обработка команды RELAY_TEST (длительность параметризована)."""
         targets = []
         if cmd.is_global and cmd.installations:
             targets = cmd.installations
@@ -291,7 +324,7 @@ class EdgeOrchestrator:
             )
             return
 
-        self.hardware.test_relay(pins, duration=3.0)
+        self.hardware.test_relay(pins, duration=duration)
         self.client.send_command_result(
             cmd.id,
             CommandResult(
@@ -303,7 +336,10 @@ class EdgeOrchestrator:
 
     def _handle_scan_cameras(self, cmd: CommandItem) -> None:
         """Обработка команды SCAN_CAMERAS."""
-        scanned = self.hardware.scan_cameras()
+        scanned = self.hardware.scan_cameras(
+            v4l_by_id_dir=self.config.v4l_by_id_dir,
+            sys_dir=self.config.sys_dir,
+        )
         self.client.send_command_result(
             cmd.id,
             CommandResult(
@@ -314,7 +350,7 @@ class EdgeOrchestrator:
         )
 
     def _handle_snap(self, cmd: CommandItem) -> None:
-        """Обработка команды SNAP."""
+        """Обработка команды SNAP (все камеры установки, последовательность реле, загрузка кадра перед result)."""
         targets = []
         if cmd.is_global and cmd.installations:
             targets = cmd.installations
@@ -333,6 +369,7 @@ class EdgeOrchestrator:
 
         success_count = 0
         last_error_message = ""
+        debug_log_lines: list[str] = []
 
         for inst in targets:
             cam_ids = inst.camera_hardware_ids
@@ -340,55 +377,69 @@ class EdgeOrchestrator:
                 last_error_message = f"У установки #{inst.id} нет привязанных камер"
                 continue
 
-            cam_hw_id = cam_ids[0]
-            try:
-                # 1. Захват кадра с использованием вспышки
-                raw_bytes = self.hardware.capture_frame(
-                    cam_hw_id,
-                    flash_pin=inst.flash_gpio_pin,
-                )
+            inst_captured_count = 0
 
-                # 2. Компьютерное зрение: детекция маркера и сегментация
-                ann_bytes, aruco_area, measurements = self.vision.process_capture(
-                    raw_bytes
-                )
-
-                # 3. Формирование метаданных
-                now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-                meta = CaptureMeta(
-                    installation_id=inst.id,
-                    camera_hardware_id=cam_hw_id,
-                    captured_at=now_str,
-                    is_manual=True,
-                    aruco_area_px=aruco_area,
-                    command_id=cmd.id,
-                    measurements=measurements,
-                )
-
-                # 4. Загрузка кадра на сервер (СТРОГО перед отправкой result)
-                status_code, resp_body = self.client.upload_capture(
-                    meta,
-                    raw_bytes,
-                    ann_bytes,
-                )
-
-                if status_code in (200, 201):
-                    success_count += 1
-                elif status_code == 0:
-                    # Сетевая ошибка — сохраняем в офлайн-очередь
-                    save_to_queue(
-                        self.config.offline_queue_dir, meta, raw_bytes, ann_bytes
+            # Снимаем ВСЕ привязанные камеры данной установки
+            for cam_hw_id in cam_ids:
+                try:
+                    # 1. Захват кадра с последовательностью переключения реле (light=0, flash=1, delay, capture, light=1, flash=0)
+                    raw_bytes = self.hardware.capture_frame_with_sequence(
+                        camera_hardware_id=cam_hw_id,
+                        light_pin=inst.light_gpio_pin,
+                        flash_pin=inst.flash_gpio_pin,
+                        warmup_frames=self.config.camera_warmup_frames,
+                        switch_delay_ms=self.config.relay_switch_delay_ms,
                     )
-                    last_error_message = (
-                        "Ошибка сети при отправке кадра (кадр сохранен локально)"
-                    )
-                else:
-                    detail = resp_body.get("detail", f"Код сервера {status_code}")
-                    last_error_message = f"Ошибка загрузки кадра: {detail}"
 
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"Ошибка при захвате кадра установки #{inst.id}: {e}")
-                last_error_message = str(e)
+                    # 2. Компьютерное зрение
+                    ann_bytes, aruco_area, measurements = self.vision.process_capture(
+                        raw_bytes
+                    )
+
+                    # 3. Метаданные
+                    now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    meta = CaptureMeta(
+                        installation_id=inst.id,
+                        camera_hardware_id=cam_hw_id,
+                        captured_at=now_str,
+                        is_manual=True,
+                        aruco_area_px=aruco_area,
+                        command_id=cmd.id,
+                        measurements=measurements,
+                    )
+
+                    # 4. Загрузка кадра на сервер строго перед отправкой result
+                    status_code, resp_body = self.client.upload_capture(
+                        meta,
+                        raw_bytes,
+                        ann_bytes,
+                    )
+
+                    if status_code in (200, 201):
+                        success_count += 1
+                        inst_captured_count += 1
+                    elif status_code == 0:
+                        save_to_queue(
+                            self.config.offline_queue_dir, meta, raw_bytes, ann_bytes
+                        )
+                        last_error_message = (
+                            "Ошибка сети при отправке кадра (кадр сохранен локально)"
+                        )
+                    else:
+                        detail = resp_body.get("detail", f"Код сервера {status_code}")
+                        last_error_message = f"Ошибка загрузки кадра: {detail}"
+
+                except Exception as e:  # noqa: BLE001
+                    logger.error(
+                        f"Ошибка при захвате кадра {cam_hw_id} (установка #{inst.id}): {e}"
+                    )
+                    last_error_message = str(e)
+
+            debug_log_lines.append(
+                f"[GPIO] Inst#{inst.id}: light=0, flash=1 -> captured {inst_captured_count} frames"
+            )
+
+        combined_debug_log = "; ".join(debug_log_lines)
 
         if success_count > 0:
             self.client.send_command_result(
@@ -396,6 +447,7 @@ class EdgeOrchestrator:
                 CommandResult(
                     status="done",
                     result_message=f"Снимок выполнен успешно ({success_count} кадр.)",
+                    debug_log_line=combined_debug_log,
                 ),
             )
         else:
@@ -404,6 +456,7 @@ class EdgeOrchestrator:
                 CommandResult(
                     status="error",
                     result_message=last_error_message or "Не удалось выполнить снимок",
+                    debug_log_line=combined_debug_log,
                 ),
             )
 
@@ -423,9 +476,12 @@ class EdgeOrchestrator:
             for inst in self.active_installations:
                 for cam_hw_id in inst.camera_hardware_ids:
                     try:
-                        raw_bytes = self.hardware.capture_frame(
-                            cam_hw_id,
+                        raw_bytes = self.hardware.capture_frame_with_sequence(
+                            camera_hardware_id=cam_hw_id,
+                            light_pin=inst.light_gpio_pin,
                             flash_pin=inst.flash_gpio_pin,
+                            warmup_frames=self.config.camera_warmup_frames,
+                            switch_delay_ms=self.config.relay_switch_delay_ms,
                         )
                         ann_bytes, aruco_area, measurements = (
                             self.vision.process_capture(raw_bytes)
@@ -465,26 +521,25 @@ class EdgeOrchestrator:
         finally:
             self.hardware.release_lock()
             self.is_scheduled_capture_running.clear()
-            self._last_scheduled_capture_time = time.time()
             logger.info("Плановая автосъемка завершена")
-
-            # Пробуем выгрузить очередь при наличии связи
-            flush_queue(self.config.offline_queue_dir, self.client.upload_capture)
+            self.trigger_async_flush()
 
     def _scheduler_loop(self) -> None:
-        """Фоновый цикл проверки расписания плановой автосъемки."""
-        self._last_scheduled_capture_time = time.time()
-
+        """Фоновый цикл проверки астрономической сетки плановой автосъемки (в начале N-го часа UTC)."""
         while self.running.is_set():
-            time.sleep(5.0)
+            time.sleep(1.0)
             if not self.running.is_set():
                 break
 
-            interval_sec = max(60, self.capture_interval_hours * 3600)
-            elapsed = time.time() - self._last_scheduled_capture_time
+            now = datetime.now(UTC)
+            n_hours = max(1, self.capture_interval_hours)
 
-            if elapsed >= interval_sec:
-                try:
-                    self.trigger_scheduled_capture()
-                except Exception as exc:  # noqa: BLE001
-                    logger.error(f"Исключение в автосъемке по расписанию: {exc}")
+            # Срабатывание в начале каждого N-го часа UTC (HH % N == 0, MM == 0)
+            if now.hour % n_hours == 0 and now.minute == 0:
+                current_slot = (now.year, now.month, now.day, now.hour)
+                if self._last_scheduled_hour != current_slot:
+                    self._last_scheduled_hour = current_slot
+                    try:
+                        self.trigger_scheduled_capture()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error(f"Исключение в автосъемке по расписанию: {exc}")
