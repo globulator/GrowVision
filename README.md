@@ -87,6 +87,32 @@ clients/cli/.venv/bin/pytest clients/cli/tests -q
 
 ---
 
+### Edge-агент (Raspberry Pi 5 / Mock)
+
+#### 1. Подготовка окружения Edge-агента
+
+```bash
+python3 -m venv edge_agent/.venv
+edge_agent/.venv/bin/pip install -r edge_agent/requirements.txt -r requirements-dev.txt
+cp edge_agent/.env.example edge_agent/.env
+```
+
+#### 2. Запуск Edge-агента на ПК (mock-режим)
+
+```bash
+HARDWARE_MODE=mock edge_agent/.venv/bin/python -m edge_agent.main
+```
+
+Для развертывания на реальной плате Raspberry Pi 5 см. [docs/DEPLOYMENT_RPI.md](file:///home/mcperchik/study/GrowVision/docs/DEPLOYMENT_RPI.md) и схему подключения [docs/HARDWARE_WIRING.md](file:///home/mcperchik/study/GrowVision/docs/HARDWARE_WIRING.md).
+
+#### 3. Запуск тестов Edge-агента
+
+```bash
+edge_agent/.venv/bin/pytest edge_agent/tests -q
+```
+
+---
+
 ### Проверка качества кода (линтер и форматирование)
 
 ```bash
@@ -98,14 +124,18 @@ server/.venv/bin/ruff format --check .
 
 - [docs/PROJECT.md](file:///home/mcperchik/study/GrowVision/docs/PROJECT.md) — паспорт проекта и правила разработки
 - [docs/USER_GUIDE.md](file:///home/mcperchik/study/GrowVision/docs/USER_GUIDE.md) — руководство пользователя по работе с CLI
+- [docs/DEPLOYMENT_RPI.md](file:///home/mcperchik/study/GrowVision/docs/DEPLOYMENT_RPI.md) — развертывание Edge-агента на Raspberry Pi 5
+- [docs/HARDWARE_WIRING.md](file:///home/mcperchik/study/GrowVision/docs/HARDWARE_WIRING.md) — схема аппаратного подключения GPIO и камер
 - [docs/REPO_AND_VERSIONING.md](file:///home/mcperchik/study/GrowVision/docs/REPO_AND_VERSIONING.md) — структура монорепозитория и версионирование
 - [docs/DB_SCHEMA.md](file:///home/mcperchik/study/GrowVision/docs/DB_SCHEMA.md) — схема базы данных SQLite
 - [docs/API_CONTRACT.md](file:///home/mcperchik/study/GrowVision/docs/API_CONTRACT.md) — контракты Edge API и Client API
 - [docs/CLI_SPEC.md](file:///home/mcperchik/study/GrowVision/docs/CLI_SPEC.md) — спецификация консольного клиента
 - [docs/BOT_SPEC.md](file:///home/mcperchik/study/GrowVision/docs/BOT_SPEC.md) — спецификация Telegram-бота
 - [docs/WEB_SPEC.md](file:///home/mcperchik/study/GrowVision/docs/WEB_SPEC.md) — спецификация веб-плеера
+- [docs/user_tasks.md](file:///home/mcperchik/study/GrowVision/docs/user_tasks.md) — реестр задач пользователя (включая T-001)
 - [docs/stage_reports/stage-1.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-1.md) — отчёт по этапу 1
 - [docs/stage_reports/stage-2.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-2.md) — отчёт по этапу 2
 - [docs/stage_reports/stage-3.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-3.md) — отчёт по этапу 3
 - [docs/stage_reports/stage-4.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-4.md) — отчёт по этапу 4
 - [docs/stage_reports/stage-5.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-5.md) — отчёт по этапу 5
+- [docs/stage_reports/stage-6.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-6.md) — отчёт по этапу 6
