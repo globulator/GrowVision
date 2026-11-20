@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import time
 import uuid
@@ -13,7 +14,7 @@ logger = get_logger("edge_agent.offline_queue")
 
 
 def get_queue_count(queue_dir: Path) -> int:
-    """Возвращает количество ожидающих пакетов в офлайн-очереди (исключая failed/)."""
+    """Возвращает количество ожидающих пакетов в офлайн-очереди (исключая failed/ и скрытые/служебные)."""
     if not queue_dir.exists():
         return 0
 
@@ -30,39 +31,49 @@ def save_to_queue(
     raw_bytes: bytes,
     annotated_bytes: bytes,
 ) -> Path:
-    """Сохраняет пакет кадра в локальную офлайн-очередь."""
+    """Атомарно сохраняет пакет кадра в локальную офлайн-очередь через временный каталог."""
     queue_dir.mkdir(parents=True, exist_ok=True)
 
-    # Имя директории: {timestamp}_{installation_id}_{uuid}
     ts = int(time.time())
     pkg_id = f"{ts}_{metadata.installation_id}_{uuid.uuid4().hex[:8]}"
-    pkg_dir = queue_dir / pkg_id
-    pkg_dir.mkdir(parents=True, exist_ok=True)
 
-    meta_file = pkg_dir / "metadata.json"
-    raw_file = pkg_dir / "raw.jpg"
-    ann_file = pkg_dir / "ann.jpg"
+    # Атомарная запись: пишем во временный каталог .tmp_... затем os.replace
+    tmp_dir = queue_dir / f".tmp_{pkg_id}"
+    final_dir = queue_dir / pkg_id
 
-    meta_file.write_text(metadata.model_dump_json(indent=2), encoding="utf-8")
-    raw_file.write_bytes(raw_bytes)
-    ann_file.write_bytes(annotated_bytes)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        meta_file = tmp_dir / "metadata.json"
+        raw_file = tmp_dir / "raw.jpg"
+        ann_file = tmp_dir / "ann.jpg"
+
+        meta_file.write_text(metadata.model_dump_json(indent=2), encoding="utf-8")
+        raw_file.write_bytes(raw_bytes)
+        ann_file.write_bytes(annotated_bytes)
+
+        os.replace(str(tmp_dir), str(final_dir))
+    except Exception:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
 
     logger.info(
-        f"Кадр для установки {metadata.installation_id} сохранен в офлайн-очередь: {pkg_dir.name}"
+        f"Кадр для установки {metadata.installation_id} атомарно сохранен в офлайн-очередь: {final_dir.name}"
     )
-    return pkg_dir
+    return final_dir
 
 
 def flush_queue(
     queue_dir: Path,
     upload_fn: Callable[[CaptureMeta, bytes, bytes], tuple[int, dict[str, Any]]],
+    max_batch_size: int = 10,
 ) -> tuple[int, int, int]:
-    """Выгружает пакеты из офлайн-очереди на сервер.
+    """Выгружает пакеты из офлайн-очереди на сервер (не более max_batch_size за один проход).
 
     Возвращает (sent_count, skipped_count, failed_count).
     - 200/201: пакет удаляется
     - 409: пакет остается в очереди (камера не зарегистрирована)
-    - 422/404: пакет перемещается в failed/
+    - 422/404: пакет перемещается в failed/ (с защитой failed/.gitkeep)
     - Сетевой сбой: выгрузка прерывается до следующего цикла
     """
     if not queue_dir.exists():
@@ -71,12 +82,16 @@ def flush_queue(
     failed_dir = queue_dir / "failed"
     failed_dir.mkdir(parents=True, exist_ok=True)
 
+    # Игнорируем файлы, скрытые каталоги (начинающиеся с '.') и папку failed
     items = [
         item
         for item in queue_dir.iterdir()
         if item.is_dir() and item.name != "failed" and not item.name.startswith(".")
     ]
     items.sort(key=lambda p: p.name)
+
+    # Ограничение до max_batch_size (по умолчанию 10) пакетов за один проход
+    items = items[:max_batch_size]
 
     sent = 0
     skipped = 0
@@ -93,14 +108,13 @@ def flush_queue(
             )
             target = failed_dir / item.name
             if target.exists():
-                shutil.rmtree(target)
+                shutil.rmtree(target, ignore_errors=True)
             shutil.move(str(item), str(target))
             failed += 1
             continue
 
         try:
             meta_dict = json.loads(meta_file.read_text(encoding="utf-8"))
-            # Для кадров из offline_queue command_id должен быть null
             meta_dict["command_id"] = None
             meta = CaptureMeta.model_validate(meta_dict)
             raw_bytes = raw_file.read_bytes()
@@ -109,7 +123,7 @@ def flush_queue(
             logger.error(f"Ошибка чтения пакета {item.name}: {e}. В failed/")
             target = failed_dir / item.name
             if target.exists():
-                shutil.rmtree(target)
+                shutil.rmtree(target, ignore_errors=True)
             shutil.move(str(item), str(target))
             failed += 1
             continue
@@ -118,14 +132,13 @@ def flush_queue(
             status_code, _ = upload_fn(meta, raw_bytes, ann_bytes)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Ошибка сети при отправке пакета {item.name}: {e}")
-            # Сетевой сбой — прерываем выгрузку до следующего цикла
             break
 
         if status_code in (200, 201):
             logger.info(
                 f"Пакет {item.name} успешно доставлен (код {status_code}). Удаление."
             )
-            shutil.rmtree(item)
+            shutil.rmtree(item, ignore_errors=True)
             sent += 1
         elif status_code == 409:
             logger.warning(
@@ -138,7 +151,7 @@ def flush_queue(
             )
             target = failed_dir / item.name
             if target.exists():
-                shutil.rmtree(target)
+                shutil.rmtree(target, ignore_errors=True)
             shutil.move(str(item), str(target))
             failed += 1
         else:

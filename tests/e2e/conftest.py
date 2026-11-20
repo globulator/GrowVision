@@ -75,6 +75,12 @@ def e2e_uvicorn_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     app.dependency_overrides[get_db] = override_get_db
 
+    # Полная изоляция БД сервера и фоновых задач
+    monkeypatch.setattr("server.main.init_db", lambda: None)
+    monkeypatch.setattr("server.main.SessionLocal", session_factory)
+    monkeypatch.setattr("server.db.database.SessionLocal", session_factory)
+    monkeypatch.setattr("server.db.database.engine", engine)
+
     # Изоляция настроек
     settings = get_settings()
     monkeypatch.setattr(settings, "client_api_key", CLIENT_API_KEY)

@@ -80,12 +80,12 @@ def system_status() -> None:
 
         edge_ver = sw.get("edge_version") or telemetry.get("edge_version") or "—"
         py_ver = sw.get("python_version") or telemetry.get("python_version") or "—"
+        model_name = sw.get("model_name") or telemetry.get("model_name") or "—"
 
         board = (
             hw.get("board_model")
-            or sw.get("model_name")
             or telemetry.get("board_model")
-            or telemetry.get("model_name")
+            or (telemetry.get("model_name") if "software" not in telemetry else "—")
             or "—"
         )
         os_info = hw.get("os_info") or telemetry.get("os_info") or "—"
@@ -157,6 +157,7 @@ def system_status() -> None:
         rpi_lines = [
             f"[bold]Edge Agent:[/bold] {edge_ver}",
             f"[bold]Python:[/bold] {py_ver}",
+            f"[bold]Модель ONNX:[/bold] {model_name}",
             f"[bold]Модель / ОС:[/bold] {model_os}",
             f"[bold]Режим GPIO:[/bold] {gpio_mode}",
             f"[bold]Аптайм:[/bold] {uptime_str}",

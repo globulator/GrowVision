@@ -71,8 +71,8 @@ def test_snap_take_error_status(cli_runner, temp_session_file, mock_client_facto
 
     mock_client_factory(handler)
     res = cli_runner.invoke(app, ["snap", "take", "1"])
-    assert res.exit_code == 0
-    assert "Камера недоступна, попробуйте позже" in res.stdout
+    assert res.exit_code == 1
+    assert "Камера недоступна, попробуйте позже" in (res.stderr + res.stdout)
 
 
 def test_snap_video_mp4(

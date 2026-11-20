@@ -74,3 +74,22 @@ def test_light_invalid_state(cli_runner, temp_session_file):
     res = cli_runner.invoke(app, ["light", "main", "1", "not_a_state"])
     assert res.exit_code == 1
     assert "Некорректное состояние" in res.stdout
+
+
+def test_light_main_error_status(cli_runner, temp_session_file, mock_client_factory):
+    """Команда light main при status == 'error' выходит с кодом 1."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "error",
+                "command_id": 20,
+                "result_message": "Камера недоступна, попробуйте позже",
+            },
+        )
+
+    mock_client_factory(handler)
+    res = cli_runner.invoke(app, ["light", "main", "1", "on"])
+    assert res.exit_code == 1
+    assert "Камера недоступна, попробуйте позже" in (res.stderr + res.stdout)

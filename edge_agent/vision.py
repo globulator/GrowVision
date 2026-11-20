@@ -6,7 +6,6 @@ from shared.schemas import PlantMeasurementMeta
 
 logger = get_logger("edge_agent.vision")
 
-# Флаги доступности библиотек
 CV2_AVAILABLE = False
 ORT_AVAILABLE = False
 
@@ -34,6 +33,7 @@ class VisionPipeline:
         self.model_path = model_path
         self.mock_mode = mock_mode
         self._session: Any = None
+        self._model_loaded = False
 
         if (
             not self.mock_mode
@@ -46,10 +46,26 @@ class VisionPipeline:
                     str(self.model_path),
                     providers=["CPUExecutionProvider"],
                 )
+                self._model_loaded = True
                 logger.info(f"ONNX модель успешно загружена: {self.model_path.name}")
             except Exception as e:  # noqa: BLE001
-                logger.warning(f"Ошибка загрузки ONNX модели {self.model_path}: {e}")
+                logger.error(f"Ошибка загрузки ONNX модели {self.model_path}: {e}")
                 self._session = None
+                self._model_loaded = False
+        elif not self.mock_mode and (
+            not self.model_path or not self.model_path.is_file()
+        ):
+            logger.error(
+                f"Файл ONNX модели не найден: {self.model_path}. Модель не будет использоваться."
+            )
+
+    def get_model_name(self) -> str:
+        """Возвращает имя загруженной модели или 'none'."""
+        if self.mock_mode:
+            return self.model_path.name if self.model_path else "mock_model.onnx"
+        if self._model_loaded and self.model_path:
+            return self.model_path.name
+        return "none"
 
     def detect_aruco(self, image_bytes: bytes) -> float | None:
         """Обнаруживает ArUco-маркер и вычисляет его площадь в пикселях.
@@ -57,8 +73,11 @@ class VisionPipeline:
         Возвращает None, если маркер не найден или если cv2 недоступен.
         В mock-режиме возвращает детерминированное значение 1200.0.
         """
-        if self.mock_mode or not CV2_AVAILABLE:
+        if self.mock_mode:
             return 1200.0
+
+        if not CV2_AVAILABLE:
+            return None
 
         try:
             nparr = np.frombuffer(image_bytes, np.uint8)
@@ -68,7 +87,6 @@ class VisionPipeline:
 
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-            # Поддержка различных версий OpenCV ArUco API
             aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
             if hasattr(cv2.aruco, "ArucoDetector"):
                 detector = cv2.aruco.ArucoDetector(aruco_dict)
@@ -95,11 +113,20 @@ class VisionPipeline:
 
         Возвращает кортеж (annotated_image_bytes, measurements).
         """
-        # Если mock_mode или нет cv2 / сессии нейросети -> детерминированный fallback
-        if self.mock_mode or not CV2_AVAILABLE or self._session is None:
+        # 1. Mock-режим: детерминированная эмуляция для тестов на ПК
+        if self.mock_mode:
             measurements = [PlantMeasurementMeta(plant_index=0, area_px=5400.0)]
             annotated_bytes = self._generate_fallback_annotated(image_bytes)
             return annotated_bytes, measurements
+
+        # 2. Боевой режим без модели / без cv2 / без сессии:
+        # СТРОГО: measurements=[], annotated_image = сырой кадр, лог ERROR!
+        if not CV2_AVAILABLE or not self._model_loaded or self._session is None:
+            logger.error(
+                "Инференс модели недоступен (модель не загружена или отсутствует OpenCV). "
+                "Замеры не производятся, аннотированный кадр равен оригиналу."
+            )
+            return image_bytes, []
 
         try:
             nparr = np.frombuffer(image_bytes, np.uint8)
@@ -109,10 +136,8 @@ class VisionPipeline:
 
             h, w = img.shape[:2]
 
-            # Получаем форму входа модели
             input_name = self._session.get_inputs()[0].name
             input_shape = self._session.get_inputs()[0].shape
-            # Ожидаемый размер модели (например [1, 3, 256, 256])
             target_h = (
                 input_shape[2]
                 if len(input_shape) >= 4 and isinstance(input_shape[2], int)
@@ -124,56 +149,60 @@ class VisionPipeline:
                 else 256
             )
 
-            # Предобработка
             resized = cv2.resize(img, (target_w, target_h))
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-            # NCHW
             tensor = np.transpose(rgb, (2, 0, 1))[np.newaxis, ...]
 
             outputs = self._session.run(None, {input_name: tensor})
-            pred_mask = outputs[0][0]  # shape: [C, H, W] или [H, W]
+            pred_mask = outputs[0][0]
             if pred_mask.ndim == 3:
                 pred_mask = pred_mask[0]
 
-            # Бинаризация маски
             bin_mask = (pred_mask > 0.5).astype(np.uint8)
             bin_mask_full = cv2.resize(
                 bin_mask, (w, h), interpolation=cv2.INTER_NEAREST
             )
 
-            # Поиск контуров растений
-            contours, _ = cv2.findContours(
+            raw_contours, _ = cv2.findContours(
                 bin_mask_full, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
+
+            # Сортировка контуров по площади (убывание)
+            valid_contours_with_area = []
+            for cnt in raw_contours:
+                area = float(cv2.contourArea(cnt))
+                if area > 50.0:  # Фильтрация шума
+                    valid_contours_with_area.append((cnt, area))
+
+            valid_contours_with_area.sort(key=lambda x: x[1], reverse=True)
 
             measurements: list[PlantMeasurementMeta] = []
             annotated = img.copy()
 
-            # Накладываем зелёную полупрозрачную маску
             color_mask = np.zeros_like(img)
             color_mask[bin_mask_full > 0] = (0, 255, 0)
             annotated = cv2.addWeighted(annotated, 1.0, color_mask, 0.4, 0)
 
-            for idx, cnt in enumerate(contours):
-                area = float(cv2.contourArea(cnt))
-                if area > 50.0:  # фильтрация мелкого шума
-                    measurements.append(
-                        PlantMeasurementMeta(plant_index=idx, area_px=round(area, 1))
+            # Нумерация plant_index подряд с 0
+            for plant_idx, (cnt, area) in enumerate(valid_contours_with_area):
+                measurements.append(
+                    PlantMeasurementMeta(
+                        plant_index=plant_idx,
+                        area_px=round(area, 1),
                     )
-                    cv2.drawContours(annotated, [cnt], -1, (0, 200, 0), 2)
+                )
+                cv2.drawContours(annotated, [cnt], -1, (0, 200, 0), 2)
 
             success, enc_img = cv2.imencode(".jpg", annotated)
             annotated_bytes = enc_img.tobytes() if success else image_bytes
             return annotated_bytes, measurements
 
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"Ошибка сегментации модели: {e}, возврат fallback")
-            return self._generate_fallback_annotated(image_bytes), [
-                PlantMeasurementMeta(plant_index=0, area_px=5400.0)
-            ]
+            logger.error(f"Ошибка сегментации модели: {e}. Возврат сырого кадра.")
+            return image_bytes, []
 
     def _generate_fallback_annotated(self, image_bytes: bytes) -> bytes:
-        """Создает аннотированное изображение в fallback/mock режиме."""
+        """Создает аннотированное изображение исключительно в mock-режиме."""
         if not CV2_AVAILABLE:
             return image_bytes
 
@@ -184,7 +213,6 @@ class VisionPipeline:
                 return image_bytes
 
             h, w = img.shape[:2]
-            # Рисуем зеленый эллипс, симулирующий лист растения
             center = (w // 2, h // 2)
             axes = (max(2, w // 4), max(2, h // 4))
             cv2.ellipse(img, center, axes, 30, 0, 360, (0, 255, 0), 2)
@@ -207,10 +235,7 @@ class VisionPipeline:
         self,
         image_bytes: bytes,
     ) -> tuple[bytes, float | None, list[PlantMeasurementMeta]]:
-        """Полная обработка кадра: детекция ArUco + сегментация растений.
-
-        Возвращает (annotated_image_bytes, aruco_area_px, measurements).
-        """
+        """Полная обработка кадра: детекция ArUco + сегментация растений."""
         aruco_area = self.detect_aruco(image_bytes)
         annotated_bytes, measurements = self.segment_plants(image_bytes)
         return annotated_bytes, aruco_area, measurements

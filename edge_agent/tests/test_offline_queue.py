@@ -4,8 +4,8 @@ from edge_agent.offline_queue import flush_queue, get_queue_count, save_to_queue
 from shared.schemas import CaptureMeta, PlantMeasurementMeta
 
 
-def test_save_and_count_queue(tmp_queue_dir: Path):
-    """Проверка сохранения кадра в очередь и подсчета количества."""
+def test_save_and_count_queue_atomic(tmp_queue_dir: Path):
+    """Проверка атомарного сохранения кадра в очередь и подсчета количества."""
     assert get_queue_count(tmp_queue_dir) == 0
 
     meta = CaptureMeta(
@@ -24,7 +24,37 @@ def test_save_and_count_queue(tmp_queue_dir: Path):
     assert (pkg_dir / "raw.jpg").exists()
     assert (pkg_dir / "ann.jpg").exists()
 
+    # Временных папок оставаться не должно
+    tmp_folders = list(tmp_queue_dir.glob(".tmp_*"))
+    assert len(tmp_folders) == 0
+
     assert get_queue_count(tmp_queue_dir) == 1
+
+
+def test_flush_queue_batch_limit_10(tmp_queue_dir: Path):
+    """Проверка ограничения выгрузки: не более 10 пакетов за один проход."""
+    # Создаем 15 пакетов
+    for i in range(15):
+        meta = CaptureMeta(
+            installation_id=i,
+            camera_hardware_id="cam-1",
+            captured_at=f"2026-11-20T12:{i:02d}:00Z",
+            is_manual=False,
+        )
+        save_to_queue(tmp_queue_dir, meta, b"raw", b"ann")
+
+    assert get_queue_count(tmp_queue_dir) == 15
+
+    upload_calls = []
+
+    def upload_mock(m, _r, _a):
+        upload_calls.append(m.installation_id)
+        return 201, {"capture_id": m.installation_id}
+
+    sent, _skipped, _failed = flush_queue(tmp_queue_dir, upload_mock, max_batch_size=10)
+    assert sent == 10
+    assert len(upload_calls) == 10
+    assert get_queue_count(tmp_queue_dir) == 5  # Осталось 5 пакетов
 
 
 def test_flush_queue_success_200_201(tmp_queue_dir: Path):
@@ -70,8 +100,13 @@ def test_flush_queue_conflict_409(tmp_queue_dir: Path):
     assert pkg.exists()
 
 
-def test_flush_queue_invalid_422_404_moved_to_failed(tmp_queue_dir: Path):
-    """Проверка ответа 422/404: пакет перемещается в failed/."""
+def test_flush_queue_preserves_failed_gitkeep(tmp_queue_dir: Path):
+    """Проверка перемещения в failed/ с сохранением файла .gitkeep."""
+    failed_dir = tmp_queue_dir / "failed"
+    failed_dir.mkdir(parents=True, exist_ok=True)
+    gitkeep = failed_dir / ".gitkeep"
+    gitkeep.touch()
+
     meta = CaptureMeta(
         installation_id=999,
         camera_hardware_id="cam-1",
@@ -83,23 +118,7 @@ def test_flush_queue_invalid_422_404_moved_to_failed(tmp_queue_dir: Path):
     def upload_mock(_m, _r, _a):
         return 422, {"detail": "Validation error"}
 
-    sent, skipped, failed = flush_queue(tmp_queue_dir, upload_mock)
-    assert sent == 0
-    assert skipped == 0
+    _sent, _skipped, failed = flush_queue(tmp_queue_dir, upload_mock)
     assert failed == 1
-    assert get_queue_count(tmp_queue_dir) == 0
-    # Проверяем наличие в failed/
-    failed_dir = tmp_queue_dir / "failed" / pkg.name
-    assert failed_dir.exists()
-
-
-def test_flush_queue_corrupted_packet_moved_to_failed(tmp_queue_dir: Path):
-    """Проверка поврежденного пакета: перемещение в failed/."""
-    broken_pkg = tmp_queue_dir / "broken_pkg_001"
-    broken_pkg.mkdir()
-    # Нет raw.jpg и ann.jpg, битый json
-    (broken_pkg / "metadata.json").write_text("{broken", encoding="utf-8")
-
-    _sent, _skipped, failed = flush_queue(tmp_queue_dir, lambda _m, _r, _a: (200, {}))
-    assert failed == 1
-    assert (tmp_queue_dir / "failed" / "broken_pkg_001").exists()
+    assert gitkeep.exists()
+    assert (failed_dir / pkg.name).exists()

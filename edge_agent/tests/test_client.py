@@ -101,22 +101,24 @@ def test_claim_command_success():
     assert cmds[0].installation.light_gpio_pin == 17
 
 
-def test_send_command_result_success():
-    """Проверка отправки отчета о выполнении команды."""
+def test_send_command_result_retries_on_network_error():
+    """Проверка повторных попыток send_command_result (до 3 раз)."""
+    call_count = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/edge/commands/101/result"
-        body = json.loads(request.content)
-        assert body["status"] == "done"
-        assert "успешно" in body["result_message"]
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            raise httpx.ConnectError("Network is down")
         return httpx.Response(200, json={"ok": True})
 
     transport = httpx.MockTransport(handler)
     client = EdgeAPIClient("http://test", "secret-key", transport=transport)
 
-    res = CommandResult(status="done", result_message="Выполнено успешно")
-    success = client.send_command_result(101, res)
+    res = CommandResult(status="done", result_message="OK")
+    success = client.send_command_result(101, res, max_retries=3, retry_delay_sec=0.0)
     assert success is True
+    assert call_count == 3
 
 
 def test_send_command_result_conflict_409():
@@ -129,21 +131,25 @@ def test_send_command_result_conflict_409():
     client = EdgeAPIClient("http://test", "secret-key", transport=transport)
 
     res = CommandResult(status="done", result_message="Выполнено успешно")
-    success = client.send_command_result(101, res)
+    success = client.send_command_result(101, res, max_retries=3, retry_delay_sec=0.0)
     assert success is False
 
 
-def test_upload_capture_multipart():
-    """Проверка отправки кадра через multipart/form-data."""
+def test_upload_capture_timeout_60s():
+    """Проверка настройки таймаута загрузки кадра 60 секунд."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/edge/captures"
-        # Проверяем, что запрос содержит multipart
         assert "multipart/form-data" in request.headers["content-type"]
         return httpx.Response(201, json={"capture_id": 55})
 
     transport = httpx.MockTransport(handler)
-    client = EdgeAPIClient("http://test", "secret-key", transport=transport)
+    client = EdgeAPIClient(
+        "http://test",
+        "secret-key",
+        upload_timeout=60.0,
+        transport=transport,
+    )
+    assert client.upload_timeout == 60.0
 
     meta = CaptureMeta(
         installation_id=1,

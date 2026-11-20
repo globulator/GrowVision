@@ -1,31 +1,34 @@
-# Руководство по развертыванию Edge-агента на Raspberry Pi 5
+# Руководство по развертыванию Edge-агента на Raspberry Pi
 
-В данном руководстве описан процесс установки, настройки и запуска Edge-агента системы **GrowVision** на микрокомпьютере Raspberry Pi 5 под управлением Raspberry Pi OS (Bookworm, 64-bit).
+В данном руководстве описан процесс установки, настройки и запуска Edge-агента системы **GrowVision** на микрокомпьютере Raspberry Pi под управлением Raspberry Pi OS (Debian 12 Bookworm, 64-bit).
 
 ---
 
-## 1. Системные требования
+## 1. Системные требования и поддерживаемые платформы
 
-- **Плата**: Raspberry Pi 5 (рекомендуется 4 ГБ или 8 ГБ RAM).
+- **Рекомендуемая платформа**: Raspberry Pi 5 (4 ГБ или 8 ГБ RAM).
+- **Минимально поддерживаемая платформа**: Raspberry Pi 3 Model B (64-битная ОС, 1 ГБ RAM).
+  > [!TIP]
+  > При установке на Raspberry Pi 3 Model B (1 ГБ RAM) рекомендуется использовать **Raspberry Pi OS Lite** (без графической оболочки Desktop), настроить zram-swap (`sudo apt install -y zram-tools`) и следить за потреблением оперативной памяти при инференсе нейросети.
+- **Поддерживаемые камеры**:
+  > [!IMPORTANT]
+  > Поддерживаются **только стандартные USB UVC камеры** с драйвером Video4Linux2 (`/dev/v4l/by-id/*-video-index0`). Подключение CSI-камер через шлейф (libcamera / Picamera2) в текущей версии агента **не поддерживается**.
 - **ОС**: Raspberry Pi OS (Debian 12 Bookworm, 64-bit).
-- **Питание**: Официальный блок питания Raspberry Pi 27W USB-C Power Delivery (5.1V / 5.0A).
-- **Сетевое подключение**: Wi-Fi или Ethernet со стабильным доступом к серверу GrowVision.
-- **Подключенное оборудование**:
-  - Релейный модуль (управление светом и вспышкой).
-  - USB или CSI камеры (с поддержкой V4L2).
+- **Питание**: Официальный блок питания Raspberry Pi 27W USB-C PD (для RPi 5) или качественный адаптер 5.1V / 2.5A (для RPi 3).
+- **Исполнительное оборудование**: 2- или 4-канальный модуль реле с управлением через GPIO (основной фитосвет и вспышка).
 
 ---
 
 ## 2. Подготовка операционной системы
 
-Обновите пакетную базу и установите необходимые системные утилиты и библиотеки:
+Обновите пакетную базу и установите системные библиотеки и пакеты управления GPIO:
 
 ```bash
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y git python3-venv python3-pip v4l-utils libgl1 libglib2.0-0 python3-gpiozero python3-lgpio
 ```
 
-Убедитесь, что текущий пользователь (`pi` или ваш системный пользователь) входит в группы `video` и `gpio`:
+Добавьте текущего пользователя в группы `video` и `gpio`:
 
 ```bash
 sudo usermod -aG video,gpio $USER
@@ -42,26 +45,41 @@ git clone <URL_РЕПОЗИТОРИЯ>/GrowVision.git
 cd GrowVision
 ```
 
-2. Создайте изолированное виртуальное окружение для Edge-агента:
+2. Создайте изолированное виртуальное окружение с доступом к системным пакетам (`--system-site-packages` для использования системных `gpiozero` и `lgpio`):
 ```bash
-python3 -m venv edge_agent/.venv
+python3 -m venv --system-site-packages edge_agent/.venv
 source edge_agent/.venv/bin/activate
 ```
 
-3. Установите базовые зависимости:
+3. Установите базовые зависимости агента:
 ```bash
 pip install --upgrade pip
 pip install -r edge_agent/requirements.txt
 ```
 
-4. Для работы компьютерного зрения и аппаратного доступа на Raspberry Pi установите дополнительные библиотеки:
+4. Установите библиотеки компьютерного зрения:
 ```bash
-pip install opencv-python-headless onnxruntime gpiozero lgpio
+pip install opencv-python-headless onnxruntime
 ```
 
 ---
 
-## 4. Конфигурация окружения (.env)
+## 4. Загрузка ONNX-модели нейросети
+
+Модель сегментации растений распространяется через GitHub Releases репозитория проекта:
+
+```bash
+mkdir -p edge_agent/models
+# Пример загрузки модели версии model-v1 из релиза:
+curl -L -o edge_agent/models/lettuce_seg_v1.onnx \
+  https://github.com/<OWNER>/GrowVision/releases/download/model-v1/lettuce_seg_v1.onnx
+```
+
+Если модель временно не установлена, агент запустится в безопасном режиме: замеры будут пустыми (`measurements = []`), а в лог будет записано предупреждение `ERROR`.
+
+---
+
+## 5. Конфигурация окружения (.env)
 
 Создайте файл `edge_agent/.env` на основе примера:
 
@@ -76,20 +94,26 @@ nano edge_agent/.env
 # URL сервера GrowVision
 SERVER_URL=http://192.168.1.100:8000
 
-# Секретный ключ для авторизации (совпадает с EDGE_API_KEY на сервере)
-EDGE_API_KEY=your-secure-edge-key-here
+# Секретный ключ для авторизации (задаётся администратором, совпадает с сервером)
+EDGE_API_KEY=your-edge-secret-key-here
 
-# Режим работы с оборудованием: 'rpi' для реального железа, 'mock' для тестов
+# Режим работы оборудования: 'rpi' для реального железа, 'mock' для тестов
 HARDWARE_MODE=rpi
+
+# Путь к загруженной ONNX модели
+MODEL_PATH=./models/lettuce_seg_v1.onnx
 
 # Интервалы опроса (в секундах)
 HEARTBEAT_INTERVAL_SEC=30
-CLAIM_POLL_INTERVAL_SEC=2.0
+COMMAND_POLL_INTERVAL_SEC=2
 
-# Локальная офлайн-очередь и модели
+# Параметры реле и камеры
+RELAY_SWITCH_DELAY_MS=200
+CAMERA_WARMUP_FRAMES=5
+RELAY_ACTIVE_HIGH=true
+
+# Локальная офлайн-очередь
 OFFLINE_QUEUE_DIR=edge_agent/offline_queue
-MODELS_DIR=edge_agent/models
-MODEL_NAME=lettuce_seg_v1.onnx
 
 # Дефолтный интервал плановой съемки (в часах)
 CAPTURE_INTERVAL_HOURS=1
@@ -100,9 +124,9 @@ DEBUG_MODE=false
 
 ---
 
-## 5. Проверка работоспособности вручную
+## 6. Проверка работы вручную
 
-Перед настройкой системной службы выполните тестовый запуск агента:
+Выполните тестовый запуск агента:
 
 ```bash
 cd ~/GrowVision
@@ -110,13 +134,13 @@ source edge_agent/.venv/bin/activate
 python -m edge_agent.main
 ```
 
-В консоли должны появиться строки инициализации логгера, успешная отправка Heartbeat и опрос очереди команд. Для остановки нажмите `Ctrl+C`.
+В консоли отобразится старт фоновых циклов Heartbeat, опроса команд и планировщика. Для остановки нажмите `Ctrl+C`.
 
 ---
 
-## 6. Настройка автозапуска через systemd
+## 7. Настройка автозапуска через systemd
 
-Для непрерывной фоновой работы создайте системную службу `systemd`:
+Для работы в фоновом режиме в виде службы операционной системы:
 
 1. Создайте unit-файл `/etc/systemd/system/growvision-edge.service`:
 
@@ -124,19 +148,19 @@ python -m edge_agent.main
 sudo nano /etc/systemd/system/growvision-edge.service
 ```
 
-2. Вставьте следующую конфигурацию (замените `mcperchik` на имя вашего пользователя, если оно отличается):
+2. Вставьте конфигурацию (в качестве примера указан пользователь `pi` и каталог `/home/pi/GrowVision` — укажите фактические имя пользователя и путь к каталогу):
 
 ```ini
 [Unit]
-Description=GrowVision Edge Agent for Raspberry Pi 5
+Description=GrowVision Edge Agent for Raspberry Pi
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=mcperchik
-WorkingDirectory=/home/mcperchik/GrowVision
-ExecStart=/home/mcperchik/GrowVision/edge_agent/.venv/bin/python -m edge_agent.main
+User=pi
+WorkingDirectory=/home/pi/GrowVision
+ExecStart=/home/pi/GrowVision/edge_agent/.venv/bin/python -m edge_agent.main
 Restart=always
 RestartSec=5s
 Environment=PYTHONUNBUFFERED=1
@@ -157,7 +181,7 @@ sudo systemctl enable growvision-edge.service
 sudo systemctl start growvision-edge.service
 ```
 
-4. Проверьте статус службы и просмотрите логи:
+4. Проверьте статус и журналы:
 
 ```bash
 sudo systemctl status growvision-edge.service
@@ -166,24 +190,14 @@ journalctl -u growvision-edge.service -f
 
 ---
 
-## 7. Диагностика и устранение неисправностей
+## 8. Диагностика и устранение неисправностей
 
-### 7.1. Проверка обнаружения камер
-Для проверки физического обнаружения USB/CSI-камер выполните:
+### 8.1. Проверка USB-камер
+Агент ищет камеры по пути `/dev/v4l/by-id/*-video-index0`:
 ```bash
-v4l2-ctl --list-devices
+ls -la /dev/v4l/by-id/
 ```
-Если устройства отсутствуют:
-- Проверьте надежность подключения кабеля USB или шлейфа CSI.
-- Убедитесь, что камера не занята другим процессом: `lsof /dev/video*`.
+Убедитесь, что камера определяется и не занята сторонними процессами (`lsof /dev/video*`).
 
-### 7.2. Проверка управления GPIO
-Если реле не переключается:
-- Проверьте номера пинов (в системе используется нумерация BCM, а не физические номера контактов).
-- Проверьте наличие питания 5V на плате реле.
-- Убедитесь, что библиотека `lgpio` корректно установлена: `python -c "import lgpio"`.
-
-### 7.3. Локальная офлайн-очередь
-При потере связи с сервером снимки буферизуются в `edge_agent/offline_queue/`.
-После восстановления связи они автоматически выгружаются на сервер во время очередного Heartbeat или плановой автосъемки.
-Битые пакеты изолируются в каталоге `edge_agent/offline_queue/failed/`.
+### 8.2. Проверка полярности реле
+Если при включении питания свет выключается вместо включения — проверьте параметр `RELAY_ACTIVE_HIGH` в `edge_agent/.env`. Сверьтесь с индикацией встроенных светодиодов на плате реле (подробнее в `docs/HARDWARE_WIRING.md`).

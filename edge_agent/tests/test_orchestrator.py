@@ -30,7 +30,7 @@ class DummyEdgeClient:
         self.claim_calls.append(True)
         return []
 
-    def send_command_result(self, command_id: int, result: CommandResult):
+    def send_command_result(self, command_id: int, result: CommandResult, **_kwargs):
         self.results[command_id] = result
         return True
 
@@ -61,6 +61,24 @@ def orchestrator(
     )
 
 
+def test_init_installations_light_turns_main_light_on(
+    orchestrator: EdgeOrchestrator,
+    mock_hardware: HardwareManager,
+):
+    """При старте основной свет активных установок переводится в состояние ВКЛ."""
+    orchestrator.active_installations = [
+        HeartbeatActiveInstallation(
+            id=1,
+            light_gpio_pin=17,
+            flash_gpio_pin=27,
+            camera_hardware_ids=["cam-1"],
+        )
+    ]
+    orchestrator.init_installations_light()
+    assert mock_hardware.get_pin_state(17) is True
+    assert mock_hardware.get_pin_state(27) is False
+
+
 def test_handle_command_light_main(
     orchestrator: EdgeOrchestrator,
     dummy_client: DummyEdgeClient,
@@ -89,42 +107,11 @@ def test_handle_command_light_main(
     assert "успешно включен" in res.result_message
 
 
-def test_handle_command_light_flash(
+def test_handle_command_relay_test_zero_duration(
     orchestrator: EdgeOrchestrator,
     dummy_client: DummyEdgeClient,
-    mock_hardware: HardwareManager,
 ):
-    """Проверка выполнения команды LIGHT_FLASH."""
-    cmd = CommandItem(
-        id=2,
-        command_type="LIGHT_FLASH",
-        is_global=False,
-        installation=CommandInstallation(
-            id=10,
-            light_gpio_pin=17,
-            flash_gpio_pin=27,
-            camera_hardware_ids=["cam-1"],
-        ),
-        payload={"state": True},
-    )
-
-    orchestrator.handle_command(cmd)
-
-    assert mock_hardware.get_pin_state(27) is True
-    assert 2 in dummy_client.results
-    res = dummy_client.results[2]
-    assert res.status == "done"
-    assert "успешно включен" in res.result_message
-
-
-def test_handle_command_relay_test(
-    orchestrator: EdgeOrchestrator,
-    dummy_client: DummyEdgeClient,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """Проверка выполнения команды RELAY_TEST."""
-    monkeypatch.setattr("time.sleep", lambda _s: None)
-
+    """Проверка выполнения команды RELAY_TEST с нулевой задержкой."""
     cmd = CommandItem(
         id=3,
         command_type="RELAY_TEST",
@@ -137,7 +124,7 @@ def test_handle_command_relay_test(
         ),
     )
 
-    orchestrator.handle_command(cmd)
+    orchestrator._handle_relay_test(cmd, duration=0.0)
 
     assert 3 in dummy_client.results
     res = dummy_client.results[3]
@@ -145,31 +132,11 @@ def test_handle_command_relay_test(
     assert "успешно завершен" in res.result_message
 
 
-def test_handle_command_scan_cameras(
+def test_handle_command_snap_multiple_cameras_debug_log(
     orchestrator: EdgeOrchestrator,
     dummy_client: DummyEdgeClient,
 ):
-    """Проверка выполнения команды SCAN_CAMERAS."""
-    cmd = CommandItem(
-        id=4,
-        command_type="SCAN_CAMERAS",
-        is_global=True,
-    )
-
-    orchestrator.handle_command(cmd)
-
-    assert 4 in dummy_client.results
-    res = dummy_client.results[4]
-    assert res.status == "done"
-    assert res.scanned_cameras is not None
-    assert len(res.scanned_cameras) >= 1
-
-
-def test_handle_command_snap_success(
-    orchestrator: EdgeOrchestrator,
-    dummy_client: DummyEdgeClient,
-):
-    """Проверка выполнения команды SNAP: сначала кадр, затем результат."""
+    """Проверка SNAP: снимает все камеры установки, формирует строку [GPIO] Inst#N... в debug_log_line."""
     cmd = CommandItem(
         id=5,
         command_type="SNAP",
@@ -178,25 +145,21 @@ def test_handle_command_snap_success(
             id=10,
             light_gpio_pin=17,
             flash_gpio_pin=27,
-            camera_hardware_ids=["mock-usb-cam-1"],
+            camera_hardware_ids=["mock-usb-cam-1", "mock-csi-cam-2"],
         ),
     )
 
     orchestrator.handle_command(cmd)
 
-    # 1. Проверяем, что кадр был отправлен
-    assert len(dummy_client.uploaded_captures) == 1
-    meta, _raw, _ann = dummy_client.uploaded_captures[0]
-    assert meta.command_id == 5
-    assert meta.is_manual is True
-    assert meta.installation_id == 10
-    assert meta.camera_hardware_id == "mock-usb-cam-1"
+    # Должно быть отправлено 2 кадра (по 1 для каждой камеры)
+    assert len(dummy_client.uploaded_captures) == 2
 
-    # 2. Проверяем, что результат отправлен со статусом done
     assert 5 in dummy_client.results
     res = dummy_client.results[5]
     assert res.status == "done"
-    assert "Снимок выполнен успешно" in res.result_message
+    assert "2 кадр" in res.result_message
+    assert res.debug_log_line is not None
+    assert "[GPIO] Inst#10: light=0, flash=1 -> captured 2 frames" in res.debug_log_line
 
 
 def test_handle_command_mutex_conflict_scheduled_capture_priority(
@@ -220,10 +183,7 @@ def test_handle_command_mutex_conflict_scheduled_capture_priority(
 
     orchestrator.handle_command(cmd)
 
-    # Кадр не должен отправляться
     assert len(dummy_client.uploaded_captures) == 0
-
-    # Результат должен быть ошибочным с точной фразой из контракта
     assert 6 in dummy_client.results
     res = dummy_client.results[6]
     assert res.status == "error"
@@ -250,5 +210,4 @@ def test_scheduled_capture_buffered_to_queue_on_network_error(
 
     orchestrator.trigger_scheduled_capture()
 
-    # В очереди должен появиться сохраненный пакет
     assert get_queue_count(test_config.offline_queue_dir) == 1

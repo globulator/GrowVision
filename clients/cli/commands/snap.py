@@ -93,9 +93,9 @@ def snap_take(
     result_msg = resp.get("result_message", "")
 
     if status == "error":
-        console.print(f"[yellow]{result_msg or 'Ошибка выполнения снимка.'}[/yellow]")
         print_debug_info(resp.get("debug_info"))
-        return
+        err_console.print(result_msg or "Ошибка выполнения снимка")
+        raise typer.Exit(code=1)
 
     captures = resp.get("captures") or []
     if not captures:

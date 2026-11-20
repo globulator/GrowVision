@@ -2,7 +2,7 @@ import typer
 from rich.table import Table
 
 from clients.cli.client import APIClient
-from clients.cli.formatting import console, print_debug_info
+from clients.cli.formatting import console, err_console, print_debug_info
 from clients.cli.resolver import resolve_camera_target, resolve_installation_target
 
 camera_app = typer.Typer(
@@ -15,7 +15,7 @@ def camera_info() -> None:
     """Справка по разделу camera."""
     info_text = """[bold cyan]Раздел camera — Камеры на Raspberry Pi[/bold cyan]
 
-[bold]Назначение:[/bold] Просмотр, поиск (сканирование) и привязка USB/CSI камер к установкам.
+[bold]Назначение:[/bold] Просмотр, поиск (сканирование) и привязка USB камер к установкам.
 [bold]Минимальная роль:[/bold] Developer (для всех команд раздела).
 
 [bold]Список подкоманд:[/bold]
@@ -92,6 +92,13 @@ def camera_scan() -> None:
 
     if not isinstance(resp, dict):
         return
+
+    status = resp.get("status")
+    result_msg = resp.get("result_message", "")
+    if status == "error":
+        print_debug_info(resp.get("debug_info"))
+        err_console.print(result_msg or "Ошибка сканирования камер")
+        raise typer.Exit(code=1)
 
     cameras = resp.get("cameras") or []
     if not cameras:
