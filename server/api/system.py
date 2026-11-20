@@ -12,6 +12,7 @@ from server.api.deps import (
     get_db,
     require_role,
 )
+from server.core.system_status import is_rpi_online
 from server.db.models import SystemSetting, User
 from shared.version import get_app_version
 
@@ -47,29 +48,18 @@ def get_system_status(
 
     Версия сервера, статус подключения RPi, актуальные настройки и телеметрия.
     """
-    now = datetime.now(UTC)
-
     # 1. Телеметрия RPi и статус подключения
+    online, hb_dt = is_rpi_online(db)
+    rpi_connection = "online" if online else "offline"
+    rpi_last_heartbeat_at = format_utc_z(hb_dt) if hb_dt else None
+
     telem_setting = (
         db.query(SystemSetting)
         .filter(SystemSetting.key == "rpi_last_telemetry")
         .first()
     )
-
-    rpi_connection = "offline"
-    rpi_last_heartbeat_at = None
     rpi_telemetry = None
-
-    if telem_setting:
-        hb_dt = (
-            telem_setting.updated_at
-            if telem_setting.updated_at.tzinfo
-            else telem_setting.updated_at.replace(tzinfo=UTC)
-        )
-        if (now - hb_dt).total_seconds() <= 90.0:
-            rpi_connection = "online"
-
-        rpi_last_heartbeat_at = format_utc_z(telem_setting.updated_at)
+    if telem_setting and telem_setting.value:
         try:
             rpi_telemetry = json.loads(telem_setting.value)
         except json.JSONDecodeError:

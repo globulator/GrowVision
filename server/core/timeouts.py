@@ -1,8 +1,12 @@
+import time
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from server.core.state import app_state
 from server.db.models import EdgeCommand, Installation
+
+_last_state_cleanup = 0.0
 
 
 def expire_stale_commands(db: Session, now: datetime | None = None) -> int:
@@ -62,5 +66,11 @@ def expire_stale_commands(db: Session, now: datetime | None = None) -> int:
 
     if updated_count > 0:
         db.commit()
+
+    # Периодическая очистка app_state раз в 60 с
+    global _last_state_cleanup
+    if time.monotonic() - _last_state_cleanup >= 60.0:
+        app_state.cleanup_stale_entries(db, max_age_seconds=300.0)
+        _last_state_cleanup = time.monotonic()
 
     return updated_count

@@ -1,7 +1,6 @@
 import asyncio
 import json
 import time
-from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,7 +10,12 @@ from sqlalchemy.orm import Session
 from server.api.deps import format_utc_z, get_db, require_role
 from server.core.area import calculate_area_display
 from server.core.state import app_state
-from server.db.models import Capture, EdgeCommand, Installation, SystemSetting, User
+from server.core.system_status import (
+    check_rpi_online,
+    is_debug_mode,
+    validate_target_value,
+)
+from server.db.models import Capture, EdgeCommand, Installation, User
 
 router = APIRouter(prefix="/api/control", tags=["control"])
 
@@ -26,15 +30,7 @@ class SnapRequest(BaseModel):
     @field_validator("target", mode="before")
     @classmethod
     def validate_target(cls, v: Any) -> int | Literal["all"]:
-        if isinstance(v, bool):
-            raise ValueError("target не может быть boolean")  # noqa: TRY004
-        if isinstance(v, int):
-            if v <= 0:
-                raise ValueError("ID установки должен быть положительным числом")
-            return v
-        if v == "all":
-            return "all"
-        raise ValueError("target должен быть целым числом или 'all'")
+        return validate_target_value(v)
 
 
 class LightRequest(BaseModel):
@@ -48,15 +44,7 @@ class LightRequest(BaseModel):
     @field_validator("target", mode="before")
     @classmethod
     def validate_target(cls, v: Any) -> int | Literal["all"]:
-        if isinstance(v, bool):
-            raise ValueError("target не может быть boolean")  # noqa: TRY004
-        if isinstance(v, int):
-            if v <= 0:
-                raise ValueError("ID установки должен быть положительным числом")
-            return v
-        if v == "all":
-            return "all"
-        raise ValueError("target должен быть целым числом или 'all'")
+        return validate_target_value(v)
 
 
 class RelayTestRequest(BaseModel):
@@ -69,50 +57,7 @@ class RelayTestRequest(BaseModel):
     @field_validator("target", mode="before")
     @classmethod
     def validate_target(cls, v: Any) -> int | Literal["all"]:
-        if isinstance(v, bool):
-            raise ValueError("target не может быть boolean")  # noqa: TRY004
-        if isinstance(v, int):
-            if v <= 0:
-                raise ValueError("ID установки должен быть положительным числом")
-            return v
-        if v == "all":
-            return "all"
-        raise ValueError("target должен быть целым числом или 'all'")
-
-
-def check_rpi_online(db: Session) -> None:
-    """Проверяет подключение Raspberry Pi (heartbeat <= 90 с)."""
-    hb_setting = (
-        db.query(SystemSetting)
-        .filter(SystemSetting.key == "rpi_last_heartbeat_at")
-        .first()
-    )
-    if not hb_setting or not hb_setting.value:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Raspberry Pi офлайн",
-        )
-
-    try:
-        hb_time = datetime.fromisoformat(hb_setting.value)
-        if hb_time.tzinfo is None:
-            hb_time = hb_time.replace(tzinfo=UTC)
-        if (datetime.now(UTC) - hb_time).total_seconds() > 90.0:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Raspberry Pi офлайн",
-            )
-    except (ValueError, TypeError):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Raspberry Pi офлайн",
-        ) from None
-
-
-def is_debug_mode_enabled(db: Session) -> bool:
-    """Возвращает признак включения debug_mode."""
-    setting = db.query(SystemSetting).filter(SystemSetting.key == "debug_mode").first()
-    return setting.value.lower() == "true" if setting and setting.value else False
+        return validate_target_value(v)
 
 
 def validate_target_and_resolve(
@@ -148,7 +93,7 @@ def validate_target_and_resolve(
 async def wait_command_result(
     cmd_id: int, timeout_sec: float, db: Session
 ) -> EdgeCommand:
-    """Ожидает завершения команды RPi с таймаутом."""
+    """Ожидает завершения команды RPi с таймаутом. Сразу 504 при timeout."""
     start_time = time.monotonic()
     while time.monotonic() - start_time < timeout_sec:
         await asyncio.sleep(0.05)
@@ -158,6 +103,11 @@ async def wait_command_result(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Команда не найдена",
+            )
+        if cmd.status == "timeout":
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="Превышено время ожидания ответа Raspberry Pi",
             )
         if cmd.status in ("done", "error"):
             return cmd
@@ -179,7 +129,7 @@ def build_debug_info(
     cmd: EdgeCommand, user: User, db: Session
 ) -> dict[str, Any] | None:
     """Формирует debug_info для Developer при debug_mode=True."""
-    if user.role != "developer" or not is_debug_mode_enabled(db):
+    if user.role != "developer" or not is_debug_mode(db):
         return None
 
     payload_data = None
@@ -207,8 +157,11 @@ async def control_snap(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
     """4.4. POST /api/control/snap (Biologist, Developer)."""
-    check_rpi_online(db)
+    # 1. Проверка target (404/409)
     inst_id, is_global, active_count = validate_target_and_resolve(body.target, db)
+
+    # 2. Проверка онлайна RPi (503)
+    check_rpi_online(db)
 
     # Ожидание: 15 с для одиночной, 15 + 10 * N для "all"
     timeout_sec = 15.0 + 10.0 * active_count if is_global else 15.0
@@ -234,6 +187,7 @@ async def control_snap(
     }
 
     if finished_cmd.status == "error":
+        app_state.pop_captures_by_command(finished_cmd.id)
         debug_info = build_debug_info(finished_cmd, current_user, db)
         if debug_info:
             resp["debug_info"] = debug_info
@@ -288,8 +242,11 @@ async def control_light_main(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
     """4.4. POST /api/control/light/main (Developer)."""
-    check_rpi_online(db)
+    # 1. Проверка target
     inst_id, is_global, _ = validate_target_and_resolve(body.target, db)
+
+    # 2. Проверка онлайна RPi
+    check_rpi_online(db)
 
     cmd = EdgeCommand(
         command_type="LIGHT_MAIN",
@@ -322,8 +279,11 @@ async def control_light_flash(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
     """4.4. POST /api/control/light/flash (Developer)."""
-    check_rpi_online(db)
+    # 1. Проверка target
     inst_id, is_global, _ = validate_target_and_resolve(body.target, db)
+
+    # 2. Проверка онлайна RPi
+    check_rpi_online(db)
 
     cmd = EdgeCommand(
         command_type="LIGHT_FLASH",
@@ -356,8 +316,11 @@ async def control_relay_test(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
     """4.4. POST /api/control/relay-test (Developer)."""
-    check_rpi_online(db)
+    # 1. Проверка target
     inst_id, is_global, _ = validate_target_and_resolve(body.target, db)
+
+    # 2. Проверка онлайна RPi
+    check_rpi_online(db)
 
     cmd = EdgeCommand(
         command_type="RELAY_TEST",

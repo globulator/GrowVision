@@ -1,4 +1,5 @@
 import threading
+from typing import Any
 
 
 class InMemoryState:
@@ -58,6 +59,54 @@ class InMemoryState:
         with self._lock:
             self._command_to_captures.clear()
             self._command_to_scanned_cameras.clear()
+
+    def cleanup_stale_entries(self, db: Any, max_age_seconds: float = 300.0) -> int:
+        """Удаляет записи app_state для команд, завершенных более max_age_seconds назад."""
+        from datetime import UTC, datetime
+
+        from server.db.models import EdgeCommand
+
+        with self._lock:
+            candidate_ids = set(self._command_to_captures.keys()) | set(
+                self._command_to_scanned_cameras.keys()
+            )
+
+        if not candidate_ids:
+            return 0
+
+        finished_cmds = (
+            db.query(EdgeCommand)
+            .filter(
+                EdgeCommand.id.in_(candidate_ids),
+                EdgeCommand.status.in_(["timeout", "error", "done"]),
+            )
+            .all()
+        )
+
+        now = datetime.now(UTC)
+        cleaned_count = 0
+        to_delete = []
+
+        for cmd in finished_cmds:
+            ref_dt = cmd.started_at or cmd.created_at
+            if ref_dt:
+                if ref_dt.tzinfo is None:
+                    ref_dt = ref_dt.replace(tzinfo=UTC)
+                else:
+                    ref_dt = ref_dt.astimezone(UTC)
+                if (now - ref_dt).total_seconds() > max_age_seconds:
+                    to_delete.append(cmd.id)
+
+        with self._lock:
+            for cid in to_delete:
+                if cid in self._command_to_captures:
+                    del self._command_to_captures[cid]
+                    cleaned_count += 1
+                if cid in self._command_to_scanned_cameras:
+                    del self._command_to_scanned_cameras[cid]
+                    cleaned_count += 1
+
+        return cleaned_count
 
 
 app_state = InMemoryState()

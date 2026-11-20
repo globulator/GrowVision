@@ -19,6 +19,9 @@ from server.api.edge import get_media_dir
 from server.config import get_settings
 from server.core.area import calculate_area_display
 from server.db.models import Camera, Capture, Installation, User
+from shared.logger import get_logger
+
+logger = get_logger("server.timelapse")
 
 router = APIRouter(prefix="/api/timelapse", tags=["timelapse"])
 
@@ -32,25 +35,13 @@ class VideoRequest(BaseModel):
     step: int = Field(default=1, strict=True, ge=1)
 
 
-def resolve_media_file_path(image_path: str) -> Path:
-    """Находит полный путь к медиафайлу с учетом изоляции тестов."""
+def get_frame_file_path(image_path: str) -> Path:
+    """Строит абсолютный путь к файлу кадра строго через get_media_dir()."""
     base_media = get_media_dir()
     p = Path(image_path)
     if p.parts and p.parts[0] == "media":
-        rel = Path(*p.parts[1:])
-        direct_path = base_media / rel
-        if direct_path.is_file():
-            return direct_path
-
-    candidate = base_media / p
-    if candidate.is_file():
-        return candidate
-
-    repo_media = Path(__file__).resolve().parent.parent / image_path
-    if repo_media.is_file():
-        return repo_media
-
-    return base_media / (p.name if p.name else image_path)
+        return base_media / Path(*p.parts[1:])
+    return base_media / p
 
 
 @router.get("/{installation_id}/frames", response_model=dict[str, Any])
@@ -193,23 +184,24 @@ def generate_timelapse_video(
     if body.camera_id is None:
         check_conflicting_cameras(captures, db)
 
-    n_total = len(captures)
-    if n_total == 0:
+    # Кадры с отсутствующими файлами пропускаются
+    valid_captures: list[tuple[Capture, Path]] = []
+    for cap in captures:
+        file_path = get_frame_file_path(cap.raw_image_path)
+        if file_path.is_file():
+            valid_captures.append((cap, file_path))
+
+    n_valid = len(valid_captures)
+    if n_valid == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Плановые снимки не найдены",
         )
 
     # 1 кадр -> возвращаем JPEG оригинал
-    if n_total == 1:
-        single_cap = captures[0]
-        file_path = resolve_media_file_path(single_cap.raw_image_path)
-        if not file_path.is_file():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Файл кадра не найден на сервере",
-            )
-        img_bytes = file_path.read_bytes()
+    if n_valid == 1:
+        _, single_path = valid_captures[0]
+        img_bytes = single_path.read_bytes()
         return Response(
             content=img_bytes,
             media_type="image/jpeg",
@@ -219,11 +211,11 @@ def generate_timelapse_video(
     # >= 2 кадров -> сборка MP4 с прореживанием
     step = body.step
     if step <= 1:
-        selected = captures
+        selected = valid_captures
     else:
-        selected = captures[::step]
-        if captures[-1].id != selected[-1].id:
-            selected.append(captures[-1])
+        selected = valid_captures[::step]
+        if valid_captures[-1][0].id != selected[-1][0].id:
+            selected.append(valid_captures[-1])
 
     settings = get_settings()
     fps_max = settings.video_max_fps
@@ -237,20 +229,12 @@ def generate_timelapse_video(
 
     with tempfile.TemporaryDirectory() as tmp_dir_str:
         tmp_dir = Path(tmp_dir_str)
-        # Подготовка входных файлов для ffmpeg
-        for idx, cap in enumerate(selected, start=1):
-            src_file = resolve_media_file_path(cap.raw_image_path)
+        for idx, (_, src_file) in enumerate(selected, start=1):
             dst_link = tmp_dir / f"frame_{idx:06d}.jpg"
-            if src_file.is_file():
-                try:
-                    dst_link.symlink_to(src_file)
-                except OSError:
-                    dst_link.write_bytes(src_file.read_bytes())
-            else:
-                # Если файл отсутствует (например в тесте без генерации файла), создаем 1x1 заглушку JPEG
-                dst_link.write_bytes(
-                    b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x0b\x08\x00\x02\x00\x02\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xbf\x00\xff\xd9"
-                )
+            try:
+                dst_link.symlink_to(src_file)
+            except OSError:
+                dst_link.write_bytes(src_file.read_bytes())
 
         output_video = tmp_dir / "output.mp4"
         cmd = [
@@ -277,11 +261,27 @@ def generate_timelapse_video(
         ]
 
         try:
-            subprocess.run(cmd, check=True, capture_output=True)
-        except subprocess.CalledProcessError as e:
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                timeout=600,
+            )
+        except subprocess.TimeoutExpired as e:
+            logger.error("Таймаут сборки видео ffmpeg: %s", e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Ошибка кодирования ffmpeg: {e.stderr.decode(errors='replace')}",
+                detail="Ошибка кодирования видео",
+            ) from e
+        except subprocess.CalledProcessError as e:
+            logger.error(
+                "Ошибка ffmpeg (код %s): %s",
+                e.returncode,
+                e.stderr.decode(errors="replace"),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Ошибка кодирования видео",
             ) from e
 
         video_bytes = output_video.read_bytes()

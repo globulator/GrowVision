@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from server.api.deps import format_utc_z, get_db, require_role
 from server.core.state import app_state
-from server.db.models import Camera, EdgeCommand, Installation, SystemSetting, User
+from server.core.system_status import check_rpi_online, is_debug_mode
+from server.db.models import Camera, EdgeCommand, Installation, User
 
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
 
@@ -35,41 +36,6 @@ def serialize_camera(cam: Camera) -> dict[str, Any]:
     }
 
 
-def check_rpi_online_cameras(db: Session) -> None:
-    """Проверяет подключение Raspberry Pi (heartbeat <= 90 с)."""
-    hb_setting = (
-        db.query(SystemSetting)
-        .filter(SystemSetting.key == "rpi_last_heartbeat_at")
-        .first()
-    )
-    if not hb_setting or not hb_setting.value:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Raspberry Pi офлайн",
-        )
-
-    try:
-        hb_time = datetime.fromisoformat(hb_setting.value)
-        if hb_time.tzinfo is None:
-            hb_time = hb_time.replace(tzinfo=UTC)
-        if (datetime.now(UTC) - hb_time).total_seconds() > 90.0:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Raspberry Pi офлайн",
-            )
-    except (ValueError, TypeError):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Raspberry Pi офлайн",
-        ) from None
-
-
-def is_debug_mode_enabled_cameras(db: Session) -> bool:
-    """Возвращает признак включения debug_mode."""
-    setting = db.query(SystemSetting).filter(SystemSetting.key == "debug_mode").first()
-    return setting.value.lower() == "true" if setting and setting.value else False
-
-
 @router.post("/scan", response_model=dict[str, Any])
 async def scan_cameras(
     current_user: Annotated[User, Depends(require_role("developer"))],
@@ -79,7 +45,7 @@ async def scan_cameras(
 
     Запуск сканирования камер на Raspberry Pi (SCAN_CAMERAS) с ожиданием до 10 с.
     """
-    check_rpi_online_cameras(db)
+    check_rpi_online(db)
 
     cmd = EdgeCommand(
         command_type="SCAN_CAMERAS",
@@ -103,6 +69,11 @@ async def scan_cameras(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Команда не найдена",
             )
+        if check_cmd.status == "timeout":
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="Превышено время ожидания ответа Raspberry Pi",
+            )
         if check_cmd.status in ("done", "error"):
             finished_cmd = check_cmd
             break
@@ -124,7 +95,7 @@ async def scan_cameras(
     }
 
     debug_info = None
-    if is_debug_mode_enabled_cameras(db):
+    if is_debug_mode(db):
         debug_info = {
             "command": {
                 "id": finished_cmd.id,
@@ -136,6 +107,7 @@ async def scan_cameras(
         }
 
     if finished_cmd.status == "error":
+        app_state.pop_scanned_cameras(finished_cmd.id)
         resp["result_message"] = finished_cmd.result_message or "Ошибка сканирования"
         resp["cameras"] = []
         if debug_info:
