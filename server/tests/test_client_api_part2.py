@@ -74,18 +74,22 @@ def test_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def set_rpi_online(db: Session, delta_seconds: float = 10.0) -> None:
-    """Устанавливает свежий rpi_last_heartbeat_at."""
+    """Устанавливает updated_at записи rpi_last_telemetry."""
     hb_time = datetime.now(UTC) - timedelta(seconds=delta_seconds)
     st = (
         db.query(SystemSetting)
-        .filter(SystemSetting.key == "rpi_last_heartbeat_at")
+        .filter(SystemSetting.key == "rpi_last_telemetry")
         .first()
     )
     if not st:
-        st = SystemSetting(key="rpi_last_heartbeat_at", value=hb_time.isoformat())
+        st = SystemSetting(key="rpi_last_telemetry", value="{}")
         db.add(st)
-    else:
-        st.value = hb_time.isoformat()
+        db.commit()
+
+    db.query(SystemSetting).filter(SystemSetting.key == "rpi_last_telemetry").update(
+        {"value": "{}", "updated_at": hb_time},
+        synchronize_session=False,
+    )
     db.commit()
 
 
@@ -125,54 +129,46 @@ def login_user(client: TestClient, role: str) -> dict[str, str]:
 
 
 def test_control_rpi_offline_and_target_validations(test_env):
-    """Критерий 1: Проверка 503 при офлайне RPi и валидация target (404, 409, 422)."""
+    """Критерии 1 и 2: Строгий порядок проверок (401/403 -> 422 -> 404/409 -> 503)."""
     client = TestClient(app)
     session_factory = test_env["session_factory"]
     dev_headers = login_user(client, "developer")
+    bio_headers = login_user(client, "biologist")
 
-    # 1. RPi офлайн (heartbeat нет) -> 503
-    r_snap_offline = client.post(
+    # 1. Проверка роли (401 / 403)
+    r_unauth = client.post("/api/control/snap", json={"target": 1})
+    assert r_unauth.status_code == 401
+
+    r_forbidden = client.post(
+        "/api/control/light/main",
+        headers=bio_headers,
+        json={"target": 1, "state": True},
+    )
+    assert r_forbidden.status_code == 403
+
+    # 2. Валидация тела запроса (422) до проверки target и RPi
+    r_bad_target = client.post(
         "/api/control/snap",
         headers=dev_headers,
-        json={"target": 1},
+        json={"target": "invalid_string"},
     )
-    assert r_snap_offline.status_code == 503
-    assert r_snap_offline.json()["detail"] == "Raspberry Pi офлайн"
+    assert r_bad_target.status_code == 422
 
-    with session_factory() as db:
-        # Устанавливаем старый heartbeat (> 90 с)
-        set_rpi_online(db, delta_seconds=120.0)
+    for endpoint, payload in (
+        ("/api/control/snap", {"target": True}),
+        ("/api/control/snap", {"target": False}),
+        ("/api/control/snap", {"target": 0}),
+        ("/api/control/snap", {"target": -1}),
+        ("/api/control/light/main", {"target": True, "state": True}),
+        ("/api/control/light/flash", {"target": True, "state": False}),
+        ("/api/control/relay-test", {"target": True}),
+    ):
+        r_bool = client.post(endpoint, headers=dev_headers, json=payload)
+        assert r_bool.status_code == 422, (
+            f"{endpoint} должен возвращать 422 на невалидный target {payload}"
+        )
 
-    r_old_hb = client.post(
-        "/api/control/snap",
-        headers=dev_headers,
-        json={"target": 1},
-    )
-    assert r_old_hb.status_code == 503
-
-    # Теперь включаем RPi онлайн
-    with session_factory() as db:
-        set_rpi_online(db, delta_seconds=10.0)
-
-    # 2. Несуществующая установка -> 404
-    r_not_found = client.post(
-        "/api/control/snap",
-        headers=dev_headers,
-        json={"target": 999},
-    )
-    assert r_not_found.status_code == 404
-    assert r_not_found.json()["detail"] == "Установка не найдена"
-
-    # 3. target='all' без активных установок -> 409
-    r_all_no_active = client.post(
-        "/api/control/snap",
-        headers=dev_headers,
-        json={"target": "all"},
-    )
-    assert r_all_no_active.status_code == 409
-    assert r_all_no_active.json()["detail"] == "Нет активных установок"
-
-    # Создаем установку и архивируем её
+    # Создаем архивную установку для проверки 409
     with session_factory() as db:
         inst_arch = Installation(
             name="Archived Box",
@@ -185,7 +181,26 @@ def test_control_rpi_offline_and_target_validations(test_env):
         db.commit()
         arch_id = inst_arch.id
 
-    # 4. Обращение к архивной установке -> 409
+    # 3. При RPi ОФЛАЙН проверка target ДОЛЖНА отрабатывать раньше проверки онлайна RPi:
+    # 3.1. Несуществующая установка -> 404 (не 503!)
+    r_not_found = client.post(
+        "/api/control/snap",
+        headers=dev_headers,
+        json={"target": 9999},
+    )
+    assert r_not_found.status_code == 404
+    assert r_not_found.json()["detail"] == "Установка не найдена"
+
+    # 3.2. target="all" без активных установок -> 409 (не 503!)
+    r_all_no_active = client.post(
+        "/api/control/snap",
+        headers=dev_headers,
+        json={"target": "all"},
+    )
+    assert r_all_no_active.status_code == 409
+    assert r_all_no_active.json()["detail"] == "Нет активных установок"
+
+    # 3.3. Обращение к архивной установке -> 409 (не 503!)
     r_arch = client.post(
         "/api/control/snap",
         headers=dev_headers,
@@ -194,27 +209,72 @@ def test_control_rpi_offline_and_target_validations(test_env):
     assert r_arch.status_code == 409
     assert r_arch.json()["detail"] == "Установка в архиве"
 
-    # 5. Валидация target (не число и не 'all') -> 422
-    r_bad_target = client.post(
+    # Создаем активную установку
+    with session_factory() as db:
+        inst_active = Installation(
+            name="Active Test Box",
+            culture_name="Mint",
+            light_gpio_pin=12,
+            flash_gpio_pin=13,
+            is_archived=False,
+        )
+        db.add(inst_active)
+        db.commit()
+        active_id = inst_active.id
+
+    # 4. Проверка онлайна RPi (503): target валиден и существует, но RPi офлайн
+    # 4.1. rpi_last_telemetry вообще нет
+    r_snap_offline = client.post(
         "/api/control/snap",
         headers=dev_headers,
-        json={"target": "invalid_string"},
+        json={"target": active_id},
     )
-    assert r_bad_target.status_code == 422
+    assert r_snap_offline.status_code == 503
+    assert r_snap_offline.json()["detail"] == "Raspberry Pi офлайн"
 
-    # 6. Регрессионный тест: boolean target (True / False) -> 422 для всех эндпоинтов управления
-    for endpoint, payload in (
-        ("/api/control/snap", {"target": True}),
-        ("/api/control/snap", {"target": False}),
-        ("/api/control/light/main", {"target": True, "state": True}),
-        ("/api/control/light/flash", {"target": True, "state": False}),
-        ("/api/control/relay-test", {"target": True}),
-    ):
-        r_bool = client.post(endpoint, headers=dev_headers, json=payload)
-        assert r_bool.status_code == 422, (
-            f"{endpoint} должен возвращать 422 на boolean target"
-        )
-        assert "target: target не может быть boolean" in r_bool.json()["detail"]
+    r_all_offline = client.post(
+        "/api/control/snap",
+        headers=dev_headers,
+        json={"target": "all"},
+    )
+    assert r_all_offline.status_code == 503
+    assert r_all_offline.json()["detail"] == "Raspberry Pi офлайн"
+
+    # 4.2. rpi_last_telemetry устарел (> 90 с)
+    with session_factory() as db:
+        set_rpi_online(db, delta_seconds=120.0)
+
+    r_old_telem = client.post(
+        "/api/control/snap",
+        headers=dev_headers,
+        json={"target": active_id},
+    )
+    assert r_old_telem.status_code == 503
+    assert r_old_telem.json()["detail"] == "Raspberry Pi офлайн"
+
+    # 4.3. POST /api/cameras/scan при офлайн RPi -> 503
+    r_scan_offline = client.post("/api/cameras/scan", headers=dev_headers)
+    assert r_scan_offline.status_code == 503
+    assert r_scan_offline.json()["detail"] == "Raspberry Pi офлайн"
+
+    # 5. При включении RPi онлайн (<= 90 с):
+    with session_factory() as db:
+        set_rpi_online(db, delta_seconds=10.0)
+
+    # 404 и 409 продолжают корректно работать
+    r_not_found_on = client.post(
+        "/api/control/snap",
+        headers=dev_headers,
+        json={"target": 9999},
+    )
+    assert r_not_found_on.status_code == 404
+
+    r_arch_on = client.post(
+        "/api/control/snap",
+        headers=dev_headers,
+        json={"target": arch_id},
+    )
+    assert r_arch_on.status_code == 409
 
 
 def test_control_snap_lifecycle_and_debug_info(test_env, monkeypatch):
@@ -741,3 +801,310 @@ def test_static_files_serving(test_env):
     # 2. Раздача /media
     r_media = client.get("/media/.gitkeep")
     assert r_media.status_code in (200, 404)
+
+
+def test_control_wait_command_timeout_immediate_504(test_env, monkeypatch):
+    """Критерий 4: Мгновенный 504 при переходе команды в статус 'timeout' в wait_command_result."""
+    import time
+
+    client = TestClient(app)
+    session_factory = test_env["session_factory"]
+    dev_headers = login_user(client, "developer")
+
+    with session_factory() as db:
+        set_rpi_online(db, delta_seconds=5.0)
+        inst = Installation(
+            name="Timeout Fast Box",
+            culture_name="Dill",
+            light_gpio_pin=28,
+            flash_gpio_pin=29,
+        )
+        db.add(inst)
+        db.commit()
+        inst_id = inst.id
+
+    orig_sleep = asyncio.sleep
+
+    async def mock_sleep_timeout(delay: float):
+        with session_factory() as db:
+            cmd = (
+                db.query(EdgeCommand).filter(EdgeCommand.command_type == "SNAP").first()
+            )
+            if cmd and cmd.status == "pending":
+                cmd.status = "timeout"
+                db.commit()
+        await orig_sleep(0.01)
+
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep_timeout)
+
+    t0 = time.monotonic()
+    r = client.post(
+        "/api/control/snap",
+        headers=dev_headers,
+        json={"target": inst_id},
+    )
+    elapsed = time.monotonic() - t0
+
+    assert r.status_code == 504
+    assert r.json()["detail"] == "Превышено время ожидания ответа Raspberry Pi"
+    assert elapsed < 3.0
+
+
+def test_control_snap_error_cleans_app_state(test_env, monkeypatch):
+    """Критерий 6: При статусе error команды SNAP запись удаляется из app_state."""
+    client = TestClient(app)
+    session_factory = test_env["session_factory"]
+    dev_headers = login_user(client, "developer")
+
+    with session_factory() as db:
+        set_rpi_online(db, delta_seconds=5.0)
+        inst = Installation(
+            name="Snap Error Box",
+            culture_name="Oregano",
+            light_gpio_pin=32,
+            flash_gpio_pin=33,
+        )
+        db.add(inst)
+        db.commit()
+        inst_id = inst.id
+
+    async def mock_wait_cmd_error(cmd_id: int, timeout_sec: float, db: Session):
+        db.expire_all()
+        cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd_id).first()
+        cmd.status = "error"
+        cmd.result_message = "Камера не ответила"
+        db.commit()
+        app_state.bind_command_capture(cmd_id, 9999)
+        return cmd
+
+    monkeypatch.setattr("server.api.control.wait_command_result", mock_wait_cmd_error)
+
+    r = client.post(
+        "/api/control/snap",
+        headers=dev_headers,
+        json={"target": inst_id},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "error"
+    assert data["result_message"] == "Камера не ответила"
+
+    assert app_state.get_capture_by_command(data["command_id"]) is None
+    assert app_state.pop_captures_by_command(data["command_id"]) == []
+
+
+def test_cameras_scan_error_and_timeout(test_env, monkeypatch):
+    """Критерии 4 и 6: SCAN_CAMERAS мгновенный 504 при timeout и очистка app_state при error."""
+    import time
+
+    client = TestClient(app)
+    session_factory = test_env["session_factory"]
+    dev_headers = login_user(client, "developer")
+
+    with session_factory() as db:
+        set_rpi_online(db, delta_seconds=5.0)
+
+    orig_sleep = asyncio.sleep
+
+    # 1. SCAN_CAMERAS уходит в timeout -> быстрый 504
+    async def mock_sleep_scan_timeout(delay: float):
+        with session_factory() as db:
+            cmd = (
+                db.query(EdgeCommand)
+                .filter(EdgeCommand.command_type == "SCAN_CAMERAS")
+                .first()
+            )
+            if cmd and cmd.status == "pending":
+                cmd.status = "timeout"
+                db.commit()
+        await orig_sleep(0.01)
+
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep_scan_timeout)
+
+    t0 = time.monotonic()
+    r_timeout = client.post("/api/cameras/scan", headers=dev_headers)
+    elapsed = time.monotonic() - t0
+    assert r_timeout.status_code == 504
+    assert elapsed < 3.0
+
+    # 2. SCAN_CAMERAS завершается со статусом error -> app_state очищен
+    async def mock_sleep_scan_error(delay: float):
+        with session_factory() as db:
+            cmd = (
+                db.query(EdgeCommand)
+                .filter(EdgeCommand.command_type == "SCAN_CAMERAS")
+                .order_by(EdgeCommand.id.desc())
+                .first()
+            )
+            if cmd and cmd.status == "pending":
+                cmd.status = "error"
+                cmd.result_message = "USB контроллер занят"
+                db.commit()
+                app_state.save_scanned_cameras(cmd.id, ["temp-cam"])
+        await orig_sleep(0.01)
+
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep_scan_error)
+    r_error = client.post("/api/cameras/scan", headers=dev_headers)
+    assert r_error.status_code == 200
+    data = r_error.json()
+    assert data["status"] == "error"
+    assert data["result_message"] == "USB контроллер занят"
+    assert app_state.pop_scanned_cameras(data["command_id"]) is None
+
+
+def test_app_state_cleanup_stale_entries(test_env):
+    """Критерий 6: Периодическая очистка app_state для команд старше 5 минут."""
+    session_factory = test_env["session_factory"]
+    now = datetime.now(UTC)
+
+    with session_factory() as db:
+        cmd_stale_done = EdgeCommand(
+            command_type="SNAP",
+            is_global=True,
+            status="done",
+            created_at=now - timedelta(minutes=6),
+            started_at=now - timedelta(minutes=6),
+        )
+        cmd_stale_timeout = EdgeCommand(
+            command_type="SNAP",
+            is_global=True,
+            status="timeout",
+            created_at=now - timedelta(minutes=10),
+            started_at=now - timedelta(minutes=10),
+        )
+        cmd_fresh_done = EdgeCommand(
+            command_type="SNAP",
+            is_global=True,
+            status="done",
+            created_at=now - timedelta(minutes=1),
+            started_at=now - timedelta(minutes=1),
+        )
+        db.add_all([cmd_stale_done, cmd_stale_timeout, cmd_fresh_done])
+        db.commit()
+
+        app_state.bind_command_capture(cmd_stale_done.id, 101)
+        app_state.save_scanned_cameras(cmd_stale_timeout.id, ["cam-old"])
+        app_state.bind_command_capture(cmd_fresh_done.id, 202)
+
+        cleaned = app_state.cleanup_stale_entries(db, max_age_seconds=300.0)
+        assert cleaned == 2
+
+        assert app_state.get_capture_by_command(cmd_stale_done.id) is None
+        assert app_state.get_scanned_cameras(cmd_stale_timeout.id) is None
+        assert app_state.get_capture_by_command(cmd_fresh_done.id) == 202
+
+
+def test_timelapse_missing_files_and_ffmpeg_errors(test_env, monkeypatch):
+    """Критерий 5: Пропуск отсутствующих кадров, 404 если 0, timeout=600 и чистый 500 detail при ошибке ffmpeg."""
+    import subprocess
+
+    client = TestClient(app)
+    session_factory = test_env["session_factory"]
+    media_dir = test_env["media_dir"]
+    dev_headers = login_user(client, "developer")
+
+    with session_factory() as db:
+        inst = Installation(
+            name="Missing Frames Box",
+            culture_name="Thyme",
+            light_gpio_pin=34,
+            flash_gpio_pin=35,
+        )
+        db.add(inst)
+        db.flush()
+        inst_id = inst.id
+
+        cam = Camera(
+            hardware_id="cam-missing-1",
+            auto_name="Missing Cam",
+            installation_id=inst_id,
+        )
+        db.add(cam)
+        db.flush()
+
+        cap1 = Capture(
+            installation_id=inst_id,
+            camera_id=cam.id,
+            captured_at=datetime.now(UTC) - timedelta(hours=3),
+            is_manual=False,
+            raw_image_path=f"media/{inst_id}/missing_1.jpg",
+            annotated_image_path=f"media/{inst_id}/missing_1_ann.jpg",
+        )
+        cap2 = Capture(
+            installation_id=inst_id,
+            camera_id=cam.id,
+            captured_at=datetime.now(UTC) - timedelta(hours=2),
+            is_manual=False,
+            raw_image_path=f"media/{inst_id}/exists_2.jpg",
+            annotated_image_path=f"media/{inst_id}/exists_2_ann.jpg",
+        )
+        cap3 = Capture(
+            installation_id=inst_id,
+            camera_id=cam.id,
+            captured_at=datetime.now(UTC) - timedelta(hours=1),
+            is_manual=False,
+            raw_image_path=f"media/{inst_id}/missing_3.jpg",
+            annotated_image_path=f"media/{inst_id}/missing_3_ann.jpg",
+        )
+        db.add_all([cap1, cap2, cap3])
+        db.commit()
+
+    # 1. Файлов нет вообще -> 404 "Плановые снимки не найдены"
+    r_no_files = client.post(
+        f"/api/timelapse/{inst_id}/video",
+        headers=dev_headers,
+        json={},
+    )
+    assert r_no_files.status_code == 404
+    assert r_no_files.json()["detail"] == "Плановые снимки не найдены"
+
+    # 2. Создаем файл только для cap2 -> пропустит 1 и 3, останется ровно 1 кадр -> 200 image/jpeg
+    inst_dir = media_dir / str(inst_id)
+    inst_dir.mkdir(parents=True, exist_ok=True)
+    jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x0b\x08\x00\x02\x00\x02\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xbf\x00\xff\xd9"
+    (inst_dir / "exists_2.jpg").write_bytes(jpeg_bytes)
+
+    r_one_valid = client.post(
+        f"/api/timelapse/{inst_id}/video",
+        headers=dev_headers,
+        json={},
+    )
+    assert r_one_valid.status_code == 200
+    assert r_one_valid.headers["content-type"] == "image/jpeg"
+    assert r_one_valid.content == jpeg_bytes
+
+    # 3. Создаем второй файл -> 2 кадра -> сборка ffmpeg
+    (inst_dir / "missing_3.jpg").write_bytes(jpeg_bytes)
+
+    # 3.1. Ошибка процесса CalledProcessError -> 500 без путей и stderr
+    def mock_run_error(*args, **kwargs):
+        assert kwargs.get("timeout") == 600
+        raise subprocess.CalledProcessError(
+            returncode=1,
+            cmd=args[0],
+            stderr=b"Internal ffmpeg error /tmp/secret/path",
+        )
+
+    monkeypatch.setattr(subprocess, "run", mock_run_error)
+    r_err = client.post(
+        f"/api/timelapse/{inst_id}/video",
+        headers=dev_headers,
+        json={},
+    )
+    assert r_err.status_code == 500
+    assert r_err.json() == {"detail": "Ошибка кодирования видео"}
+    assert "secret" not in r_err.text
+    assert "ffmpeg" not in r_err.text
+
+    # 3.2. Таймаут TimeoutExpired -> 500 без путей и stderr
+    def mock_run_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=600)
+
+    monkeypatch.setattr(subprocess, "run", mock_run_timeout)
+    r_to = client.post(
+        f"/api/timelapse/{inst_id}/video",
+        headers=dev_headers,
+        json={},
+    )
+    assert r_to.status_code == 500
+    assert r_to.json() == {"detail": "Ошибка кодирования видео"}
