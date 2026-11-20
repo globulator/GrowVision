@@ -1,0 +1,17 @@
+# Local environment
+.env
+*.env
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Offline queue data
+offline_queue/*
+!offline_queue/.gitkeep
+!offline_queue/failed
+offline_queue/failed/*
+!offline_queue/failed/.gitkeep
