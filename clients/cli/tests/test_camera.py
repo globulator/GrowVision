@@ -105,3 +105,23 @@ def test_camera_bind_and_unbind(cli_runner, temp_session_file, mock_client_facto
     res_unbind = cli_runner.invoke(app, ["camera", "unbind", "3"])
     assert res_unbind.exit_code == 0
     assert "успешно отвязана от установки" in res_unbind.stdout
+
+
+def test_camera_scan_error_status(cli_runner, temp_session_file, mock_client_factory):
+    """Команда camera scan при status == 'error' выводит ошибку в stderr и завершается с кодом 1."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "command_id": 16,
+                "status": "error",
+                "result_message": "Камера недоступна, попробуйте позже",
+                "cameras": [],
+            },
+        )
+
+    mock_client_factory(handler)
+    res = cli_runner.invoke(app, ["camera", "scan"])
+    assert res.exit_code == 1
+    assert "Камера недоступна, попробуйте позже" in (res.stderr + res.stdout)

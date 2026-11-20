@@ -2,7 +2,7 @@ import httpx
 import typer
 
 from clients.cli.client import APIClient
-from clients.cli.formatting import console, print_debug_info
+from clients.cli.formatting import console, err_console, print_debug_info
 from clients.cli.resolver import resolve_installation_target
 
 light_app = typer.Typer(
@@ -104,11 +104,11 @@ def light_main(
     if isinstance(resp, dict):
         status = resp.get("status")
         msg = resp.get("result_message", "Команда выполнена")
-        if status == "done":
-            console.print(f"[green]{msg}[/green]")
-        else:
-            console.print(f"[yellow]{msg}[/yellow]")
         print_debug_info(resp.get("debug_info"))
+        if status == "error":
+            err_console.print(msg)
+            raise typer.Exit(code=1)
+        console.print(f"[green]{msg}[/green]")
 
 
 @light_app.command(name="flash")
@@ -149,11 +149,11 @@ def light_flash(
     if isinstance(resp, dict):
         status = resp.get("status")
         msg = resp.get("result_message", "Команда выполнена")
-        if status == "done":
-            console.print(f"[green]{msg}[/green]")
-        else:
-            console.print(f"[yellow]{msg}[/yellow]")
         print_debug_info(resp.get("debug_info"))
+        if status == "error":
+            err_console.print(msg)
+            raise typer.Exit(code=1)
+        console.print(f"[green]{msg}[/green]")
 
 
 @light_app.command(name="test")
@@ -189,8 +189,8 @@ def light_test(
     if isinstance(resp, dict):
         status = resp.get("status")
         msg = resp.get("result_message", "Тест реле завершен")
-        if status == "done":
-            console.print(f"[green]{msg}[/green]")
-        else:
-            console.print(f"[yellow]{msg}[/yellow]")
         print_debug_info(resp.get("debug_info"))
+        if status == "error":
+            err_console.print(msg)
+            raise typer.Exit(code=1)
+        console.print(f"[green]{msg}[/green]")
