@@ -71,17 +71,100 @@ def system_status() -> None:
 
     telemetry = resp.get("rpi_telemetry")
     if telemetry and isinstance(telemetry, dict):
+        sw = telemetry.get("software")
+        if not isinstance(sw, dict):
+            sw = telemetry
+        hw = telemetry.get("hardware")
+        if not isinstance(hw, dict):
+            hw = telemetry
+
+        edge_ver = sw.get("edge_version") or telemetry.get("edge_version") or "—"
+        py_ver = sw.get("python_version") or telemetry.get("python_version") or "—"
+
+        board = (
+            hw.get("board_model")
+            or sw.get("model_name")
+            or telemetry.get("board_model")
+            or telemetry.get("model_name")
+            or "—"
+        )
+        os_info = hw.get("os_info") or telemetry.get("os_info") or "—"
+        model_os = f"{board} ({os_info})" if os_info != "—" else board
+
+        gpio_mode = hw.get("gpio_mode") or telemetry.get("gpio_mode") or "—"
+
+        uptime_raw = (
+            hw.get("uptime_sec")
+            if hw.get("uptime_sec") is not None
+            else hw.get("uptime_seconds")
+        )
+        if uptime_raw is None:
+            uptime_raw = (
+                telemetry.get("uptime_sec")
+                if telemetry.get("uptime_sec") is not None
+                else telemetry.get("uptime_seconds")
+            )
+        if uptime_raw is not None and isinstance(uptime_raw, (int, float)):
+            uptime_sec = int(uptime_raw)
+            uptime_str = f"{uptime_sec // 3600} ч {(uptime_sec % 3600) // 60} мин"
+        else:
+            uptime_str = "—"
+
+        cpu_temp = (
+            hw.get("cpu_temp_c")
+            if hw.get("cpu_temp_c") is not None
+            else telemetry.get("cpu_temp_c")
+        )
+        cpu_temp_str = f"{cpu_temp} °C" if cpu_temp is not None else "—"
+
+        cpu_usage = (
+            hw.get("cpu_usage_percent")
+            if hw.get("cpu_usage_percent") is not None
+            else hw.get("cpu_load_percent")
+        )
+        if cpu_usage is None:
+            cpu_usage = (
+                telemetry.get("cpu_usage_percent")
+                if telemetry.get("cpu_usage_percent") is not None
+                else telemetry.get("cpu_load_percent")
+            )
+        cpu_usage_str = f"{cpu_usage} %" if cpu_usage is not None else "—"
+
+        ram_used = (
+            hw.get("ram_used_mb")
+            if hw.get("ram_used_mb") is not None
+            else telemetry.get("ram_used_mb")
+        )
+        ram_total = (
+            hw.get("ram_total_mb")
+            if hw.get("ram_total_mb") is not None
+            else telemetry.get("ram_total_mb")
+        )
+        if ram_used is not None and ram_total is not None:
+            ram_str = f"{ram_used} / {ram_total} МБ"
+        else:
+            ram_str = "—"
+
+        disk_free = (
+            hw.get("disk_free_gb")
+            if hw.get("disk_free_gb") is not None
+            else telemetry.get("disk_free_gb")
+        )
+        disk_str = f"{disk_free} ГБ" if disk_free is not None else "—"
+
+        queue_count = telemetry.get("offline_queue_count", 0)
+
         rpi_lines = [
-            f"[bold]Edge Agent:[/bold] {telemetry.get('edge_version', '—')}",
-            f"[bold]Python:[/bold] {telemetry.get('python_version', '—')}",
-            f"[bold]Модель / ОС:[/bold] {telemetry.get('model_name', '—')} ({telemetry.get('os_info', '—')})",
-            f"[bold]Режим GPIO:[/bold] {telemetry.get('gpio_mode', '—')}",
-            f"[bold]Аптайм:[/bold] {telemetry.get('uptime_seconds', 0) // 3600} ч {(telemetry.get('uptime_seconds', 0) % 3600) // 60} мин",
-            f"[bold]Температура CPU:[/bold] {telemetry.get('cpu_temp_c', '—')} °C",
-            f"[bold]Загрузка CPU:[/bold] {telemetry.get('cpu_load_percent', '—')} %",
-            f"[bold]RAM:[/bold] {telemetry.get('ram_used_mb', '—')} / {telemetry.get('ram_total_mb', '—')} МБ",
-            f"[bold]Свободно на диске:[/bold] {telemetry.get('disk_free_gb', '—')} ГБ",
-            f"[bold]Очередь офлайн:[/bold] {telemetry.get('offline_queue_count', 0)}",
+            f"[bold]Edge Agent:[/bold] {edge_ver}",
+            f"[bold]Python:[/bold] {py_ver}",
+            f"[bold]Модель / ОС:[/bold] {model_os}",
+            f"[bold]Режим GPIO:[/bold] {gpio_mode}",
+            f"[bold]Аптайм:[/bold] {uptime_str}",
+            f"[bold]Температура CPU:[/bold] {cpu_temp_str}",
+            f"[bold]Загрузка CPU:[/bold] {cpu_usage_str}",
+            f"[bold]RAM:[/bold] {ram_str}",
+            f"[bold]Свободно на диске:[/bold] {disk_str}",
+            f"[bold]Очередь офлайн:[/bold] {queue_count}",
         ]
         console.print(
             Panel("\n".join(rpi_lines), title="Телеметрия Raspberry Pi", expand=False)

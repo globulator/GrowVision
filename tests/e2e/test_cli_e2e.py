@@ -596,3 +596,76 @@ def test_cli_e2e_negative_scenarios(e2e_uvicorn_server):
     assert res_not_found.returncode == 1
     assert "Установка не найдена" in res_not_found.stderr
     assert "Traceback" not in res_not_found.stderr
+
+
+# ==============================================================================
+# 5. Сквозной тест телеметрии system status (LIGHT-доработка)
+# ==============================================================================
+def test_cli_e2e_system_status_telemetry(e2e_uvicorn_server):
+    """Критерий 3: system status отображает реальные данные телеметрии после heartbeat."""
+    srv = e2e_uvicorn_server
+    base_url = srv["base_url"]
+    client_key = srv["client_key"]
+    edge_key = srv["edge_key"]
+    session_file = srv["tmp_path"] / "cli_session_sys_status.json"
+
+    # 1. Отправляем валидный heartbeat от Edge-агента с полной телеметрией
+    hb_payload = {
+        "software": {
+            "edge_version": "0.1.0-e2e",
+            "python_version": "3.12.8",
+            "model_name": "RPi-5-Model-B",
+        },
+        "hardware": {
+            "board_model": "Raspberry Pi 5 Rev 1.0",
+            "os_info": "Linux Debian 12 (bookworm)",
+            "uptime_sec": 7320,
+            "cpu_temp_c": 45.5,
+            "cpu_usage_percent": 15.2,
+            "ram_used_mb": 620,
+            "ram_total_mb": 4096,
+            "disk_free_gb": 32.1,
+            "gpio_mode": "gpiod",
+        },
+        "offline_queue_count": 0,
+        "detected_cameras": [],
+    }
+    with httpx.Client(base_url=base_url, timeout=5.0) as http_cl:
+        r_hb = http_cl.post(
+            "/api/edge/heartbeat",
+            headers={"X-Edge-Key": edge_key},
+            json=hb_payload,
+        )
+        assert r_hb.status_code == 200
+
+    # 2. Авторизуемся под Developer в CLI
+    res_login = run_cli_cmd(
+        "auth",
+        "login",
+        server_url=base_url,
+        client_key=client_key,
+        session_file=session_file,
+        input_text=f"developer\n{srv['dev_pass']}\n",
+    )
+    assert res_login.returncode == 0
+
+    # 3. Вызываем system status через CLI-подпроцесс
+    res_status = run_cli_cmd(
+        "system",
+        "status",
+        server_url=base_url,
+        client_key=client_key,
+        session_file=session_file,
+    )
+    assert res_status.returncode == 0
+    assert "online" in res_status.stdout
+    assert "Телеметрия Raspberry Pi" in res_status.stdout
+    assert "0.1.0-e2e" in res_status.stdout
+    assert "3.12.8" in res_status.stdout
+    assert "Raspberry Pi 5 Rev 1.0 (Linux Debian 12 (bookworm))" in res_status.stdout
+    assert "gpiod" in res_status.stdout
+    assert "2 ч 2 мин" in res_status.stdout
+    assert "45.5 °C" in res_status.stdout
+    assert "15.2 %" in res_status.stdout
+    assert "620 / 4096 МБ" in res_status.stdout
+    assert "32.1 ГБ" in res_status.stdout
