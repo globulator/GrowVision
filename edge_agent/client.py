@@ -1,0 +1,156 @@
+import httpx
+
+from shared.logger import get_logger
+from shared.schemas import (
+    CaptureMeta,
+    CommandItem,
+    CommandResult,
+    HeartbeatRequest,
+    HeartbeatResponse,
+)
+
+logger = get_logger("edge_agent.client")
+
+
+class EdgeAPIClient:
+    """HTTP-клиент для взаимодействия с сервером GrowVision по Edge API."""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        timeout: float = 15.0,
+        transport: httpx.BaseTransport | None = None,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout = timeout
+        self.transport = transport
+
+    def _get_headers(self) -> dict[str, str]:
+        """Возвращает обязательные заголовки запроса к Edge API."""
+        return {
+            "X-Edge-Key": self.api_key,
+        }
+
+    def _create_client(self) -> httpx.Client:
+        """Создает экземпляр синхронного httpx.Client."""
+        return httpx.Client(
+            base_url=self.base_url,
+            headers=self._get_headers(),
+            timeout=self.timeout,
+            transport=self.transport,
+        )
+
+    def send_heartbeat(self, telemetry: HeartbeatRequest) -> HeartbeatResponse | None:
+        """Отправляет телеметрию на POST /api/edge/heartbeat и получает актуальный конфиг."""
+        url = "/api/edge/heartbeat"
+        try:
+            with self._create_client() as client:
+                resp = client.post(
+                    url,
+                    content=telemetry.model_dump_json(),
+                    headers={"Content-Type": "application/json"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    logger.debug(f"Heartbeat успешно доставлен: {data}")
+                    return HeartbeatResponse.model_validate(data)
+                logger.warning(
+                    f"Heartbeat вернул статус {resp.status_code}: {resp.text}"
+                )
+                return None
+        except httpx.RequestError as exc:
+            logger.warning(f"Ошибка сети при отправке Heartbeat: {exc}")
+            return None
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Неожиданная ошибка при Heartbeat: {exc}")
+            return None
+
+    def claim_command(self) -> list[CommandItem]:
+        """Забирает одну ожидающую команду из очереди: POST /api/edge/commands/claim."""
+        url = "/api/edge/commands/claim"
+        try:
+            with self._create_client() as client:
+                resp = client.post(url)
+                if resp.status_code == 200:
+                    raw_items = resp.json()
+                    if isinstance(raw_items, list):
+                        return [CommandItem.model_validate(item) for item in raw_items]
+                    return []
+                logger.warning(f"Claim вернул статус {resp.status_code}: {resp.text}")
+                return []
+        except httpx.RequestError as exc:
+            logger.debug(f"Ошибка сети при опросе claim: {exc}")
+            return []
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Ошибка при получении команд claim: {exc}")
+            return []
+
+    def send_command_result(self, command_id: int, result: CommandResult) -> bool:
+        """Отправляет отчет о выполнении команды: POST /api/edge/commands/{command_id}/result."""
+        url = f"/api/edge/commands/{command_id}/result"
+        try:
+            with self._create_client() as client:
+                resp = client.post(
+                    url,
+                    content=result.model_dump_json(),
+                    headers={"Content-Type": "application/json"},
+                )
+                if resp.status_code == 200:
+                    logger.info(
+                        f"Отчет по команде #{command_id} успешно доставлен: {result.status}"
+                    )
+                    return True
+                if resp.status_code == 409:
+                    logger.warning(
+                        f"Команда #{command_id} уже не running (409 Conflict, возможно timeout). Отчет отброшен."
+                    )
+                    return False
+                logger.warning(
+                    f"Отправка результата команды #{command_id} вернула {resp.status_code}: {resp.text}"
+                )
+                return False
+        except httpx.RequestError as exc:
+            logger.warning(
+                f"Ошибка сети при отправке результата команды #{command_id}: {exc}"
+            )
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                f"Неожиданная ошибка при отправке результата #{command_id}: {exc}"
+            )
+            return False
+
+    def upload_capture(
+        self,
+        metadata: CaptureMeta,
+        raw_bytes: bytes,
+        annotated_bytes: bytes,
+    ) -> tuple[int, dict[str, str | int]]:
+        """Загружает кадр и замеры на сервер: POST /api/edge/captures.
+
+        Возвращает (status_code, response_json). При ошибке соединения status_code = 0.
+        """
+        url = "/api/edge/captures"
+        data = {
+            "metadata": metadata.model_dump_json(),
+        }
+        files = {
+            "raw_image": ("raw.jpg", raw_bytes, "image/jpeg"),
+            "annotated_image": ("ann.jpg", annotated_bytes, "image/jpeg"),
+        }
+        try:
+            with self._create_client() as client:
+                resp = client.post(url, data=data, files=files)
+                try:
+                    resp_json = resp.json()
+                except Exception:  # noqa: BLE001
+                    resp_json = {"raw": resp.text}
+                return resp.status_code, resp_json
+        except httpx.RequestError as exc:
+            logger.warning(f"Ошибка соединения при выгрузке кадра: {exc}")
+            return 0, {"error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Неожиданная ошибка при выгрузке кадра: {exc}")
+            return 0, {"error": str(exc)}
