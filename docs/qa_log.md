@@ -1,7 +1,19 @@
 # Журнал контроля качества (QA Log)
 
 ## 1. Открытые дефекты и замечания
-*(Открытых дефектов нет)*
+- **[BUG-001]** | Критичность: `MAJOR` | Статус: `OPEN`
+  - **Коммит обнаружения:** `a155d98`
+  - **Где:** `clients/telegram_bot/api_client.py:login` (`POST /api/auth/login`)
+  - **Шаги воспроизведения:** Выполнить авторизацию в Telegram-боте (`/login`, ввод логина и пароля) против живого сервера Client API GrowVision.
+  - **Ожидаемый результат (по спецификации API_CONTRACT.md п. 4.1, BOT_SPEC.md п. 5.1):** Запрос передаёт `{"login": username, "password": password, "client_type": "telegram", "external_id": str(user_id)}`, сервер возвращает HTTP 200 `{"role": "...", "login": "..."}`.
+  - **Фактический результат:** Передаётся поле `"username"` вместо `"login"`. Сервер возвращает `422 Unprocessable Entity: {"detail":[{"loc":["body","login"],"msg":"Field required","type":"missing"}]}`. Авторизация в боте не работает.
+
+- **[BUG-002]** | Критичность: `MAJOR` | Статус: `OPEN`
+  - **Коммит обнаружения:** `a155d98`
+  - **Где:** `clients/telegram_bot/api_client.py` (`POST /api/control/snap`, `POST /api/control/light/main`, `POST /api/control/light/flash`, `POST /api/control/relay-test`)
+  - **Шаги воспроизведения:** Выполнить любую команду управления оборудованием или ручной съёмки (`💡 Свет и реле`, `📸 Сделать снимок`) через бота к реальному Client API.
+  - **Ожидаемый результат (по спецификации API_CONTRACT.md п. 4.4):** Тело запроса передаёт поле `"target"` (число `installation_id` или строка `"all"`).
+  - **Фактический результат:** Передаётся ключ `"installation_id"` (или `None` при выборе всех установок), поле `"target"` отсутствует. Сервер возвращает `422 Unprocessable Entity: {"detail":[{"loc":["body","target"],"msg":"Field required","type":"missing"}]}`. Управление оборудованием и съёмка не работают.
 
 ---
 
