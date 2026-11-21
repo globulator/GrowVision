@@ -57,6 +57,7 @@ class EdgeOrchestrator:
         self.capture_interval_hours = config.capture_interval_hours
         self.debug_mode = config.debug_mode
         self.active_installations: list[HeartbeatActiveInstallation] = []
+        self._initialized_installations: set[tuple[int, int, int]] = set()
 
         self._heartbeat_thread: threading.Thread | None = None
         self._command_thread: threading.Thread | None = None
@@ -107,10 +108,34 @@ class EdgeOrchestrator:
         logger.info("Edge-агент остановлен")
 
     def init_installations_light(self) -> None:
-        """Включает основной свет и выключает вспышку для активных установок (нормальное состояние)."""
-        for inst in self.active_installations:
-            self.hardware.set_light(inst.light_gpio_pin, True)
-            self.hardware.set_flash(inst.flash_gpio_pin, False)
+        """Включает основной свет и выключает вспышку для новых установок под аппаратным мьютексом."""
+        new_insts = [
+            inst
+            for inst in self.active_installations
+            if (inst.id, inst.light_gpio_pin, inst.flash_gpio_pin)
+            not in self._initialized_installations
+        ]
+        if not new_insts:
+            return
+
+        if not self.hardware.acquire_lock(blocking=False):
+            logger.debug(
+                "Аппаратный мьютекс занят, инициализация света установок отложена до следующего heartbeat"
+            )
+            return
+
+        try:
+            for inst in new_insts:
+                self.hardware.set_light(inst.light_gpio_pin, True)
+                self.hardware.set_flash(inst.flash_gpio_pin, False)
+                self._initialized_installations.add(
+                    (inst.id, inst.light_gpio_pin, inst.flash_gpio_pin)
+                )
+            logger.info(
+                f"Инициализирован свет для {len(new_insts)} новых установок: {[i.id for i in new_insts]}"
+            )
+        finally:
+            self.hardware.release_lock()
 
     def trigger_async_flush(self) -> None:
         """Запускает выгрузку офлайн-очереди в отдельном потоке под замком (до 10 пакетов)."""

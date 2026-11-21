@@ -77,8 +77,12 @@ class HardwareManager:
         """Возвращает логическое состояние пина (True = включено, False = выключено)."""
         if self.mode == "rpi":
             dev = self._get_gpio_device(pin)
-            return bool(dev.value) if dev else False
-        return self._mock_pins.get(pin, False)
+            if dev:
+                if hasattr(dev, "is_active"):
+                    return bool(dev.is_active)
+                return bool(dev.value)
+            return False
+        return bool(self._mock_pins.get(pin, False))
 
     def _get_gpio_device(self, pin: int) -> Any:
         """Получает или создает объект OutputDevice для указанного пина с учетом полярности."""
@@ -120,17 +124,20 @@ class HardwareManager:
         self.set_pin(pin, state)
 
     def test_relay(self, pins: list[int], duration: float = 3.0) -> None:
-        """Кратковременный тест реле на указанных пинах."""
+        """Кратковременный тест реле на указанных пинах с возвратом исходного состояния."""
         logger.info(f"[RELAY_TEST] Включение пинов {pins} на {duration} с")
+        prev_states = {pin: self.get_pin_state(pin) for pin in pins}
         for pin in pins:
             self.set_pin(pin, True)
         try:
             if duration > 0:
                 time.sleep(duration)
         finally:
-            for pin in pins:
-                self.set_pin(pin, False)
-            logger.info(f"[RELAY_TEST] Пины {pins} выключены")
+            for pin, state in prev_states.items():
+                self.set_pin(pin, state)
+            logger.info(
+                f"[RELAY_TEST] Пины {pins} возвращены в исходное состояние: {prev_states}"
+            )
 
     def scan_cameras(
         self,

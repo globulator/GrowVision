@@ -23,13 +23,17 @@ def test_mock_gpio_control(mock_hardware: HardwareManager):
     assert mock_hardware.get_pin_state(27) is False
 
 
-def test_mock_relay_test(mock_hardware: HardwareManager):
-    """Проверка кратковременного теста реле без реального sleep."""
+def test_mock_relay_test_restores_initial_state(mock_hardware: HardwareManager):
+    """RELAY_TEST кратковременно включает пины и возвращает их в исходное состояние."""
+    # Пин 17 исходно включен, пин 27 выключен
+    mock_hardware.set_pin(17, True)
+    mock_hardware.set_pin(27, False)
+
     pins = [17, 27]
     mock_hardware.test_relay(pins, duration=0.0)
 
-    # После завершения теста все пины должны быть выключены
-    assert mock_hardware.get_pin_state(17) is False
+    # После завершения теста исходное состояние должно быть восстановлено
+    assert mock_hardware.get_pin_state(17) is True
     assert mock_hardware.get_pin_state(27) is False
 
 
