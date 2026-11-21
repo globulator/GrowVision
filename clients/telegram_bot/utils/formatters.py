@@ -1,0 +1,150 @@
+from typing import Any
+
+
+def format_area_display(area: float | None, is_px: bool = False) -> str:
+    """Форматирует площадь растений для вывода."""
+    if area is None:
+        return "площадь не определена"
+    if is_px:
+        return f"{int(area)} px"
+    return f"{area:.1f} см²"
+
+
+def format_installation_card(
+    inst: dict[str, Any],
+    role: str = "guest",
+    web_public_url: str | None = None,
+) -> str:
+    """Форматирует карточку установки в зависимости от роли пользователя."""
+    name = inst.get("name", "Без названия")
+    crop = inst.get("crop_type", "Не указана")
+    is_archived = inst.get("is_archived", False)
+    inst_id = inst.get("id", "?")
+
+    last_capture = inst.get("last_capture") or {}
+    area_cm2 = last_capture.get("total_area_cm2")
+    area_px = last_capture.get("total_area_px")
+    if area_cm2 is not None:
+        area_str = f"{area_cm2:.1f} см²"
+    elif area_px is not None:
+        area_str = f"{int(area_px)} px"
+    else:
+        area_str = "нет данных"
+
+    lines = [
+        f"🌱 <b>Установка #{inst_id}: {name}</b>",
+        f"🌾 <b>Культура:</b> {crop}",
+        f"📐 <b>Последняя площадь:</b> {area_str}",
+    ]
+
+    if is_archived:
+        lines.append("📦 <b>Статус:</b> В архиве")
+
+    # Поля для Biologist и Developer
+    if role in ("biologist", "developer"):
+        aruco = inst.get("aruco_marker_size_mm")
+        aruco_str = f"{aruco} мм" if aruco is not None else "не задан (площадь в px)"
+        lines.append(f"📏 <b>Размер ArUco:</b> {aruco_str}")
+
+        cameras = inst.get("cameras", [])
+        if cameras:
+            cam_lines = []
+            for c in cameras:
+                cam_name = c.get("name") or f"Камера #{c.get('id')}"
+                if role == "developer":
+                    hw_id = c.get("hardware_id", "")
+                    cam_lines.append(f"• {cam_name} (<code>{hw_id}</code>)")
+                else:
+                    cam_lines.append(f"• {cam_name}")
+            lines.append("📷 <b>Привязанные камеры:</b>\n" + "\n".join(cam_lines))
+        else:
+            lines.append("📷 <b>Камеры:</b> не привязаны")
+
+    # Поля только для Developer
+    if role == "developer":
+        light_pin = inst.get("light_gpio_pin", "?")
+        flash_pin = inst.get("flash_gpio_pin", "?")
+        lines.append(f"💡 <b>Пин света (GPIO):</b> {light_pin}")
+        lines.append(f"⚡ <b>Пин вспышки (GPIO):</b> {flash_pin}")
+
+    if web_public_url:
+        web_link = f"{web_public_url.rstrip('/')}/timelapse/{inst_id}"
+        lines.append(f"\n🌐 <b>Веб-плеер таймлапса:</b>\n<code>{web_link}</code>")
+
+    return "\n".join(lines)
+
+
+def format_system_status(status_data: dict[str, Any]) -> str:
+    """Форматирует сводку о состоянии сервера и Raspberry Pi."""
+    server = status_data.get("server", {})
+    rpi = status_data.get("rpi", {})
+    settings = status_data.get("settings", {})
+
+    server_ver = server.get("version", "—")
+    online = rpi.get("online", False)
+    status_icon = "🟢 Online" if online else "🔴 Offline"
+
+    lines = [
+        "⚙️ <b>Статус системы GrowVision</b>",
+        f"🖥 <b>Сервер:</b> v{server_ver}",
+        f"🍓 <b>Связь с Raspberry Pi:</b> {status_icon}",
+    ]
+
+    last_hb = rpi.get("last_heartbeat")
+    if last_hb:
+        lines.append(f"🕒 <b>Последний опрос:</b> {last_hb} UTC")
+
+    software = rpi.get("software") or {}
+    if software:
+        edge_ver = software.get("edge_version", "—")
+        model = software.get("model_name", "—")
+        lines.append(f"📦 <b>ПО Edge:</b> v{edge_ver} (модель: {model})")
+
+    hardware = rpi.get("hardware") or {}
+    if hardware:
+        temp = hardware.get("cpu_temp_c")
+        cpu_usage = hardware.get("cpu_usage_percent")
+        ram_used = hardware.get("ram_used_mb")
+        ram_total = hardware.get("ram_total_mb")
+        disk_free = hardware.get("disk_free_gb")
+
+        temp_str = f"{temp:.1f}°C" if temp is not None else "—"
+        cpu_str = f"{cpu_usage:.1f}%" if cpu_usage is not None else "—"
+        ram_str = f"{ram_used}/{ram_total} МБ" if ram_used and ram_total else "—"
+        disk_str = f"{disk_free:.1f} ГБ" if disk_free is not None else "—"
+
+        lines.extend(
+            [
+                f"🌡 <b>Температура CPU:</b> {temp_str}",
+                f"⚡ <b>Загрузка CPU:</b> {cpu_str} | <b>RAM:</b> {ram_str}",
+                f"💾 <b>Свободно на диске:</b> {disk_str}",
+            ]
+        )
+
+    queue_count = rpi.get("offline_queue_count", 0)
+    lines.append(f"📥 <b>Неотправленных пакетов в очереди:</b> {queue_count}")
+
+    interval = settings.get("capture_interval_hours", 1)
+    debug = settings.get("debug_mode", False)
+    debug_str = "Включен 🐞" if debug else "Выключен"
+
+    lines.extend(
+        [
+            f"⏱ <b>Интервал автосъёмки:</b> {interval} ч",
+            f"🔍 <b>Debug-режим:</b> {debug_str}",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
+def format_debug_block(command: str | None, log_line: str | None) -> str:
+    """Форматирует блок DEBUG для отображения разработчику."""
+    if not command and not log_line:
+        return ""
+    lines = ["\n🐞 <b>DEBUG:</b>"]
+    if command:
+        lines.append(f"<b>Команда:</b> <code>{command}</code>")
+    if log_line:
+        lines.append(f"<b>Лог:</b> <code>{log_line}</code>")
+    return "\n".join(lines)
