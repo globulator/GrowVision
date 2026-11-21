@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from edge_agent.config import EdgeConfig, load_config
+from edge_agent.config import REPO_ROOT, EdgeConfig, load_config, resolve_path
 
 
 def test_default_config():
@@ -96,3 +96,24 @@ def test_load_config_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert cfg.hardware_mode == "mock"
     assert cfg.command_poll_interval_sec == 3.5
     assert cfg.debug_mode is True
+
+
+def test_relative_paths_resolved_from_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Проверка: относительные MODEL_PATH и OFFLINE_QUEUE_DIR резолвятся от REPO_ROOT."""
+    # 1. Прямой вызов resolve_path
+    rel_model = "edge_agent/models/lettuce_seg_v1.onnx"
+    resolved_model = resolve_path(rel_model)
+    assert resolved_model.is_absolute()
+    assert resolved_model == (REPO_ROOT / rel_model).resolve()
+
+    # 2. Загрузка через переменные окружения
+    monkeypatch.setenv("MODEL_PATH", "edge_agent/models/lettuce_seg_v1.onnx")
+    monkeypatch.setenv("OFFLINE_QUEUE_DIR", "edge_agent/offline_queue")
+
+    cfg = load_config(env_path=tmp_path / "empty.env")
+    assert cfg.model_path.is_absolute()
+    assert cfg.model_path == REPO_ROOT / "edge_agent" / "models" / "lettuce_seg_v1.onnx"
+    assert cfg.offline_queue_dir.is_absolute()
+    assert cfg.offline_queue_dir == REPO_ROOT / "edge_agent" / "offline_queue"

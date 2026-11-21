@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import pytest
 
 from edge_agent.config import EdgeConfig
@@ -10,21 +12,24 @@ from shared.schemas import (
     CommandItem,
     CommandResult,
     HeartbeatActiveInstallation,
+    HeartbeatResponse,
 )
 
 
 class DummyEdgeClient:
     """Эмулятор Edge API клиента для юнит-тестов оркестратора."""
 
-    def __init__(self):
+    def __init__(self, heartbeat_response: HeartbeatResponse | None = None):
         self.heartbeat_calls = []
         self.claim_calls = []
         self.results = {}
         self.uploaded_captures = []
         self.fail_network_upload = False
+        self.heartbeat_response = heartbeat_response
 
-    def send_heartbeat(self, telemetry):
+    def send_heartbeat(self, telemetry) -> HeartbeatResponse | None:
         self.heartbeat_calls.append(telemetry)
+        return self.heartbeat_response
 
     def claim_command(self):
         self.claim_calls.append(True)
@@ -77,6 +82,121 @@ def test_init_installations_light_turns_main_light_on(
     orchestrator.init_installations_light()
     assert mock_hardware.get_pin_state(17) is True
     assert mock_hardware.get_pin_state(27) is False
+    assert (1, 17, 27) in orchestrator._initialized_installations
+
+
+def test_subsequent_heartbeats_do_not_retrigger_relay(
+    orchestrator: EdgeOrchestrator,
+    dummy_client: DummyEdgeClient,
+    mock_hardware: HardwareManager,
+):
+    """Два heartbeat подряд не переключают реле уже инициализированной установки."""
+    dummy_client.heartbeat_response = HeartbeatResponse(
+        capture_interval_hours=1,
+        debug_mode=False,
+        active_installations=[
+            HeartbeatActiveInstallation(
+                id=1,
+                light_gpio_pin=17,
+                flash_gpio_pin=27,
+                camera_hardware_ids=["cam-1"],
+            )
+        ],
+    )
+
+    # Первый heartbeat инициализирует свет
+    orchestrator.perform_heartbeat()
+    assert mock_hardware.get_pin_state(17) is True
+    assert (1, 17, 27) in orchestrator._initialized_installations
+
+    # Мокаем вызовы переключения реле
+    mock_hardware.set_light = MagicMock(wraps=mock_hardware.set_light)
+    mock_hardware.set_flash = MagicMock(wraps=mock_hardware.set_flash)
+
+    # Второй heartbeat для тех же установок не должен трогать реле
+    orchestrator.perform_heartbeat()
+    mock_hardware.set_light.assert_not_called()
+    mock_hardware.set_flash.assert_not_called()
+
+
+def test_light_main_off_persists_after_subsequent_heartbeat(
+    orchestrator: EdgeOrchestrator,
+    dummy_client: DummyEdgeClient,
+    mock_hardware: HardwareManager,
+):
+    """Ручная команда LIGHT_MAIN off сохраняется после последующего heartbeat."""
+    inst = HeartbeatActiveInstallation(
+        id=1,
+        light_gpio_pin=17,
+        flash_gpio_pin=27,
+        camera_hardware_ids=["cam-1"],
+    )
+    dummy_client.heartbeat_response = HeartbeatResponse(
+        capture_interval_hours=1,
+        debug_mode=False,
+        active_installations=[inst],
+    )
+
+    # Инициализация первым heartbeat
+    orchestrator.perform_heartbeat()
+    assert mock_hardware.get_pin_state(17) is True
+
+    # Ручная команда выключения света
+    cmd = CommandItem(
+        id=10,
+        command_type="LIGHT_MAIN",
+        is_global=False,
+        installation=CommandInstallation(
+            id=1,
+            light_gpio_pin=17,
+            flash_gpio_pin=27,
+            camera_hardware_ids=["cam-1"],
+        ),
+        payload={"state": False},
+    )
+    orchestrator.handle_command(cmd)
+    assert mock_hardware.get_pin_state(17) is False
+
+    # Последующий heartbeat не должен сбрасывать ручное состояние
+    orchestrator.perform_heartbeat()
+    assert mock_hardware.get_pin_state(17) is False
+
+
+def test_heartbeat_defers_light_init_when_mutex_locked(
+    orchestrator: EdgeOrchestrator,
+    dummy_client: DummyEdgeClient,
+    mock_hardware: HardwareManager,
+):
+    """Heartbeat при занятом аппаратном мьютексе не трогает пины и откладывает инициализацию."""
+    inst = HeartbeatActiveInstallation(
+        id=2,
+        light_gpio_pin=22,
+        flash_gpio_pin=23,
+        camera_hardware_ids=["cam-2"],
+    )
+    dummy_client.heartbeat_response = HeartbeatResponse(
+        capture_interval_hours=1,
+        debug_mode=False,
+        active_installations=[inst],
+    )
+
+    # Блокируем мьютекс аппаратуры (имитация идущей съемки)
+    assert mock_hardware.acquire_lock(blocking=False) is True
+
+    # Выполняем heartbeat
+    orchestrator.perform_heartbeat()
+
+    # Пины не должны быть изменены, установка не должна числиться инициализированной
+    assert mock_hardware.get_pin_state(22) is False
+    assert (2, 22, 23) not in orchestrator._initialized_installations
+
+    # Освобождаем мьютекс
+    mock_hardware.release_lock()
+
+    # Следующий heartbeat должен успешно инициализировать пины
+    orchestrator.perform_heartbeat()
+    assert mock_hardware.get_pin_state(22) is True
+    assert (2, 22, 23) in orchestrator._initialized_installations
 
 
 def test_handle_command_light_main(
@@ -110,8 +230,13 @@ def test_handle_command_light_main(
 def test_handle_command_relay_test_zero_duration(
     orchestrator: EdgeOrchestrator,
     dummy_client: DummyEdgeClient,
+    mock_hardware: HardwareManager,
 ):
-    """Проверка выполнения команды RELAY_TEST с нулевой задержкой."""
+    """Проверка выполнения RELAY_TEST с нулевой задержкой и возвратом исходного состояния."""
+    # Исходное состояние: пин 17 включен (свет), пин 27 выключен (вспышка)
+    mock_hardware.set_pin(17, True)
+    mock_hardware.set_pin(27, False)
+
     cmd = CommandItem(
         id=3,
         command_type="RELAY_TEST",
@@ -130,6 +255,10 @@ def test_handle_command_relay_test_zero_duration(
     res = dummy_client.results[3]
     assert res.status == "done"
     assert "успешно завершен" in res.result_message
+
+    # Исходное состояние должно сохраниться
+    assert mock_hardware.get_pin_state(17) is True
+    assert mock_hardware.get_pin_state(27) is False
 
 
 def test_handle_command_snap_multiple_cameras_debug_log(
