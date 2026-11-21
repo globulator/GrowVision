@@ -6,7 +6,7 @@
 
 GrowVision организован как монорепозиторий, разделяющий компоненты по изолированным окружениям (`venv`). Серверный бэкенд на базе FastAPI и SQLAlchemy обеспечивает безопасную запись данных через транзакционный журнал SQLite (WAL) и строгие ограничения целостности (индексы, внешние ключи, CHECK-ограничения). Общий модуль `shared` содержит логику сквозного версионирования, форматтер логов и Pydantic-контракты обмена данными с Edge-устройствами.
 
-Edge-агент для Raspberry Pi 5 управляет GPIO-реле и камерами, локально выполняет инференс нейросети и передаёт результаты через Edge API. Пользовательские интерфейсы включают CLI для терминального управления, Telegram-бота для уведомлений и оперативных команд, а также легковесный статический веб-плеер таймлапсов без внешних сборок и CDN.
+Edge-агент для Raspberry Pi 5 управляет GPIO-реле и камерами, локально выполняет инференс нейросети и передаёт результаты через Edge API. Пользовательские интерфейсы включают CLI для терминального управления, Telegram-бота для мобильного мониторинга и оперативных команд, а также легковесный статический веб-плеер таймлапсов без внешних сборок и CDN.
 
 ## Структура репозитория
 
@@ -87,6 +87,37 @@ clients/cli/.venv/bin/pytest clients/cli/tests -q
 
 ---
 
+### Telegram-бот (`clients/telegram_bot`)
+
+Мобильный интерфейс для мониторинга установок, просмотра галереи плановых снимков, видео-таймлапсов и оперативного управления гидропоникой.
+
+#### 1. Подготовка окружения бота
+
+```bash
+python3 -m venv clients/telegram_bot/.venv
+clients/telegram_bot/.venv/bin/pip install -r clients/telegram_bot/requirements.txt -r requirements-dev.txt
+cp clients/telegram_bot/.env.example clients/telegram_bot/.env
+```
+
+Настройте переменные в `clients/telegram_bot/.env`:
+- `TELEGRAM_BOT_TOKEN` — токен бота от `@BotFather`
+- `SERVER_URL` — адрес сервера (по умолчанию `http://127.0.0.1:8000`)
+- `CLIENT_API_KEY` — ключ клиента (должен совпадать с `server/.env`)
+
+#### 2. Запуск Telegram-бота
+
+```bash
+clients/telegram_bot/.venv/bin/python -m clients.telegram_bot.main
+```
+
+#### 3. Запуск тестов бота
+
+```bash
+clients/telegram_bot/.venv/bin/pytest clients/telegram_bot/tests -q
+```
+
+---
+
 ### Edge-агент (Raspberry Pi 5 / Mock)
 
 #### 1. Подготовка окружения Edge-агента
@@ -123,7 +154,7 @@ server/.venv/bin/ruff format --check .
 ## Документация
 
 - [docs/PROJECT.md](file:///home/mcperchik/study/GrowVision/docs/PROJECT.md) — паспорт проекта и правила разработки
-- [docs/USER_GUIDE.md](file:///home/mcperchik/study/GrowVision/docs/USER_GUIDE.md) — руководство пользователя по работе с CLI
+- [docs/USER_GUIDE.md](file:///home/mcperchik/study/GrowVision/docs/USER_GUIDE.md) — руководство пользователя по работе с CLI и Telegram-ботом
 - [docs/DEPLOYMENT_RPI.md](file:///home/mcperchik/study/GrowVision/docs/DEPLOYMENT_RPI.md) — развертывание Edge-агента на Raspberry Pi 5
 - [docs/HARDWARE_WIRING.md](file:///home/mcperchik/study/GrowVision/docs/HARDWARE_WIRING.md) — схема аппаратного подключения GPIO и камер
 - [docs/REPO_AND_VERSIONING.md](file:///home/mcperchik/study/GrowVision/docs/REPO_AND_VERSIONING.md) — структура монорепозитория и версионирование
@@ -139,3 +170,4 @@ server/.venv/bin/ruff format --check .
 - [docs/stage_reports/stage-4.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-4.md) — отчёт по этапу 4
 - [docs/stage_reports/stage-5.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-5.md) — отчёт по этапу 5
 - [docs/stage_reports/stage-6.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-6.md) — отчёт по этапу 6
+- [docs/stage_reports/stage-7.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-7.md) — отчёт по этапу 7
