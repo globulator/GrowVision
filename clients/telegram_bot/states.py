@@ -1,0 +1,51 @@
+from aiogram.fsm.state import State, StatesGroup
+
+
+class AuthStates(StatesGroup):
+    """FSM-состояния авторизации."""
+
+    waiting_login = State()
+    waiting_password = State()
+
+
+class InstallationCreateStates(StatesGroup):
+    """FSM-состояния пошагового мастера создания установки."""
+
+    waiting_name = State()
+    waiting_crop = State()
+    waiting_light_pin = State()
+    waiting_flash_pin = State()
+    waiting_aruco = State()
+
+
+class InstallationEditStates(StatesGroup):
+    """FSM-состояния редактирования установки."""
+
+    waiting_field = State()
+    waiting_value = State()
+
+
+class InstallationDeleteStates(StatesGroup):
+    """FSM-состояния подтверждения удаления/архивации."""
+
+    waiting_confirm_delete = State()
+    waiting_confirm_archive = State()
+
+
+class CameraBindStates(StatesGroup):
+    """FSM-состояния привязки камеры к установке."""
+
+    waiting_installation_selection = State()
+
+
+class TimelapseStates(StatesGroup):
+    """FSM-состояния просмотра и сборки таймлапса."""
+
+    browsing_frames = State()
+    selecting_camera_for_video = State()
+
+
+class SystemSettingsStates(StatesGroup):
+    """FSM-состояния изменения системных настроек."""
+
+    waiting_interval = State()

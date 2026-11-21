@@ -6,6 +6,17 @@
 ---
 
 ## 2. Исправленные дефекты (верифицировано QA)
+- **[BUG-001]** | Критичность: `MAJOR` | Статус: `FIXED`
+  - **Обнаружен в коммите:** `a155d98` -> **Исправлен и подтверждён в коммите:** `4e155b8`
+  - **Где:** `clients/telegram_bot/api_client.py:login` (`POST /api/auth/login`)
+  - **Суть проблемы:** Передавалось поле `"username"` вместо `"login"` по спецификации `API_CONTRACT.md` п. 4.1 и `BOT_SPEC.md` п. 5.1, из-за чего сервер возвращал 422 Unprocessable Entity и авторизация в боте была невозможна.
+  - **Результат повторной проверки:** В `clients/telegram_bot/api_client.py` скорректирован ключ payload на `"login"`. Повторные сквозные e2e-тесты подтвердили успешный двухэтапный вход, удаление пароля из чата, переключение ролей и выход. Регрессионный тест в `tests/e2e/test_bot_e2e.py::test_bot_e2e_auth_lifecycle` успешно пройден.
+
+- **[BUG-002]** | Критичность: `MAJOR` | Статус: `FIXED`
+  - **Обнаружен в коммите:** `a155d98` -> **Исправлен и подтверждён в коммите:** `4e155b8`
+  - **Где:** `clients/telegram_bot/api_client.py` (`POST /api/control/snap`, `POST /api/control/light/main`, `POST /api/control/light/flash`, `POST /api/control/relay-test`)
+  - **Суть проблемы:** Передавался ключ `"installation_id"` (или `None`) вместо обязательного поля `"target"` по спецификации `API_CONTRACT.md` п. 4.4, из-за чего сервер возвращал 422 Unprocessable Entity и команды управления светом, реле и ручной съёмкой были невозможны.
+  - **Результат повторной проверки:** Реализован хелпер `_resolve_target`, в тело запросов передаётся поле `target: int | Literal["all"]`. Повторные сквозные e2e-тесты подтвердили корректное управление основным светом, вспышкой, тестом реле и ручной съёмкой snap с альбомом из 2 фото. Регрессионные тесты `test_bot_e2e_control_and_snap` и `test_bot_e2e_installations_and_cameras` в `tests/e2e/test_bot_e2e.py` успешно пройдены.
 - **[MAJOR] [server/core/system_status.py] Статус онлайна Raspberry Pi определялся по устаревшей схеме `rpi_last_heartbeat_at` вместо `updated_at` записи `rpi_last_telemetry`, нарушался порядок проверок эндпоинтов управления.**
   - **Эндпоинты:** `POST /api/control/*`, `POST /api/cameras/scan`, `GET /api/system/status`.
   - **Исправление:** Реализована единая функция `is_rpi_online(db)` по `rpi_last_telemetry.updated_at` (сравнение в UTC <= 90 с). Ключ `rpi_last_heartbeat_at` как ключ таблицы `system_settings` полностью исключён. Обеспечен строгий порядок проверок: авторизация (401/403) -> валидация тела (422) -> валидация target (404/409) -> статус онлайна RPi (503). В `wait_command_result` добавлен немедленный возврат 504 при статусе timeout. В timelapse video добавлен таймаут ffmpeg 600 с, пропуск отсутствующих файлов и чистый 500 detail.
