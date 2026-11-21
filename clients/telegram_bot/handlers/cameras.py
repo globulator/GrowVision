@@ -1,5 +1,6 @@
 import contextlib
 import logging
+from typing import Any
 
 from aiogram import F, Router
 from aiogram.types import (
@@ -230,6 +231,18 @@ async def handle_cameras_scan(
 # ================== Карточка и привязка камеры ==================
 
 
+async def _resolve_camera(
+    user_id: int, api_client: GrowVisionApiClient, cam_val: str
+) -> dict[str, Any] | None:
+    """Находит камеру по числу id или строке hardware_id."""
+    with contextlib.suppress(Exception):
+        cameras = await api_client.get_cameras(user_id)
+        for c in cameras:
+            if str(c.get("id")) == cam_val or c.get("hardware_id") == cam_val:
+                return c
+    return None
+
+
 @router.callback_query(F.data.startswith("cam:view:"))
 async def handle_camera_view(
     callback: CallbackQuery,
@@ -238,16 +251,16 @@ async def handle_camera_view(
     """Просмотр карточки камеры."""
     await callback.answer()
     parts = callback.data.split(":")
-    cam_id = int(parts[2])
+    cam_val = parts[2]
     user_id = callback.from_user.id if callback.from_user else 0
 
     try:
-        cameras = await api_client.get_cameras(user_id)
-        cam = next((c for c in cameras if c.get("id") == cam_id), None)
+        cam = await _resolve_camera(user_id, api_client, cam_val)
         if not cam:
             await callback.answer("Камера не найдена", show_alert=True)
             return
 
+        cam_id = cam.get("id")
         cname = cam.get("name") or f"Камера #{cam_id}"
         hw_id = cam.get("hardware_id", "")
         online = cam.get("is_online", True)
@@ -307,10 +320,13 @@ async def handle_camera_bind_pick(
     """Выбор активной установки для привязки камеры."""
     await callback.answer()
     parts = callback.data.split(":")
-    cam_id = int(parts[2])
+    cam_val = parts[2]
     user_id = callback.from_user.id if callback.from_user else 0
 
     try:
+        cam = await _resolve_camera(user_id, api_client, cam_val)
+        cam_id = cam.get("id") if cam else (int(cam_val) if cam_val.isdigit() else 0)
+
         active_insts = await api_client.get_installations(
             user_id, include_archived=False
         )
@@ -357,11 +373,13 @@ async def handle_camera_do_bind(
     await callback.answer()
     parts = callback.data.split(":")
     # cam:do_bind:<cam_id>:<inst_id>
-    cam_id = int(parts[2])
+    cam_val = parts[2]
     inst_id = int(parts[3])
     user_id = callback.from_user.id if callback.from_user else 0
 
     try:
+        cam = await _resolve_camera(user_id, api_client, cam_val)
+        cam_id = cam.get("id") if cam else (int(cam_val) if cam_val.isdigit() else 0)
         await api_client.bind_camera(user_id, cam_id, inst_id)
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
@@ -387,7 +405,7 @@ async def handle_camera_do_bind(
                         [
                             InlineKeyboardButton(
                                 text="⬅️ К карточке камеры",
-                                callback_data=f"cam:view:{cam_id}",
+                                callback_data=f"cam:view:{cam_val}",
                             )
                         ]
                     ]
@@ -403,10 +421,12 @@ async def handle_camera_do_unbind(
     """Отвязка камеры от установки."""
     await callback.answer()
     parts = callback.data.split(":")
-    cam_id = int(parts[2])
+    cam_val = parts[2]
     user_id = callback.from_user.id if callback.from_user else 0
 
     try:
+        cam = await _resolve_camera(user_id, api_client, cam_val)
+        cam_id = cam.get("id") if cam else (int(cam_val) if cam_val.isdigit() else 0)
         await api_client.bind_camera(user_id, cam_id, None)
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(

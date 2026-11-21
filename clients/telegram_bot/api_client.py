@@ -136,7 +136,7 @@ class GrowVisionApiClient:
     async def login(self, user_id: int, username: str, password: str) -> dict[str, Any]:
         """Вход пользователя в систему."""
         payload = {
-            "username": username,
+            "login": username,
             "password": password,
             "client_type": "telegram",
             "external_id": str(user_id),
@@ -256,11 +256,28 @@ class GrowVisionApiClient:
 
     # ------------------ 5. Управление (свет, реле, снимок) ------------------
 
+    @staticmethod
+    def _resolve_target(target: int | str | None) -> int | str:
+        """Приводит target к int (id) или строке 'all'."""
+        if target is None or target == "all":
+            return "all"
+        if isinstance(target, int):
+            return target
+        if isinstance(target, str) and target.isdigit():
+            return int(target)
+        return target
+
     async def control_light_main(
-        self, user_id: int, installation_id: int | None, state: bool
+        self,
+        user_id: int,
+        target: int | str | None = "all",
+        state: bool = False,
+        installation_id: int | None = None,
     ) -> dict[str, Any]:
         """Управление основным светом (Developer)."""
-        payload = {"installation_id": installation_id, "state": state}
+        effective_target = target if installation_id is None else installation_id
+        resolved_target = self._resolve_target(effective_target)
+        payload = {"target": resolved_target, "state": state}
         return await self._request(
             "POST",
             "/api/control/light/main",
@@ -271,10 +288,16 @@ class GrowVisionApiClient:
         )
 
     async def control_light_flash(
-        self, user_id: int, installation_id: int | None, state: bool
+        self,
+        user_id: int,
+        target: int | str | None = "all",
+        state: bool = False,
+        installation_id: int | None = None,
     ) -> dict[str, Any]:
         """Управление вспышкой (Developer)."""
-        payload = {"installation_id": installation_id, "state": state}
+        effective_target = target if installation_id is None else installation_id
+        resolved_target = self._resolve_target(effective_target)
+        payload = {"target": resolved_target, "state": state}
         return await self._request(
             "POST",
             "/api/control/light/flash",
@@ -285,10 +308,15 @@ class GrowVisionApiClient:
         )
 
     async def control_relay_test(
-        self, user_id: int, installation_id: int | None
+        self,
+        user_id: int,
+        target: int | str | None = "all",
+        installation_id: int | None = None,
     ) -> dict[str, Any]:
         """Кратковременный тест реле на 3 сек (Developer)."""
-        payload = {"installation_id": installation_id}
+        effective_target = target if installation_id is None else installation_id
+        resolved_target = self._resolve_target(effective_target)
+        payload = {"target": resolved_target}
         return await self._request(
             "POST",
             "/api/control/relay-test",
@@ -299,15 +327,19 @@ class GrowVisionApiClient:
         )
 
     async def take_snap(
-        self, user_id: int, installation_id: int | None, active_count: int = 1
+        self,
+        user_id: int,
+        target: int | str | None = "all",
+        active_count: int = 1,
+        installation_id: int | None = None,
     ) -> dict[str, Any]:
         """Ручной снимок одной установки или всех (Biologist, Developer)."""
+        effective_target = target if installation_id is None else installation_id
+        resolved_target = self._resolve_target(effective_target)
         timeout = (
-            35.0
-            if installation_id is not None
-            else (30.0 + 10.0 * max(1, active_count))
+            35.0 if resolved_target != "all" else (30.0 + 10.0 * max(1, active_count))
         )
-        payload = {"installation_id": installation_id}
+        payload = {"target": resolved_target}
         return await self._request(
             "POST",
             "/api/control/snap",

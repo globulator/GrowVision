@@ -66,26 +66,31 @@
 
 ---
 
-## 2. Результаты проверок
+## 2. Устранение дефектов QA (Итерация 1)
 
-- **Unit-тесты Telegram-бота**: `clients/telegram_bot/.venv/bin/pytest clients/telegram_bot -c clients/telegram_bot/pytest.ini -v` — **30 passed in 0.41s**.
-  - Изоляция импортов: `test_isolation.py` (PASS).
-  - Конфигурация и маскирование секретов: `test_config.py` (PASS).
-  - Маппер ошибок и статусы: `test_errors.py` (PASS).
-  - Пагинатор и размер callback_data < 64 байт: `test_paginator.py` (PASS).
-  - HTTP-клиент к Client API: `test_api_client.py` (PASS).
-  - Роли и двухэтапная авторизация со скрытием пароля: `test_handlers_auth_roles.py` (PASS).
-  - Фото при 1 кадре, видео < 50 МБ, прореживание step=1..4, исчерпание попыток, параллельные блокировки: `test_timelapse_and_video.py` (PASS).
-  - Установки, мастер создания, камеры, свет, реле, ручной снимок snap, статус системы: `test_handlers_installations_cameras_control.py` (PASS).
+- **BUG-001 (MAJOR)**: в `clients/telegram_bot/api_client.py` (`login()`) скорректировано тело запроса `POST /api/auth/login` — передаётся `"login"` вместо `"username"` в соответствии с `API_CONTRACT.md` п. 4.1.
+- **BUG-002 (MAJOR)**: в `clients/telegram_bot/api_client.py` (`control_light_main`, `control_light_flash`, `control_relay_test`, `take_snap`) поле `"installation_id"` заменено на `"target"` (`int` или `"all"`) в соответствии с `API_CONTRACT.md` п. 4.4. Добавлен метод `_resolve_target`.
+- **E2E & Handlers**:
+  - `handlers/cameras.py` и `handlers/timelapse.py`: добавлена поддержка прозрачного разрешения строкового `hardware_id` (например, `cam-bot-01`) в числовой идентификатор камеры при переходах по инлайн-коллбэкам.
+  - `handlers/control.py`: поддержаны альтернативные форматы callback (`ctrl:light:<1|0>:<target>` и `ctrl:light:<target>:<on|off>`), в подпись snap-альбома подставляется фактический `hardware_id` камеры.
+  - `handlers/installations.py`: скорректированы имена полей FSM создания и обновления под контракт API (`culture_name`, `light_gpio_pin`, `flash_gpio_pin`, `aruco_size_mm`).
+  - `utils/formatters.py`: расширен парсер телеметрии `format_system_status` для совместимости со структурой ответа сервера `GET /api/system/status`.
+
+---
+
+## 3. Результаты проверок
+
+- **Unit-тесты Telegram-бота**: `clients/telegram_bot/.venv/bin/pytest clients/telegram_bot -c clients/telegram_bot/pytest.ini -v` — **30 passed in 0.34s**.
+- **E2E тесты Telegram-бота**: `server/.venv/bin/pytest tests/e2e/test_bot_e2e.py -v` — **8 passed in 17.03s**.
 - **Регрессионные тесты всех компонентов**:
   - Edge Agent: `edge_agent/.venv/bin/pytest edge_agent -c edge_agent/pytest.ini -q` — **39 passed in 0.75s**.
-  - CLI-клиент: `clients/cli/.venv/bin/pytest clients/cli/tests -q` — **42 passed in 0.44s**.
-  - Server & E2E: `server/.venv/bin/pytest server/tests tests/e2e -q` — **103 passed in 22.49s**.
-  - **Всего**: **214 passed** (общее время < 30 секунд).
+  - CLI-клиент: `clients/cli/.venv/bin/pytest clients/cli/tests -q` — **42 passed in 0.42s**.
+  - Telegram-бот: `clients/telegram_bot/.venv/bin/pytest clients/telegram_bot/tests -c clients/telegram_bot/pytest.ini -q` — **30 passed in 0.32s**.
+  - Server & E2E: `server/.venv/bin/pytest server/tests tests/e2e -q` — **111 passed in 39.11s**.
+  - **Всего**: **222 passed** (суммарно < 45 секунд).
 - **Линтер и форматирование**:
   - `server/.venv/bin/ruff check .` — **All checks passed!**
-  - `server/.venv/bin/ruff format --check .` — **163 files already formatted.**
+  - `server/.venv/bin/ruff format --check .` — **168 files already formatted.**
 - **Изоляция импортов (CLI проверка)**:
-  `grep -rn --include="*.py" "from server\|from shared\|from edge_agent\|from clients.cli\|import server\|import shared" clients/telegram_bot` — **0 совпадений (пусто)**.
+  `grep -rn --exclude-dir=.venv "from server\|from shared\|from edge_agent\|from clients.cli\|import server\|import shared" clients/telegram_bot` — **0 совпадений (пусто)**.
 - **База данных**: файлы `growvision.db*` в корне проекта не создаются, `git status --short` чист после тестов.
-- **Документация**: обновлены `docs/USER_GUIDE.md` и `docs/handoff/bot.md`.

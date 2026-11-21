@@ -42,12 +42,16 @@ async def test_auth_me_returns_none_on_401(bot_config: BotConfig):
 
 @pytest.mark.asyncio
 async def test_login_and_logout(bot_config: BotConfig):
-    """Проверка вызова логина и логаута."""
+    """Проверка вызова логина и логаута с проверкой поля login."""
+    captured_payloads: dict[str, dict] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
         if request.url.path == "/api/auth/login":
+            captured_payloads["login"] = json.loads(request.content.decode("utf-8"))
             return httpx.Response(
-                200, json={"status": "ok", "role": "biologist", "username": "Ivan"}
+                200, json={"status": "ok", "role": "biologist", "login": "Ivan"}
             )
         if request.url.path == "/api/auth/logout":
             return httpx.Response(200, json={"status": "logged_out"})
@@ -57,6 +61,8 @@ async def test_login_and_logout(bot_config: BotConfig):
     try:
         login_res = await client.login(user_id=777, username="Ivan", password="secret")
         assert login_res["role"] == "biologist"
+        assert captured_payloads["login"]["login"] == "Ivan"
+        assert "username" not in captured_payloads["login"]
 
         logout_res = await client.logout(user_id=777)
         assert logout_res["status"] == "logged_out"
@@ -66,19 +72,25 @@ async def test_login_and_logout(bot_config: BotConfig):
 
 @pytest.mark.asyncio
 async def test_control_commands_and_snap(bot_config: BotConfig):
-    """Проверка команд управления светом, реле и съёмкой."""
+    """Проверка команд управления светом, реле и съёмкой с проверкой поля target."""
+    captured_bodies: dict[str, dict] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
         path = request.url.path
         if path == "/api/control/light/main":
+            captured_bodies["light"] = json.loads(request.content.decode("utf-8"))
             return httpx.Response(
                 200, json={"status": "done", "result_message": "Свет включен"}
             )
         if path == "/api/control/relay-test":
+            captured_bodies["relay"] = json.loads(request.content.decode("utf-8"))
             return httpx.Response(
                 200, json={"status": "done", "result_message": "Тест реле завершен"}
             )
         if path == "/api/control/snap":
+            captured_bodies["snap"] = json.loads(request.content.decode("utf-8"))
             return httpx.Response(
                 200,
                 json={
@@ -99,14 +111,20 @@ async def test_control_commands_and_snap(bot_config: BotConfig):
 
     client = create_mock_api_client(bot_config, handler)
     try:
-        r1 = await client.control_light_main(user_id=1, installation_id=10, state=True)
+        r1 = await client.control_light_main(user_id=1, target=10, state=True)
         assert r1["status"] == "done"
+        assert captured_bodies["light"]["target"] == 10
+        assert "installation_id" not in captured_bodies["light"]
 
-        r2 = await client.control_relay_test(user_id=1, installation_id=None)
+        r2 = await client.control_relay_test(user_id=1, target=None)
         assert r2["status"] == "done"
+        assert captured_bodies["relay"]["target"] == "all"
+        assert "installation_id" not in captured_bodies["relay"]
 
-        r3 = await client.take_snap(user_id=1, installation_id=1)
+        r3 = await client.take_snap(user_id=1, target=1)
         assert r3["status"] == "done"
+        assert captured_bodies["snap"]["target"] == 1
+        assert "installation_id" not in captured_bodies["snap"]
         assert len(r3["captures"]) == 1
     finally:
         await client.close()

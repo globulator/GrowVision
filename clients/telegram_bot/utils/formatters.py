@@ -76,12 +76,15 @@ def format_installation_card(
 
 def format_system_status(status_data: dict[str, Any]) -> str:
     """Форматирует сводку о состоянии сервера и Raspberry Pi."""
-    server = status_data.get("server", {})
-    rpi = status_data.get("rpi", {})
-    settings = status_data.get("settings", {})
+    server_ver = status_data.get("server_version") or status_data.get("server", {}).get(
+        "version", "—"
+    )
 
-    server_ver = server.get("version", "—")
-    online = rpi.get("online", False)
+    rpi_conn = status_data.get("rpi_connection")
+    if rpi_conn is not None:
+        online = rpi_conn == "online"
+    else:
+        online = status_data.get("rpi", {}).get("online", False)
     status_icon = "🟢 Online" if online else "🔴 Offline"
 
     lines = [
@@ -90,17 +93,26 @@ def format_system_status(status_data: dict[str, Any]) -> str:
         f"🍓 <b>Связь с Raspberry Pi:</b> {status_icon}",
     ]
 
-    last_hb = rpi.get("last_heartbeat")
+    last_hb = status_data.get("rpi_last_heartbeat_at") or status_data.get(
+        "rpi", {}
+    ).get("last_heartbeat")
     if last_hb:
         lines.append(f"🕒 <b>Последний опрос:</b> {last_hb} UTC")
 
-    software = rpi.get("software") or {}
+    # Телеметрия RPi: проверяем rpi_telemetry или rpi
+    telem = status_data.get("rpi_telemetry") or status_data.get("rpi") or {}
+
+    hardware = telem.get("hardware") or {}
+    board_model = hardware.get("board_model") or telem.get("board_model")
+    if board_model:
+        lines.append(f"📟 <b>Плата:</b> {board_model}")
+
+    software = telem.get("software") or {}
     if software:
         edge_ver = software.get("edge_version", "—")
         model = software.get("model_name", "—")
         lines.append(f"📦 <b>ПО Edge:</b> v{edge_ver} (модель: {model})")
 
-    hardware = rpi.get("hardware") or {}
     if hardware:
         temp = hardware.get("cpu_temp_c")
         cpu_usage = hardware.get("cpu_usage_percent")
@@ -121,9 +133,10 @@ def format_system_status(status_data: dict[str, Any]) -> str:
             ]
         )
 
-    queue_count = rpi.get("offline_queue_count", 0)
+    queue_count = telem.get("offline_queue_count", 0)
     lines.append(f"📥 <b>Неотправленных пакетов в очереди:</b> {queue_count}")
 
+    settings = status_data.get("settings", {})
     interval = settings.get("capture_interval_hours", 1)
     debug = settings.get("debug_mode", False)
     debug_str = "Включен 🐞" if debug else "Выключен"

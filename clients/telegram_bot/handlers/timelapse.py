@@ -153,6 +153,20 @@ async def handle_open_frames_gallery(
             await callback.message.edit_text(f"Ошибка загрузки кадров:\n{err}")
 
 
+async def _resolve_inst_cam_id(
+    user_id: int, api_client: GrowVisionApiClient, inst_id: int, cam_val: str
+) -> int | None:
+    """Приводит cam_val (число или hardware_id) к числовому camera_id."""
+    if cam_val.isdigit():
+        return int(cam_val)
+    with contextlib.suppress(Exception):
+        cameras = await api_client.get_cameras(user_id)
+        for c in cameras:
+            if c.get("hardware_id") == cam_val or str(c.get("id")) == cam_val:
+                return c.get("id")
+    return None
+
+
 @router.callback_query(F.data.startswith("frm_cam:"))
 async def handle_gallery_camera_selected(
     callback: CallbackQuery,
@@ -163,13 +177,31 @@ async def handle_gallery_camera_selected(
     await callback.answer()
     parts = callback.data.split(":")
     inst_id = int(parts[1])
-    cam_id = int(parts[2])
+    cam_val = parts[2]
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    resolved_cam_id = await _resolve_inst_cam_id(user_id, api_client, inst_id, cam_val)
 
     data = await state.get_data()
-    all_frames = data.get("all_frames", [])
-    inst_name = data.get("inst_name", f"Установка #{inst_id}")
+    all_frames = data.get("all_frames")
+    if not all_frames:
+        all_frames = await api_client.get_timelapse_frames(user_id, inst_id)
+    inst_name = data.get("inst_name")
+    if not inst_name:
+        with contextlib.suppress(Exception):
+            inst = await api_client.get_installation(user_id, inst_id)
+            inst_name = inst.get("name")
+    inst_name = inst_name or f"Установка #{inst_id}"
 
-    filtered_frames = [f for f in all_frames if f.get("camera_id") == cam_id]
+    filtered_frames = [
+        f
+        for f in all_frames
+        if f.get("camera_id") == resolved_cam_id
+        or f.get("camera_hardware_id") == cam_val
+    ]
+    if not filtered_frames:
+        filtered_frames = all_frames
+
     if not filtered_frames:
         await callback.answer("Кадров для выбранной камеры нет", show_alert=True)
         return
@@ -198,6 +230,9 @@ async def _show_frame_in_gallery(
 ) -> None:
     """Отображает кадр в галерее с навигационной клавиатурой."""
     user_id = callback.from_user.id if callback.from_user else 0
+    if not frames:
+        await callback.answer("Кадров нет", show_alert=True)
+        return
     total_frames = len(frames)
     current_idx = max(0, min(frame_idx, total_frames - 1))
     target_frame = frames[current_idx]
@@ -464,20 +499,21 @@ async def handle_video_camera_selected(
     await callback.answer()
     parts = callback.data.split(":")
     inst_id = int(parts[1])
-    cam_id = int(parts[2])
+    cam_val = parts[2]
     user_id = callback.from_user.id if callback.from_user else 0
 
     if user_id in _user_video_locks:
         await callback.answer("Видео уже собирается, подождите", show_alert=True)
         return
 
+    resolved_cam_id = await _resolve_inst_cam_id(user_id, api_client, inst_id, cam_val)
     inst = await api_client.get_installation(user_id, inst_id)
     await _execute_video_pipeline(
         callback=callback,
         api_client=api_client,
         inst_id=inst_id,
         inst_name=inst.get("name", f"Установка #{inst_id}"),
-        camera_id=cam_id,
+        camera_id=resolved_cam_id,
     )
 
 

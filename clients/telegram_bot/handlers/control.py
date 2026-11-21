@@ -164,11 +164,16 @@ async def handle_control_light_action(
     """Включение/выключение основного света."""
     await callback.answer()
     parts = callback.data.split(":")
-    # ctrl:light:<1|0>:<target>
-    state_bool = parts[2] == "1"
-    target = parts[3]
+    # Поддерживаем форматы ctrl:light:<1|0>:<target> и ctrl:light:<target>:<on|off>
+    p1 = parts[2]
+    p2 = parts[3] if len(parts) > 3 else "1"
+    if p1.lower() in ("1", "0", "on", "off", "true", "false"):
+        state_bool = p1.lower() in ("1", "on", "true")
+        target = p2
+    else:
+        state_bool = p2.lower() in ("1", "on", "true")
+        target = p1
     user_id = callback.from_user.id if callback.from_user else 0
-    inst_id = int(target) if target != "all" else None
 
     state_text = "включение" if state_bool else "выключение"
     if callback.message and isinstance(callback.message, Message):
@@ -178,7 +183,7 @@ async def handle_control_light_action(
             )
 
     try:
-        resp = await api_client.control_light_main(user_id, inst_id, state_bool)
+        resp = await api_client.control_light_main(user_id, target, state_bool)
         res_msg = resp.get("result_message", "Успешно")
         debug_log = resp.get("debug_log_line")
 
@@ -215,10 +220,16 @@ async def handle_control_flash_action(
     """Включение/выключение вспышки."""
     await callback.answer()
     parts = callback.data.split(":")
-    state_bool = parts[2] == "1"
-    target = parts[3]
+    # Поддерживаем форматы ctrl:flash:<1|0>:<target> и ctrl:flash:<target>:<on|off>
+    p1 = parts[2]
+    p2 = parts[3] if len(parts) > 3 else "1"
+    if p1.lower() in ("1", "0", "on", "off", "true", "false"):
+        state_bool = p1.lower() in ("1", "on", "true")
+        target = p2
+    else:
+        state_bool = p2.lower() in ("1", "on", "true")
+        target = p1
     user_id = callback.from_user.id if callback.from_user else 0
-    inst_id = int(target) if target != "all" else None
 
     state_text = "включение" if state_bool else "выключение"
     if callback.message and isinstance(callback.message, Message):
@@ -226,7 +237,7 @@ async def handle_control_flash_action(
             await callback.message.edit_text(f"⏳ Выполняется {state_text} вспышки...")
 
     try:
-        resp = await api_client.control_light_flash(user_id, inst_id, state_bool)
+        resp = await api_client.control_light_flash(user_id, target, state_bool)
         res_msg = resp.get("result_message", "Успешно")
         debug_log = resp.get("debug_log_line")
 
@@ -264,7 +275,6 @@ async def handle_control_relay_test(
     parts = callback.data.split(":")
     target = parts[2]
     user_id = callback.from_user.id if callback.from_user else 0
-    inst_id = int(target) if target != "all" else None
 
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
@@ -273,7 +283,7 @@ async def handle_control_relay_test(
             )
 
     try:
-        resp = await api_client.control_relay_test(user_id, inst_id)
+        resp = await api_client.control_relay_test(user_id, target)
         res_msg = resp.get("result_message", "Тест реле завершен")
         debug_log = resp.get("debug_log_line")
 
@@ -379,7 +389,6 @@ async def _execute_snap(
     user_id = callback.from_user.id if callback.from_user else 0
     me = await api_client.get_me(user_id)
     role = me.get("role", "guest") if me else "guest"
-    inst_id = int(target) if target != "all" else None
 
     # Показываем индикатор ожидания
     status_msg: Message | None = None
@@ -398,7 +407,7 @@ async def _execute_snap(
         active_count = len(active_insts)
 
         resp = await api_client.take_snap(
-            user_id, installation_id=inst_id, active_count=active_count
+            user_id, target=target, active_count=active_count
         )
 
         status_result = resp.get("status", "done")
@@ -435,23 +444,39 @@ async def _execute_snap(
                 if sys_status.get("settings", {}).get("debug_mode", False):
                     debug_str = format_debug_block("POST /api/control/snap", debug_log)
 
+        # Маппинг камер
+        cam_map = {}
+        with contextlib.suppress(Exception):
+            cams = await api_client.get_cameras(user_id)
+            cam_map = {
+                c.get("id"): c.get("hardware_id") or c.get("auto_name") for c in cams
+            }
+
         target_chat = callback.message.chat.id if callback.message else user_id
 
         # Отправляем каждый снимок альбомом из двух фото (оригинал + разметка)
         for idx, cap in enumerate(captures):
             cap_inst_id = cap.get("installation_id")
             inst_name = active_map.get(cap_inst_id, f"Установка #{cap_inst_id}")
-            cam_hw_id = cap.get("camera_hardware_id", "cam")
+            cid = cap.get("camera_id")
+            cam_hw_id = (
+                cap.get("camera_hardware_id")
+                or cam_map.get(cid)
+                or (f"камера #{cid}" if cid else "cam")
+            )
             cap_time = cap.get("captured_at", "—")
 
-            area_cm2 = cap.get("total_area_cm2")
-            area_px = cap.get("total_area_px")
-            if area_cm2 is not None:
-                area_text = format_area_display(area_cm2, is_px=False)
-            elif area_px is not None:
-                area_text = format_area_display(area_px, is_px=True)
+            if cap.get("area_display"):
+                area_text = cap.get("area_display")
             else:
-                area_text = "площадь не определена"
+                area_cm2 = cap.get("total_area_cm2")
+                area_px = cap.get("total_area_px")
+                if area_cm2 is not None:
+                    area_text = format_area_display(area_cm2, is_px=False)
+                elif area_px is not None:
+                    area_text = format_area_display(area_px, is_px=True)
+                else:
+                    area_text = "площадь не определена"
 
             is_last = idx == len(captures) - 1
             caption_lines = [

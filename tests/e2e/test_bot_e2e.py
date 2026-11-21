@@ -255,10 +255,10 @@ def test_bot_e2e_installations_and_cameras(e2e_uvicorn_server):
             },
             json={
                 "name": "Bot Test Box",
-                "culture": "Томат E2E",
-                "light_pin": 12,
-                "flash_pin": 13,
-                "aruco_marker_size_mm": 50.0,
+                "culture_name": "Томат E2E",
+                "light_gpio_pin": 12,
+                "flash_gpio_pin": 13,
+                "aruco_size_mm": 50.0,
             },
         )
         assert r_inst.status_code == 201
@@ -269,7 +269,7 @@ def test_bot_e2e_installations_and_cameras(e2e_uvicorn_server):
 
     def handle_scan(http_client, cmd):
         c_id = cmd["id"]
-        if cmd.get("command_type") == "scan_cameras":
+        if cmd.get("command_type") in ("scan_cameras", "SCAN_CAMERAS"):
             http_client.post(
                 f"/api/edge/commands/{c_id}/result",
                 headers={"X-Edge-Key": edge_key},
@@ -375,25 +375,27 @@ def test_bot_e2e_control_and_snap(e2e_uvicorn_server):
             },
             json={
                 "name": "Snap Hydro Unit",
-                "culture": "Огурцы",
-                "light_pin": 14,
-                "flash_pin": 15,
-                "aruco_marker_size_mm": 40.0,
+                "culture_name": "Огурцы",
+                "light_gpio_pin": 14,
+                "flash_gpio_pin": 15,
+                "aruco_size_mm": 40.0,
             },
         )
         assert r_inst.status_code == 201
         inst_id = r_inst.json()["id"]
 
         # Привязываем камеру
-        cl.put(
-            f"/api/installations/{inst_id}",
-            headers={
-                "X-Client-Key": client_key,
-                "X-Client-Type": "telegram",
-                "X-External-Id": "200",
-            },
-            json={"camera_hardware_id": "cam-snap-01"},
-        )
+        with srv["session_factory"]() as db:
+            from server.db.models import Camera
+
+            cam = Camera(
+                hardware_id="cam-snap-01",
+                auto_name="Snap Camera",
+                is_online=True,
+                installation_id=inst_id,
+            )
+            db.add(cam)
+            db.commit()
 
     # 2. Фоновый обработчик команд для light и snap
     stop_ev = threading.Event()
@@ -401,13 +403,13 @@ def test_bot_e2e_control_and_snap(e2e_uvicorn_server):
     def handle_control(http_client, cmd):
         c_id = cmd["id"]
         c_type = cmd.get("command_type")
-        if c_type == "light_toggle":
+        if c_type in ("light_toggle", "LIGHT_MAIN", "LIGHT_FLASH"):
             http_client.post(
                 f"/api/edge/commands/{c_id}/result",
                 headers={"X-Edge-Key": edge_key},
                 json={"status": "done", "result_message": "Relay ON OK"},
             )
-        elif c_type == "snap":
+        elif c_type in ("snap", "SNAP"):
             meta = {
                 "installation_id": inst_id,
                 "camera_hardware_id": "cam-snap-01",
@@ -533,24 +535,26 @@ def test_bot_e2e_timelapse_and_gallery(e2e_uvicorn_server):
             },
             json={
                 "name": "Timelapse Box",
-                "culture": "Мята",
-                "light_pin": 16,
-                "flash_pin": 17,
-                "aruco_marker_size_mm": 40.0,
+                "culture_name": "Мята",
+                "light_gpio_pin": 16,
+                "flash_gpio_pin": 17,
+                "aruco_size_mm": 40.0,
             },
         )
         assert r_inst.status_code == 201
         inst_id = r_inst.json()["id"]
 
-        cl.put(
-            f"/api/installations/{inst_id}",
-            headers={
-                "X-Client-Key": client_key,
-                "X-Client-Type": "telegram",
-                "X-External-Id": "300",
-            },
-            json={"camera_hardware_id": "cam-tl-01"},
-        )
+        with srv["session_factory"]() as db:
+            from server.db.models import Camera
+
+            cam = Camera(
+                hardware_id="cam-tl-01",
+                auto_name="TL Cam",
+                is_online=True,
+                installation_id=inst_id,
+            )
+            db.add(cam)
+            db.commit()
 
         # 2. Загружаем ровно ОДИН плановый снимок (is_manual=False)
         meta = {

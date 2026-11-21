@@ -81,11 +81,11 @@ async def test_installation_create_flow(bot_config: BotConfig, mock_bot):
                 json={
                     "id": 99,
                     "name": created_payload["name"],
-                    "crop_type": created_payload["crop_type"],
+                    "culture_name": created_payload["culture_name"],
                     "is_archived": False,
                     "light_gpio_pin": created_payload["light_gpio_pin"],
                     "flash_gpio_pin": created_payload["flash_gpio_pin"],
-                    "aruco_marker_size_mm": created_payload["aruco_marker_size_mm"],
+                    "aruco_size_mm": created_payload["aruco_size_mm"],
                 },
             )
         return httpx.Response(404)
@@ -124,10 +124,10 @@ async def test_installation_create_flow(bot_config: BotConfig, mock_bot):
 
     assert created_payload is not None
     assert created_payload["name"] == "Мята Стеллаж"
-    assert created_payload["crop_type"] == "Мята перечная"
+    assert created_payload["culture_name"] == "Мята перечная"
     assert created_payload["light_gpio_pin"] == 22
     assert created_payload["flash_gpio_pin"] == 23
-    assert created_payload["aruco_marker_size_mm"] is None
+    assert created_payload["aruco_size_mm"] is None
 
     final_text = mock_bot.send_message.call_args[1]["text"]
     assert "успешно создана" in final_text

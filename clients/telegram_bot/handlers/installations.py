@@ -83,9 +83,9 @@ async def render_installations_list(
 
     if not installations:
         empty_text = (
-            f"{title}\n\nАрхивных установок пока нет."
+            f"{title}\n\nСписок архивных установок пуст."
             if show_archived
-            else f"{title}\n\nАктивных установок пока нет."
+            else f"{title}\n\nСписок активных установок пуст."
         )
         return empty_text, InlineKeyboardMarkup(inline_keyboard=bottom_buttons)
 
@@ -103,7 +103,7 @@ async def render_installations_list(
         item_id_func=lambda i: i.get("id"),
         bottom_buttons=bottom_buttons,
     )
-    return f"{title}\nВыберите установку для просмотра карточки:", kb
+    return f"{title}\nВыберите из списка установок для просмотра карточки:", kb
 
 
 @router.message(F.text == "🌱 Установки")
@@ -342,10 +342,10 @@ async def _finish_create_installation(
 
     payload = {
         "name": data["name"],
-        "crop_type": data["crop_type"],
+        "culture_name": data["crop_type"],
         "light_gpio_pin": data["light_gpio_pin"],
         "flash_gpio_pin": data["flash_gpio_pin"],
-        "aruco_marker_size_mm": aruco_val,
+        "aruco_size_mm": aruco_val,
     }
 
     try:
@@ -529,7 +529,7 @@ async def process_edit_value(
         elif field == "crop_type":
             if not val_text:
                 raise ValueError("Культура не может быть пустой")
-            patch_payload["crop_type"] = val_text
+            patch_payload["culture_name"] = val_text
         elif field == "light_pin":
             if not val_text.isdigit() or int(val_text) <= 0:
                 raise ValueError("Пин света должен быть положительным числом")
@@ -542,7 +542,7 @@ async def process_edit_value(
             v = float(val_text.replace(",", "."))
             if v <= 0:
                 raise ValueError("Размер ArUco должен быть > 0")
-            patch_payload["aruco_marker_size_mm"] = v
+            patch_payload["aruco_size_mm"] = v
     except ValueError as ve:
         await message.answer(f"Ошибка ввода: {ve}. Повторите ввод:")
         return
