@@ -7,15 +7,15 @@
 - Текущий этап: 7 (Telegram-бот)
 - Название этапа: Telegram-бот
 - Режим: FULL
-- Статус: STAGE_PASS
+- Статус: DONE
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт финализация документации Scribe)
+- Ждём от пользователя: приёмка этапа 7, поднятие версии до 0.4.0 (тег v0.4.0) и команда на запуск этапа 8 (Web SPA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| Scribe | docs | main | — | — |
+| — | — | — | — | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-7/bot создана от main (669b9f3)
@@ -28,10 +28,13 @@
 - 4e155b8 fix(bot): fix api client request bodies, error handling and handlers
 - 92cc4f9 docs(qa): mark BUG-001 and BUG-002 as FIXED after verify
 - ddaef55 docs(repo): update state to testing for stage 7 re-evaluation
+- 4447e43 chore(repo): merge stage-7/bot into main
 - cf5b49d chore(repo): bump version to 0.3.1
+- e6f8832 docs(repo): update state to stage pass for stage 7
+- fe96be8 docs(repo): update stage 7 report and readme
 
 ## Последний вердикт QA
-- Вердикт: PASS (по этапу 7)
+- Вердикт: PASS (по этапу 7, итерация 1/3)
 - Открытые дефекты (ID): —
 - Отложенные (DEFERRED, ID): —
 
@@ -43,13 +46,9 @@
 - Этап 4: Client API, часть 2 + доработки fixes (принят QA, слит в main, отчёт docs/stage_reports/stage-4.md)
 - Этап 5: CLI-клиент + доработки fixes (принят QA, слит в main, версия 0.2.0, отчёт docs/stage_reports/stage-5.md)
 - Этап 6: Edge-агент для Raspberry Pi 5 + доработки fixes + fixes-2 (принят QA, слит в main, версия 0.3.0, отчёт docs/stage_reports/stage-6.md)
+- Этап 7: Telegram-бот (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.md)
 
 ## История (последние 15 событий)
-- 2026-11-21: Пользователь принял этап 6 по коду, выставил версию 0.3.0 (тег v0.3.0), отложил задачу T-001 до релиза v1.0.0
-- 2026-11-21: Scribe перенёс T-001 в раздел «Отложенные до релиза» в docs/user_tasks.md (DOCS_UPDATED)
-- 2026-11-21: Пользователь дал команду запустить этап 7 (Telegram-бот) в режиме FULL
-- 2026-11-21: Создана ветка stage-7/bot, подготовлена карточка docs/tasks/stage-7-bot.md
-- 2026-11-21: Этап 7 переведён в статус BUILDING, задача передана Builder-у
 - 2026-11-21: Builder реализовал Telegram-бота (30 unit-тестов, полная изоляция), статус READY_FOR_QA
 - 2026-11-21: Подготовлена карточка docs/tasks/stage-7-qa.md, статус изменён на TESTING, задача передана QA
 - 2026-11-21: QA выполнил E2E тесты (tests/e2e/test_bot_e2e.py), вердикт FAIL (BUG-001, BUG-002)
@@ -60,3 +59,5 @@
 - 2026-11-21: Ветка stage-7/bot слита в main
 - 2026-11-21: Централизованно поднята PATCH-версия до 0.3.1 (коммит cf5b49d)
 - 2026-11-21: Статус этапа 7 изменён на STAGE_PASS, задача передана Scribe
+- 2026-11-21: Scribe обновил docs/stage_reports/stage-7.md и README.md (DOCS_UPDATED, коммит fe96be8)
+- 2026-11-21: Этап 7 окончательно закрыт (DONE)
