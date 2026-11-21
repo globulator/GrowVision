@@ -7,18 +7,21 @@
 - Текущий этап: 7 (Telegram-бот)
 - Название этапа: Telegram-бот
 - Режим: FULL
-- Статус: BUILDING
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт реализация Builder-ом)
+- Ждём от пользователя: ничего (идёт тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| Builder | bot | stage-7/bot | docs/tasks/stage-7-bot.md | — |
+| QA | bot | stage-7/bot | docs/tasks/stage-7-qa.md | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-7/bot создана от main (669b9f3)
+- 869fbc4 feat(bot): implement telegram bot client for GrowVision
+- 95f5575 test(bot): add unit tests for telegram bot handlers, isolation and video
+- a155d98 docs(bot): update user guide, stage task and handoff report
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 6)
@@ -35,7 +38,6 @@
 - Этап 6: Edge-агент для Raspberry Pi 5 + доработки fixes + fixes-2 (принят QA, слит в main, версия 0.3.0, отчёт docs/stage_reports/stage-6.md)
 
 ## История (последние 15 событий)
-- 2026-11-21: Запущен LIGHT-режим, создана ветка stage-6/fixes-2, подготовлена карточка docs/tasks/stage-6-fixes-2.md, статус BUILDING, задача передана Builder-у
 - 2026-11-21: Builder устранил дефекты, добавил get_pin_state, резолв путей от корня и 5 unit-тестов, статус READY_FOR_QA
 - 2026-11-21: Подготовлена карточка docs/tasks/stage-6-fixes-2-qa.md, статус изменён на TESTING, задача передана QA
 - 2026-11-21: QA проверил доработки fixes-2, вердикт PASS (184 теста, 0 дефектов)
@@ -48,3 +50,5 @@
 - 2026-11-21: Пользователь дал команду запустить этап 7 (Telegram-бот) в режиме FULL
 - 2026-11-21: Создана ветка stage-7/bot, подготовлена карточка docs/tasks/stage-7-bot.md
 - 2026-11-21: Этап 7 переведён в статус BUILDING, задача передана Builder-у
+- 2026-11-21: Builder реализовал Telegram-бота (30 unit-тестов, полная изоляция), статус READY_FOR_QA
+- 2026-11-21: Подготовлена карточка docs/tasks/stage-7-qa.md, статус изменён на TESTING, задача передана QA
