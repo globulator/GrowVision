@@ -72,7 +72,7 @@ pip install opencv-python-headless onnxruntime
 mkdir -p edge_agent/models
 # Пример загрузки модели версии model-v1 из релиза:
 curl -L -o edge_agent/models/lettuce_seg_v1.onnx \
-  https://github.com/<OWNER>/GrowVision/releases/download/model-v1/lettuce_seg_v1.onnx
+  https://github.com/<ваш аккаунт GitHub>/GrowVision/releases/download/model-v1/lettuce_seg_v1.onnx
 ```
 
 Если модель временно не установлена, агент запустится в безопасном режиме: замеры будут пустыми (`measurements = []`), а в лог будет записано предупреждение `ERROR`.
@@ -101,7 +101,7 @@ EDGE_API_KEY=your-edge-secret-key-here
 HARDWARE_MODE=rpi
 
 # Путь к загруженной ONNX модели
-MODEL_PATH=./models/lettuce_seg_v1.onnx
+MODEL_PATH=edge_agent/models/lettuce_seg_v1.onnx
 
 # Интервалы опроса (в секундах)
 HEARTBEAT_INTERVAL_SEC=30

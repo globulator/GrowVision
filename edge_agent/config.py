@@ -5,12 +5,22 @@ from typing import Literal
 from dotenv import dotenv_values
 from pydantic import BaseModel, Field
 
-DEFAULT_ENV_FILE = Path(__file__).resolve().parent / ".env"
-DEFAULT_OFFLINE_QUEUE_DIR = Path(__file__).resolve().parent / "offline_queue"
-DEFAULT_MODELS_DIR = Path(__file__).resolve().parent / "models"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_ENV_FILE = REPO_ROOT / "edge_agent" / ".env"
+DEFAULT_OFFLINE_QUEUE_DIR = REPO_ROOT / "edge_agent" / "offline_queue"
+DEFAULT_MODELS_DIR = REPO_ROOT / "edge_agent" / "models"
 DEFAULT_MODEL_PATH = DEFAULT_MODELS_DIR / "lettuce_seg_v1.onnx"
 DEFAULT_V4L_BY_ID_DIR = Path("/dev/v4l/by-id")
 DEFAULT_SYS_DIR = Path("/sys")
+
+
+def resolve_path(p: str | Path) -> Path:
+    """Разрешает путь относительно корня репозитория (REPO_ROOT), если он относительный."""
+    path = Path(p)
+    return path if path.is_absolute() else (REPO_ROOT / path).resolve()
+
+
+resolve_repo_path = resolve_path
 
 
 class EdgeConfig(BaseModel):
@@ -99,14 +109,18 @@ def load_config(env_path: Path | str | None = None) -> EdgeConfig:
         command_poll_interval = 2.0
 
     queue_dir_raw = get_val("OFFLINE_QUEUE_DIR")
-    queue_dir = Path(queue_dir_raw) if queue_dir_raw else DEFAULT_OFFLINE_QUEUE_DIR
+    queue_dir = (
+        resolve_path(queue_dir_raw) if queue_dir_raw else DEFAULT_OFFLINE_QUEUE_DIR
+    )
 
     model_path_raw = get_val("MODEL_PATH")
     if model_path_raw:
-        model_path = Path(model_path_raw)
+        model_path = resolve_path(model_path_raw)
     else:
         models_dir_raw = get_val("MODELS_DIR")
-        models_dir = Path(models_dir_raw) if models_dir_raw else DEFAULT_MODELS_DIR
+        models_dir = (
+            resolve_path(models_dir_raw) if models_dir_raw else DEFAULT_MODELS_DIR
+        )
         model_name = (
             get_val("MODEL_NAME", "lettuce_seg_v1.onnx") or "lettuce_seg_v1.onnx"
         )
