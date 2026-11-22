@@ -7,15 +7,15 @@
 - Текущий этап: 6.1 (тестовые инструменты агента)
 - Название этапа: Тестовые инструменты агента (TEST_CAPTURE_INTERVAL_SEC, simulator seed, mock синтетика)
 - Режим: FULL
-- Статус: TESTING
+- Статус: STAGE_PASS
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт тестирование QA)
+- Ждём от пользователя: ничего (идёт финализация документации Scribe)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| QA | edge | stage-6/test-tools | docs/tasks/stage-6-test-tools-qa.md | — |
+| Scribe | docs | main | — | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-6/test-tools создана от main (3377084)
@@ -23,9 +23,11 @@
 - e901753 feat(edge): add test capture interval, synthetic generator and simulator seed
 - a551d99 test(edge): add unit and e2e tests for test tools and interval
 - a794dc5 docs(edge): add testing without waiting section and handoff report
+- f5b95e5 docs(repo): prepare stage 6.1 qa task and update state to testing
+- a103e1a chore(repo): merge stage-6/test-tools into main
 
 ## Последний вердикт QA
-- Вердикт: PASS (по этапу 7)
+- Вердикт: PASS (по этапу 6.1)
 - Открытые дефекты (ID): —
 - Отложенные (DEFERRED, ID): —
 
@@ -48,6 +50,12 @@
 - 2026-11-22: Пользователь дал команду запустить этап 6.1 (тестовые инструменты агента) в режиме FULL
 - 2026-11-22: Создана ветка stage-6/test-tools от main
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-6-test-tools-builder.md
+- 2026-11-22: Этап 6.1 переведён в статус BUILDING, задача передана Builder-у
+- 2026-11-22: Builder реализовал TEST_CAPTURE_INTERVAL_SEC, simulator seed, mock-генератор и тесты, статус READY_FOR_QA
+- 2026-11-22: Подготовлена карточка docs/tasks/stage-6-test-tools-qa.md, статус изменён на TESTING, задача передана QA
+- 2026-11-22: QA проверил этап 6.1, вердикт PASS (230 тестов, 0 дефектов)
+- 2026-11-22: Ветка stage-6/test-tools слита в main (версия 0.3.1 сохранена без изменений)
+- 2026-11-22: Статус этапа 6.1 изменён на STAGE_PASS, задача передана Scribe
 - 2026-11-22: Этап 6.1 переведён в статус BUILDING, задача передана Builder-у
 - 2026-11-22: Builder реализовал TEST_CAPTURE_INTERVAL_SEC, simulator seed, mock-генератор и тесты, статус READY_FOR_QA
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-6-test-tools-qa.md, статус изменён на TESTING, задача передана QA
