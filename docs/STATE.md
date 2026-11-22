@@ -4,18 +4,18 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 7.3
+- Текущий этап: 7.3 (Авторизация по одноразовому коду, управление сессиями, доработки CV-разметки, UX-полировка и фиксы раунда 5) — завершён
 - Название этапа: Авторизация по одноразовому коду, управление сессиями, доработки CV-разметки, UX-полировка и фиксы раунда 5
 - Режим: FULL
-- Статус: STAGE_PASS
+- Статус: DONE
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт финализация документации Scribe)
+- Ждём от пользователя: приёмки этапа 7.3 и команды на запуск этапа 8 (Web SPA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| scribe | docs | main | — | — |
+| — | — | — | — | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-7/auth-and-polish создана от main (1816926)
@@ -24,7 +24,9 @@
 - 6383ff5 feat(stage-7.3): implement auth by one-time code, session management, cv annotations, and polish
 - d6a0385 docs(repo): prepare stage 7.3 qa task and update state to testing
 - c9efc8c docs(qa): update qa_log with stage 7.3 verification
-- f4fc628 chore(repo): merge stage-7/auth-and-polish into main
+- bb03607 chore(repo): merge stage-7/auth-and-polish into main
+- 43d434d docs(repo): update state to stage pass for stage 7.3
+- 5adc099 docs(repo): update stage 7 report with auth and polish
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 7.3, раунд 5)
@@ -42,9 +44,9 @@
 - Этап 6.1: Тестовые инструменты агента (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-6.1.md)
 - Этап 7: Telegram-бот + fixes + fixes-2 + fixes-3 + fixes-4 (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.md, docs/stage_reports/stage-7.2.md)
 - Этап 7.2: Комплексные исправления раунда 4 (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.2.md)
+- Этап 7.3: Авторизация по коду, управление сессиями, CV-разметка, UX-полировка и фиксы раунда 5 (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.3.md)
 
 ## История (последние 15 событий)
-- 2026-11-22: QA проверил этап 7.2 (раунд 4), вердикт PASS (268 тестов, 0 дефектов)
 - 2026-11-22: Ветка stage-7/bot-fixes-4 слита в main (версия 0.3.1 сохранена без изменений)
 - 2026-11-22: Статус этапа 7.2 изменён на STAGE_PASS, задача передана Scribe
 - 2026-11-22: Scribe создал docs/stage_reports/stage-7.2.md, дополнил docs/stage_reports/stage-7.md и README.md
@@ -58,3 +60,5 @@
 - 2026-11-22: QA проверил этап 7.3, вердикт PASS (279 тестов, 0 дефектов)
 - 2026-11-22: Ветка stage-7/auth-and-polish слита в main (версия 0.3.1 сохранена без изменений)
 - 2026-11-22: Статус этапа 7.3 изменён на STAGE_PASS, задача передана Scribe
+- 2026-11-22: Scribe создал docs/stage_reports/stage-7.3.md, обновил docs/stage_reports/stage-7.md и README.md
+- 2026-11-22: Этап 7.3 окончательно закрыт (DONE)
