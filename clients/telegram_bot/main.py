@@ -21,6 +21,7 @@ from clients.telegram_bot.handlers import (
     common,
     control,
     installations,
+    sessions,
     start_auth,
     system,
     timelapse,
@@ -78,6 +79,7 @@ def build_dispatcher(config: BotConfig, api_client: GrowVisionApiClient) -> Disp
         control.router,
         timelapse.router,
         system.router,
+        sessions.router,
         common.fallback_router,
     ]
     for r in routers:

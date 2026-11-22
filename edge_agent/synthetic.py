@@ -45,12 +45,13 @@ def generate_synthetic_frame(
     camera_id: int | str = 0,
     width: int = 1280,
     height: int = 720,
+    overlay_aruco: bool = True,
 ) -> bytes:
     """Генерирует синтетический кадр 1280x720:
 
     - Нейтральный фон (лабораторный бокс);
     - Зелёное растение по центру с монотонным ростом площади от frame_index;
-    - Маркер ArUco DICT_4X4_50 id 0 известного размера;
+    - Маркер ArUco DICT_4X4_50 id 0 (при overlay_aruco=True);
     - Ракурс и смещение зависят от camera_id;
     - При отсутствии OpenCV возвращает запасной 1x1 JPEG с обязательным предупреждением в лог.
     """
@@ -66,25 +67,26 @@ def generate_synthetic_frame(
 
         dx, dy = _camera_offset(camera_id)
 
-        # 2. Маркер ArUco DICT_4X4_50 (id 0) с белой рамкой для контраста
-        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        marker_size = 80
-        if hasattr(cv2.aruco, "generateImageMarker"):
-            marker_core = cv2.aruco.generateImageMarker(aruco_dict, 0, marker_size)
-        else:
-            marker_core = cv2.aruco.drawMarker(aruco_dict, 0, marker_size)
+        # 2. Маркер ArUco DICT_4X4_50 (id 0) с белой рамкой для контраста (опционально)
+        if overlay_aruco:
+            aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+            marker_size = 80
+            if hasattr(cv2.aruco, "generateImageMarker"):
+                marker_core = cv2.aruco.generateImageMarker(aruco_dict, 0, marker_size)
+            else:
+                marker_core = cv2.aruco.drawMarker(aruco_dict, 0, marker_size)
 
-        pad = 12
-        marker_patch = np.full(
-            (marker_size + 2 * pad, marker_size + 2 * pad), 255, dtype=np.uint8
-        )
-        marker_patch[pad : pad + marker_size, pad : pad + marker_size] = marker_core
-        marker_bgr = cv2.cvtColor(marker_patch, cv2.COLOR_GRAY2BGR)
+            pad = 12
+            marker_patch = np.full(
+                (marker_size + 2 * pad, marker_size + 2 * pad), 255, dtype=np.uint8
+            )
+            marker_patch[pad : pad + marker_size, pad : pad + marker_size] = marker_core
+            marker_bgr = cv2.cvtColor(marker_patch, cv2.COLOR_GRAY2BGR)
 
-        m_h, m_w = marker_patch.shape
-        m_x = max(10, min(width - m_w - 10, 50 + dx))
-        m_y = max(10, min(height - m_h - 10, 50 + dy))
-        frame[m_y : m_y + m_h, m_x : m_x + m_w] = marker_bgr
+            m_h, m_w = marker_patch.shape
+            m_x = max(10, min(width - m_w - 10, 50 + dx))
+            m_y = max(10, min(height - m_h - 10, 50 + dy))
+            frame[m_y : m_y + m_h, m_x : m_x + m_w] = marker_bgr
 
         # 3. Зеленое растение с монотонным ростом площади
         # Центр растения со смещением от ракурса

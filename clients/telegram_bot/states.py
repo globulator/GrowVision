@@ -4,8 +4,9 @@ from aiogram.fsm.state import State, StatesGroup
 class AuthStates(StatesGroup):
     """FSM-состояния авторизации."""
 
-    waiting_login = State()
     waiting_password = State()
+    waiting_full_name = State()
+    waiting_login = State()  # обратная совместимость
 
 
 class InstallationCreateStates(StatesGroup):
@@ -43,6 +44,7 @@ class TimelapseStates(StatesGroup):
 
     browsing_frames = State()
     selecting_camera_for_video = State()
+    waiting_duration = State()
 
 
 class SystemSettingsStates(StatesGroup):

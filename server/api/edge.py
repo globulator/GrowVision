@@ -146,6 +146,9 @@ def edge_heartbeat(
                 flash_gpio_pin=inst.flash_gpio_pin,
                 camera_hardware_ids=cam_ids,
                 capture_delay_sec=inst.capture_delay_sec,
+                name=inst.name,
+                culture_name=inst.culture_name,
+                aruco_size_mm=inst.aruco_size_mm,
             )
         )
 
@@ -209,6 +212,9 @@ def edge_claim_command(
                 "flash_gpio_pin": inst.flash_gpio_pin,
                 "camera_hardware_ids": [c.hardware_id for c in inst.cameras],
                 "capture_delay_sec": inst.capture_delay_sec,
+                "name": inst.name,
+                "culture_name": inst.culture_name,
+                "aruco_size_mm": inst.aruco_size_mm,
             }
             for inst in active_installations
         ]
@@ -229,6 +235,9 @@ def edge_claim_command(
                 "flash_gpio_pin": inst.flash_gpio_pin,
                 "camera_hardware_ids": [c.hardware_id for c in inst.cameras],
                 "capture_delay_sec": inst.capture_delay_sec,
+                "name": inst.name,
+                "culture_name": inst.culture_name,
+                "aruco_size_mm": inst.aruco_size_mm,
             }
             if inst
             else None

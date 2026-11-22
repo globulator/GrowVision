@@ -348,7 +348,7 @@ def test_qa_db_pragmas_and_tables(qa_isolated_db):
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
 
-    assert len(tables) == 7
+    assert len(tables) == 8
     assert tables == {
         "installations",
         "cameras",
@@ -357,6 +357,7 @@ def test_qa_db_pragmas_and_tables(qa_isolated_db):
         "users",
         "edge_commands",
         "system_settings",
+        "invite_codes",
     }
 
     with engine.connect() as conn:

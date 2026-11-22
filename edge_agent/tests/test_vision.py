@@ -54,3 +54,49 @@ def test_process_capture_empty_in_production_without_model(tmp_path: Path):
     assert ann_bytes == MOCK_JPEG_FRAME
     assert aruco_area is None
     assert measurements == []
+
+
+def test_mock_overlay_aruco_flag(mock_vision: VisionPipeline):
+    """Проверка флага overlay_aruco: при False синтетический кадр не содержит ArUco."""
+    frame_with_aruco = generate_synthetic_frame(0, "cam-01", overlay_aruco=True)
+    assert mock_vision.detect_aruco(frame_with_aruco) is not None
+
+    frame_without_aruco = generate_synthetic_frame(0, "cam-01", overlay_aruco=False)
+    assert mock_vision.detect_aruco(frame_without_aruco) is None
+
+
+def test_cv_annotations_ruler_and_red_dot(mock_vision: VisionPipeline):
+    """Проверка нанесения фиолетовой линейки, красной точки и метаданных."""
+    import cv2
+    import numpy as np
+
+    synth_frame = generate_synthetic_frame(0, "cam-01", overlay_aruco=True)
+    ann_bytes, aruco_area, measurements = mock_vision.process_capture(
+        synth_frame,
+        inst_name="Тест Установка",
+        culture_name="Базилик",
+        camera_name="cam-01",
+        captured_at="2026-11-22T12:00:00Z",
+        aruco_size_mm=50.0,
+    )
+    assert len(measurements) >= 1
+    assert aruco_area is not None
+
+    nparr = np.frombuffer(ann_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    assert img is not None
+
+    # Проверяем наличие фиолетового цвета (BGR: 240, 32, 160) с допуском на JPEG-сжатие и антиалиасинг
+    b_diff = np.abs(img[:, :, 0].astype(int) - 240)
+    g_diff = np.abs(img[:, :, 1].astype(int) - 32)
+    r_diff = np.abs(img[:, :, 2].astype(int) - 160)
+    purple_mask = (b_diff < 35) & (g_diff < 35) & (r_diff < 35)
+    assert np.any(purple_mask), (
+        "Фиолетовая линейка должна присутствовать на аннотированном кадре"
+    )
+
+    # Проверяем наличие красной точки в центре (BGR: 0, 0, 255) с допуском
+    red_mask = (img[:, :, 2] > 200) & (img[:, :, 0] < 50) & (img[:, :, 1] < 50)
+    assert np.any(red_mask), (
+        "Красная точка должна присутствовать на аннотированном кадре"
+    )

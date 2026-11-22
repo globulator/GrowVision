@@ -202,4 +202,13 @@ def format_debug_block(command: str | None, log_line: str | None) -> str:
     if log_line:
         lines.append(f"<b>Лог:</b> <code>{html.escape(str(log_line))}</code>")
     return "\n".join(lines)
-    return "\n".join(lines)
+
+
+def format_tg_user_link(login: str | None, external_id: str | int | None) -> str:
+    """Форматирует имя пользователя в кликабельную ссылку tg://user?id=..."""
+    name = html.escape(str(login or "Пользователь"))
+    if external_id is not None:
+        ext_str = str(external_id).strip()
+        if ext_str.isdigit():
+            return f'<a href="tg://user?id={ext_str}">{name}</a>'
+    return name

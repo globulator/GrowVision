@@ -135,24 +135,49 @@ def _set_debug_mode(session_factory, enabled: bool) -> None:
 
 def _login(client: TestClient, role: str) -> dict[str, str]:
     login_limiter.clear()
-    pwd = DEV_PASS if role == "developer" else BIO_PASS
     ext_id = f"e2e-{role}-ext-id"
-    r = client.post(
-        "/api/auth/login",
-        headers={"X-Client-Key": CLIENT_KEY},
-        json={
-            "client_type": "cli",
-            "external_id": ext_id,
-            "login": role,
-            "password": pwd,
-        },
-    )
-    assert r.status_code == 200, f"Failed to login as {role}: {r.text}"
-    return {
-        "X-Client-Key": CLIENT_KEY,
-        "X-Client-Type": "cli",
-        "X-External-Id": ext_id,
-    }
+    if role == "developer":
+        r = client.post(
+            "/api/auth/login",
+            headers={"X-Client-Key": CLIENT_KEY},
+            json={
+                "client_type": "cli",
+                "external_id": ext_id,
+                "login": role,
+                "password": DEV_PASS,
+            },
+        )
+        assert r.status_code == 200, f"Failed to login as {role}: {r.text}"
+        return {
+            "X-Client-Key": CLIENT_KEY,
+            "X-Client-Type": "cli",
+            "X-External-Id": ext_id,
+        }
+    else:
+        dev_h = _login(client, "developer")
+        inv_res = client.post(
+            "/api/auth/invites",
+            headers=dev_h,
+            json={"role": "biologist"},
+        )
+        assert inv_res.status_code == 200, f"Failed to create invite: {inv_res.text}"
+        code = inv_res.json()["code"]
+        r = client.post(
+            "/api/auth/login",
+            headers={"X-Client-Key": CLIENT_KEY},
+            json={
+                "client_type": "telegram",
+                "external_id": ext_id,
+                "login": role,
+                "password": code,
+            },
+        )
+        assert r.status_code == 200, f"Failed to login as {role}: {r.text}"
+        return {
+            "X-Client-Key": CLIENT_KEY,
+            "X-Client-Type": "telegram",
+            "X-External-Id": ext_id,
+        }
 
 
 # ==============================================================================

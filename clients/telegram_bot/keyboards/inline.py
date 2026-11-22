@@ -142,28 +142,26 @@ def get_installation_card_keyboard(
 
 def get_control_panel_keyboard(
     target: str,  # 'all' или str(installation_id)
+    light_state: bool = False,
+    flash_state: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Панель управления светом, вспышкой и тестом реле."""
+    """Панель управления реле: 2 кнопки-переключателя с текущим статусом."""
+    light_next = 0 if light_state else 1
+    light_icon = "🟢 ВКЛ" if light_state else "⚪️ ВЫКЛ"
+
+    flash_next = 0 if flash_state else 1
+    flash_icon = "🟢 ВКЛ" if flash_state else "⚪️ ВЫКЛ"
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="💡 Свет: ВКЛ",
-                    callback_data=f"ctrl:light:1:{target}",
+                    text=f"💡 Свет: {light_icon}",
+                    callback_data=f"ctrl:light:{light_next}:{target}",
                 ),
                 InlineKeyboardButton(
-                    text="💡 Свет: ВЫКЛ",
-                    callback_data=f"ctrl:light:0:{target}",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⚡ Вспышка: ВКЛ",
-                    callback_data=f"ctrl:flash:1:{target}",
-                ),
-                InlineKeyboardButton(
-                    text="⚡ Вспышка: ВЫКЛ",
-                    callback_data=f"ctrl:flash:0:{target}",
+                    text=f"⚡ Вспышка: {flash_icon}",
+                    callback_data=f"ctrl:flash:{flash_next}:{target}",
                 ),
             ],
             [
@@ -177,6 +175,28 @@ def get_control_panel_keyboard(
                 ),
             ],
             [InlineKeyboardButton(text="⬅️ К выбору цели", callback_data="ctrl:menu")],
+        ]
+    )
+
+
+def get_snap_layer_keyboard(
+    capture_id: int, current_layer: str = "raw"
+) -> InlineKeyboardMarkup:
+    """Клавиатура переключения слоя исходник/разметка для ручного снимка (Developer)."""
+    if current_layer == "raw":
+        btn_text = "🧠 Разметка"
+        next_layer = "ann"
+    else:
+        btn_text = "🖼 Исходник"
+        next_layer = "raw"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=btn_text,
+                    callback_data=f"snap:layer:{capture_id}:{next_layer}",
+                )
+            ]
         ]
     )
 

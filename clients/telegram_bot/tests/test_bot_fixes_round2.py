@@ -122,7 +122,8 @@ async def test_profile_displays_valid_dates_and_login(
     mock_bot.send_message.assert_called_once()
     profile_text = mock_bot.send_message.call_args[1]["text"]
 
-    assert "Логин:</b> anna_bio" in profile_text
+    assert "Логин:</b>" in profile_text
+    assert "anna_bio" in profile_text
     assert "Роль:</b> Биолог" in profile_text
     assert "Время входа:</b> 2026-11-21T09:30:00Z" in profile_text
     assert "Последняя активность:</b> 2026-11-21T09:45:00Z" in profile_text

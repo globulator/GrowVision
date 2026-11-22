@@ -75,6 +75,7 @@ class MockBotHelper:
                     chat_id=method.chat_id,
                     photo=method.photo,
                     caption=getattr(method, "caption", None),
+                    reply_markup=getattr(method, "reply_markup", None),
                 )
                 return res or created_msg
             elif api_method == "sendVideo":
@@ -252,21 +253,22 @@ async def run_scenario_auth_lifecycle(
         msg2 = make_message("/login", user_id=user_id, message_id=2)
         await dp.feed_update(mock.bot, Update(update_id=2, message=msg2))
         m2_text = mock.sent_messages[-1]["text"]
-        assert "Шаг 1 из 2" in m2_text
+        assert "Авторизация в GrowVision" in m2_text
 
-        # 3. Вводим имя пользователя
-        msg3 = make_message("Иван Разработчик", user_id=user_id, message_id=3)
+        # 3. Вводим пароль разработчика (удаляется немедленно)
+        pwd_msg_id = 3
+        msg3 = make_message(dev_pass, user_id=user_id, message_id=pwd_msg_id)
         await dp.feed_update(mock.bot, Update(update_id=3, message=msg3))
-        m3_text = mock.sent_messages[-1]["text"]
-        assert "Шаг 2 из 2" in m3_text
-
-        # 4. Вводим пароль (проверяем удаление сообщения с паролем!)
-        pwd_msg_id = 4
-        msg4 = make_message(dev_pass, user_id=user_id, message_id=pwd_msg_id)
-        await dp.feed_update(mock.bot, Update(update_id=4, message=msg4))
 
         # Сообщение с паролем должно быть удалено немедленно
         assert pwd_msg_id in mock.deleted_messages
+
+        m3_text = mock.sent_messages[-1]["text"]
+        assert "Имя и Фамилию" in m3_text
+
+        # 4. Вводим имя пользователя для первичной регистрации
+        msg4 = make_message("Иван Разработчик", user_id=user_id, message_id=4)
+        await dp.feed_update(mock.bot, Update(update_id=4, message=msg4))
 
         m4_text = mock.sent_messages[-1]["text"]
         m4_kb = mock.sent_messages[-1]["reply_markup"]
@@ -278,6 +280,7 @@ async def run_scenario_auth_lifecycle(
         assert "📷 Камеры" in buttons_dev
         assert "⚙️ Система" in buttons_dev
         assert "📸 Сделать снимок" in buttons_dev
+        assert "👥 Сессии" in buttons_dev
 
         # 5. /start после авторизации
         msg5 = make_message("/start", user_id=user_id, message_id=5)
@@ -309,6 +312,19 @@ async def run_scenario_auth_lifecycle(
         await dp.feed_update(mock.bot, Update(update_id=8, message=msg8))
         m8_text = mock.sent_messages[-1]["text"]
         assert "Гость" in m8_text
+
+        # 9. Повторный вход: имя подтягивается автоматически
+        msg9 = make_message("/login", user_id=user_id, message_id=9)
+        await dp.feed_update(mock.bot, Update(update_id=9, message=msg9))
+        pwd2_msg_id = 10
+        msg10 = make_message(dev_pass, user_id=user_id, message_id=pwd2_msg_id)
+        await dp.feed_update(mock.bot, Update(update_id=10, message=msg10))
+        assert pwd2_msg_id in mock.deleted_messages
+
+        m10_text = mock.sent_messages[-1]["text"]
+        assert "успешно вошли" in m10_text
+        assert "Разработчик" in m10_text
+        assert "Иван Разработчик" in m10_text
 
         return {
             "status": "ok",
@@ -423,23 +439,23 @@ async def run_scenario_control_and_snap(
         cb5 = make_callback(f"snap:target:{inst_id}", user_id=user_id, message_id=25)
         await dp.feed_update(mock.bot, Update(update_id=25, callback_query=cb5))
 
-        # Проверяем отправку медиагруппы (альбома из 2 фото)
-        assert len(mock.sent_media_groups) >= 1, (
-            f"Media group was not sent: {len(mock.sent_media_groups)}"
+        # Проверяем отправку одного фото со снимком и кнопкой переключения слоя (Критерий 8)
+        assert len(mock.sent_photos) >= 1, (
+            f"Photo was not sent: {len(mock.sent_photos)}"
         )
-        mg_call = mock.sent_media_groups[-1]
-        media_list = mg_call["media"]
-        assert len(media_list) == 2, f"Expected 2 photos, got {len(media_list)}"
-
-        # Проверяем подпись первого фото альбома
-        caption = getattr(media_list[0], "caption", "") or ""
+        photo_call = mock.sent_photos[-1]
+        caption = photo_call.get("caption", "") or ""
         assert "Установка" in caption, f"Missing 'Установка' in caption: {caption}"
         assert "Камера" in caption, f"Missing 'Камера' in caption: {caption}"
         assert "Площадь" in caption, f"Missing 'Площадь' in caption: {caption}"
+        ikb = photo_call.get("reply_markup")
+        assert ikb is not None
+        snap_buttons = [b.text for row in ikb.inline_keyboard for b in row]
+        assert any("Разметка" in b for b in snap_buttons)
 
         return {
             "status": "ok",
-            "media_groups_sent": len(mock.sent_media_groups),
+            "media_groups_sent": len(mock.sent_photos),
             "caption": caption,
         }
     finally:

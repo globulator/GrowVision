@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-from server.db.models import Installation
+from server.db.models import Installation, User
 
 CLI_PYTHON = (
     Path(__file__).resolve().parent.parent.parent
@@ -548,16 +548,26 @@ def test_cli_e2e_negative_scenarios(e2e_uvicorn_server):
     assert "Неверный пароль" in res_bad_pass.stderr
     assert "Traceback" not in res_bad_pass.stderr
 
-    # 2. Недостаточные права (403): вход под Biologist и попытка camera scan
-    res_login_bio = run_cli_cmd(
-        "auth",
-        "login",
-        server_url=base_url,
-        client_key=client_key,
-        session_file=session_file,
-        input_text=f"biologist\n{srv['bio_pass']}\n",
+    # 2. Недостаточные права (403): сессия Biologist и попытка camera scan
+    ext_id = "cli_e2e_bio_forbidden"
+    session_file.write_text(
+        json.dumps({"external_id": ext_id}, indent=2), encoding="utf-8"
     )
-    assert res_login_bio.returncode == 0
+    with srv["session_factory"]() as db:
+        user = db.query(User).filter_by(client_type="cli", external_id=ext_id).first()
+        if not user:
+            user = User(
+                client_type="cli",
+                external_id=ext_id,
+                login="biologist",
+                role="biologist",
+                is_active=True,
+            )
+            db.add(user)
+        else:
+            user.role = "biologist"
+            user.is_active = True
+        db.commit()
 
     res_forbidden = run_cli_cmd(
         "camera",

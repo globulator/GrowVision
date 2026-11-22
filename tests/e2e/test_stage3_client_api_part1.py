@@ -148,18 +148,18 @@ def test_qa_auth_login_rate_limiting_and_logout(client_api_test_env):
             "client_type": "cli",
             "external_id": "cli_other",
             "login": "Other User",
-            "password": BIO_PASS,
+            "password": DEV_PASS,
         },
     )
     assert r_other.status_code == 200
-    assert r_other.json()["role"] == "biologist"
+    assert r_other.json()["role"] == "developer"
 
     # 4. Проверка /api/auth/me и /api/auth/logout
     cli_headers = _make_headers(("cli", "cli_other"))
     r_me = client.get("/api/auth/me", headers=cli_headers)
     assert r_me.status_code == 200
     assert r_me.json()["login"] == "Other User"
-    assert r_me.json()["role"] == "biologist"
+    assert r_me.json()["role"] == "developer"
 
     # Logout
     r_logout = client.post("/api/auth/logout", headers=cli_headers)

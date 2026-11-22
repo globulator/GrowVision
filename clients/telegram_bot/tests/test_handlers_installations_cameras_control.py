@@ -237,7 +237,7 @@ async def test_control_snap_sends_album(bot_config: BotConfig, mock_bot):
     assert "33.7 см²" in caption
     assert "Ручные снимки не входят в таймлапс" in caption
 
-    # 2. Проверяем разработчика: альбом raw + annotated через send_media_group
+    # 2. Проверяем разработчика: send_photo с кнопкой переключения слоя
     current_role = "developer"
     mock_bot.send_photo.reset_mock()
     mock_bot.send_media_group.reset_mock()
@@ -245,12 +245,13 @@ async def test_control_snap_sends_album(bot_config: BotConfig, mock_bot):
     cb_dev = create_test_callback_query("inst:snap:1")
     await dp.feed_update(mock_bot, Update(update_id=31, callback_query=cb_dev))
 
-    mock_bot.send_media_group.assert_called_once()
-    media_list = mock_bot.send_media_group.call_args[1]["media"]
-    assert len(media_list) == 2
-    dev_caption = media_list[0].caption
+    mock_bot.send_photo.assert_called_once()
+    dev_caption = mock_bot.send_photo.call_args[1]["caption"]
     assert "Рукола" in dev_caption
     assert "33.7 см²" in dev_caption
+    reply_markup = mock_bot.send_photo.call_args[1]["reply_markup"]
+    assert reply_markup is not None
+    assert "Разметка" in reply_markup.inline_keyboard[0][0].text
 
 
 @pytest.mark.asyncio

@@ -107,42 +107,52 @@ async def test_start_command_developer(bot_config: BotConfig, mock_bot):
 async def test_two_step_login_flow_with_password_deletion(
     bot_config: BotConfig, mock_bot
 ):
-    """Проверка полного цикла двухэтапной авторизации с автоматическим удалением пароля."""
-    login_called = False
+    """Проверка авторизации: немедленный запрос пароля/кода с удалением сообщения и поддержкой needs_login."""
+    login_calls = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal login_called
+        import json
+
         if request.url.path == "/api/auth/login":
-            login_called = True
+            body = json.loads(request.read().decode())
+            login_calls.append(body)
+            # При первом запросе без login возвращаем needs_login
+            if not body.get("login"):
+                return httpx.Response(
+                    200,
+                    json={"status": "needs_login", "role": "biologist"},
+                )
             return httpx.Response(
                 200,
-                json={"status": "ok", "role": "biologist", "username": "Мария"},
+                json={"role": "biologist", "login": body["login"]},
             )
         return httpx.Response(404)
 
     api_client = create_mock_api_client(bot_config, handler)
     dp = build_dispatcher(bot_config, api_client)
 
-    # 1. Нажатие кнопки '🔑 Войти'
+    # 1. Нажатие кнопки '🔑 Войти' -> сразу запрос пароля/кода
     msg1 = create_test_message("🔑 Войти", message_id=10)
     await dp.feed_update(mock_bot, Update(update_id=10, message=msg1))
     call1_text = mock_bot.send_message.call_args[1]["text"]
-    assert "Шаг 1 из 2" in call1_text
+    assert "Введите постоянный пароль разработчика или одноразовый код" in call1_text
 
-    # 2. Шаг 1: ввод логина
-    msg2 = create_test_message("Мария", message_id=11)
+    # 2. Ввод пароля/кода -> удаление сообщения и сервер возвращает needs_login
+    msg2 = create_test_message("SecretPass123", message_id=11)
     await dp.feed_update(mock_bot, Update(update_id=11, message=msg2))
-    call2_text = mock_bot.send_message.call_args[1]["text"]
-    assert "Шаг 2 из 2" in call2_text
 
-    # 3. Шаг 2: ввод пароля
-    msg3 = create_test_message("SecretPass123", message_id=12)
+    # Сообщение с паролем удалено
+    mock_bot.delete_message.assert_called_once_with(chat_id=12345, message_id=11)
+    call2_text = mock_bot.send_message.call_args[1]["text"]
+    assert "Имя и Фамилию" in call2_text
+
+    # 3. Ввод имени и фамилии
+    msg3 = create_test_message("Мария", message_id=12)
     await dp.feed_update(mock_bot, Update(update_id=12, message=msg3))
 
-    # Сообщение с паролем должно быть немедленно удалено из чата!
-    mock_bot.delete_message.assert_called_once_with(chat_id=12345, message_id=12)
-
-    assert login_called is True
+    assert len(login_calls) == 2
+    assert login_calls[1]["login"] == "Мария"
     call3_text = mock_bot.send_message.call_args[1]["text"]
-    assert "Вы успешно вошли как <b>Мария</b>" in call3_text
+    assert "Вы успешно вошли как" in call3_text
+    assert "Мария" in call3_text
     assert "Биолог" in call3_text

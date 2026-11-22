@@ -1,7 +1,8 @@
+import contextlib
 import sqlite3
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
@@ -45,6 +46,35 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db(target_engine: Engine | None = None) -> None:
-    """Создаёт все зарегистрированные таблицы в целевой БД."""
+    """Создаёт все зарегистрированные таблицы и производит безопасную миграцию схемы."""
     eng = target_engine or engine
     Base.metadata.create_all(bind=eng)
+
+    # Безопасное добавление недостающих колонок при старте на существующей SQLite БД
+    with eng.connect() as conn:
+        with contextlib.suppress(Exception):
+            res = conn.execute(text("PRAGMA table_info(installations);")).fetchall()
+            inst_cols = {row[1] for row in res}
+            if "capture_delay_sec" not in inst_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE installations ADD COLUMN capture_delay_sec FLOAT;"
+                    )
+                )
+                conn.commit()
+
+        with contextlib.suppress(Exception):
+            res = conn.execute(text("PRAGMA table_info(users);")).fetchall()
+            user_cols = {row[1] for row in res}
+            if "is_active" not in user_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1;"
+                    )
+                )
+                conn.commit()
+            if "logged_out_at" not in user_cols:
+                conn.execute(
+                    text("ALTER TABLE users ADD COLUMN logged_out_at DATETIME;")
+                )
+                conn.commit()

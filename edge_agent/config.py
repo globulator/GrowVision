@@ -35,6 +35,7 @@ class EdgeConfig(BaseModel):
     model_path: Path = Field(default=DEFAULT_MODEL_PATH)
     capture_interval_hours: int = Field(default=1, gt=0)
     test_capture_interval_sec: int | None = Field(default=None)
+    mock_overlay_aruco: bool = Field(default=True)
     debug_mode: bool = Field(default=False)
 
     @field_validator("test_capture_interval_sec")
@@ -158,6 +159,9 @@ def load_config(env_path: Path | str | None = None) -> EdgeConfig:
     debug_mode_raw = (get_val("DEBUG_MODE", "false") or "false").lower()
     debug_mode = debug_mode_raw in ("true", "1", "yes")
 
+    mock_aruco_raw = (get_val("MOCK_OVERLAY_ARUCO", "true") or "true").lower()
+    mock_overlay_aruco = mock_aruco_raw in ("true", "1", "yes")
+
     try:
         relay_switch_delay_ms = int(get_val("RELAY_SWITCH_DELAY_MS", "200") or 200)
     except ValueError:
@@ -192,6 +196,7 @@ def load_config(env_path: Path | str | None = None) -> EdgeConfig:
         model_path=model_path,
         capture_interval_hours=capture_interval_hours,
         test_capture_interval_sec=test_capture_interval_sec,
+        mock_overlay_aruco=mock_overlay_aruco,
         debug_mode=debug_mode,
         relay_switch_delay_ms=relay_switch_delay_ms,
         camera_warmup_frames=camera_warmup_frames,

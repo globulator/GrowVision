@@ -6,6 +6,19 @@
 ---
 
 ## 2. Исправленные дефекты (верифицировано QA)
+- **[STAGE-7.3] [server, edge_agent, telegram_bot, cli] Авторизация по коду, сессии, CV-разметка, UX-полировка и фиксы раунда 5 (верифицировано QA)**
+  - **Коммиты:** `6383ff5` (реализация), `d6a0385` (state) (ветка `stage-7/auth-and-polish`)
+  - **Ключевые проверенные критерии:**
+    1. Модели БД: `User.is_active` (default True), `User.logged_out_at` (nullable DateTime), таблица `invite_codes` (`InviteCode`, TTL 10 мин, 6-8 симв., role='biologist'), безопасный `ALTER TABLE` в `init_db`.
+    2. Серверная логика: в `deps.py` авторизованными признаются только `is_active == True`; в `POST /api/auth/login` поле `login` опционально; CLI принимает только developer_password; Telegram — developer_password или активный invite-code. При первом входе без логина отдаётся `{"status": "needs_login", "role": role}` без сжигания кода. При успешном логине с именем код сжигается. Эндпоинты developer: `POST/GET/DELETE /api/auth/invites`, `GET /api/auth/sessions`, `POST /api/auth/sessions/{id}/terminate`, `GET /api/control/captures/{id}`, `duration_sec` в сборке видео.
+    3. Telegram-бот: `/login` сразу запрашивает пароль/код (сообщение удаляется, логи маскируются), при `needs_login` запрос Имени и Фамилии, при повторном — логин подтягивается сам; имена кликабельны (`<a href="tg://user?id={external_id}">{html.escape(login)}</a>`); раздел «👥 Сессии» для developer (создание кода в `<code>`, список кодов с отзывом, список сессий, кнопка кика).
+    4. CLI: вход разрешён только developer (пароль разработчика); команды `auth invite create|list|revoke`, `auth sessions`, `auth kick <id>`.
+    5. Исправлены 3 бага живого теста: убрана мутация frozen callback.data в кнопке отмены удаления установки; приоритетное чтение `area_display` в галерее таймлапса; непустой `debug_log_line` при сканировании камер.
+    6. CV-разметка: фиолетовые линейки BGR (240, 32, 160) слева и снизу от куста в см/px; красная точка в центре куста; темная обводка ко всем элементам; адаптивные метаданные в углах кадра.
+    7. Mock ArUco: параметр `mock_overlay_aruco` (default=True) в конфиге, действует строго в `HARDWARE_MODE=mock`.
+    8. UX в боте: ручной снимок (для dev одно фото с inline-переключателем «🧠 Разметка» / «🖼 Исходник», для bio — только raw); переключатели реле («💡 Свет: 🟢/⚪️», «⚡ Вспышка: 🟢/⚪️»); интерактивный выбор длительности таймлапса (рекомендованное от 10 fps, пресеты 5/10/30 с и ручной ввод).
+  - **Результат тестирования:** 279 passed (Server & E2E 126, Edge 51, Bot 55, CLI 47), ruff clean, git status clean.
+
 - **[STAGE-7.2] [telegram_bot, server, edge_agent, cli] Комплексные исправления раунд 4 (верифицировано QA)**
   - **Коммит:** `b2e4643` (ветка `stage-7/bot-fixes-4`)
   - **Ключевые проверенные критерии:**

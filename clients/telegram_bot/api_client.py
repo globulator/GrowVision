@@ -148,14 +148,22 @@ class GrowVisionApiClient:
                 return None
             raise
 
-    async def login(self, user_id: int, username: str, password: str) -> dict[str, Any]:
+    async def login(
+        self,
+        user_id: int,
+        password: str,
+        login: str | None = None,
+        username: str | None = None,
+    ) -> dict[str, Any]:
         """Вход пользователя в систему."""
-        payload = {
-            "login": username,
+        effective_login = login or username
+        payload: dict[str, Any] = {
             "password": password,
             "client_type": "telegram",
             "external_id": str(user_id),
         }
+        if effective_login is not None:
+            payload["login"] = effective_login
         return await self._request(
             "POST",
             "/api/auth/login",
@@ -168,6 +176,56 @@ class GrowVisionApiClient:
         """Выход пользователя из системы."""
         return await self._request(
             "POST", "/api/auth/logout", user_id=user_id, timeout=15.0
+        )
+
+    async def create_invite(
+        self, user_id: int, role: str = "biologist"
+    ) -> dict[str, Any]:
+        """Создает одноразовый инвайт-код (только developer)."""
+        return await self._request(
+            "POST",
+            "/api/auth/invites",
+            user_id=user_id,
+            json={"role": role},
+            timeout=15.0,
+        )
+
+    async def get_invites(self, user_id: int) -> list[dict[str, Any]]:
+        """Список активных неиспользованных кодов (только developer)."""
+        res = await self._request(
+            "GET",
+            "/api/auth/invites",
+            user_id=user_id,
+            timeout=15.0,
+        )
+        return res if isinstance(res, list) else []
+
+    async def revoke_invite(self, user_id: int, invite_id: int) -> dict[str, Any]:
+        """Отозвать инвайт-код (только developer)."""
+        return await self._request(
+            "DELETE",
+            f"/api/auth/invites/{invite_id}",
+            user_id=user_id,
+            timeout=15.0,
+        )
+
+    async def get_sessions(self, user_id: int) -> list[dict[str, Any]]:
+        """Список всех сессий (только developer)."""
+        res = await self._request(
+            "GET",
+            "/api/auth/sessions",
+            user_id=user_id,
+            timeout=15.0,
+        )
+        return res if isinstance(res, list) else []
+
+    async def terminate_session(self, user_id: int, session_id: int) -> dict[str, Any]:
+        """Принудительное завершение сессии (только developer)."""
+        return await self._request(
+            "POST",
+            f"/api/auth/sessions/{session_id}/terminate",
+            user_id=user_id,
+            timeout=15.0,
         )
 
     # ------------------ 3. Установки ------------------
@@ -389,6 +447,15 @@ class GrowVisionApiClient:
             return res.get("frames", [])
         return res if isinstance(res, list) else []
 
+    async def get_capture(self, user_id: int, capture_id: int) -> dict[str, Any]:
+        """Возвращает метаданные снимка."""
+        return await self._request(
+            "GET",
+            f"/api/control/captures/{capture_id}",
+            user_id=user_id,
+            timeout=15.0,
+        )
+
     async def download_file(self, user_id: int, file_path_or_url: str) -> bytes:
         """Скачивает бинарный файл (фото снимка, аннотацию) по URL или относительному пути."""
         client = await self.get_client()
@@ -409,6 +476,7 @@ class GrowVisionApiClient:
         camera_id: int | None = None,
         step: int = 1,
         max_size_bytes: int = TG_VIDEO_LIMIT,
+        duration_sec: float | None = None,
     ) -> tuple[str, Path | bytes | None, int]:
         """Потоковая загрузка видео таймлапса с проверкой размера.
 
@@ -420,7 +488,9 @@ class GrowVisionApiClient:
         client = await self.get_client()
         url = f"{self.base_url}/api/timelapse/{inst_id}/video"
         headers = self._headers(user_id)
-        payload = {"camera_id": camera_id, "step": step}
+        payload: dict[str, Any] = {"camera_id": camera_id, "step": step}
+        if duration_sec is not None:
+            payload["duration_sec"] = duration_sec
         timeout = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=10.0)
 
         async with client.stream(

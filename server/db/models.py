@@ -200,6 +200,7 @@ class User(Base):
     external_id = Column(String(100), nullable=False)
     login = Column(String(100), nullable=False)
     role = Column(String(20), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
     authorized_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -211,6 +212,61 @@ class User(Base):
         nullable=False,
         default=utc_now,
         server_default=func.now(),
+    )
+    logged_out_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_invites = relationship(
+        "InviteCode",
+        foreign_keys="InviteCode.created_by_user_id",
+        back_populates="created_by",
+    )
+    used_invites = relationship(
+        "InviteCode",
+        foreign_keys="InviteCode.used_by_user_id",
+        back_populates="used_by",
+    )
+
+
+class InviteCode(Base):
+    """3.8. invite_codes — Одноразовые коды приглашения для биологов."""
+
+    __tablename__ = "invite_codes"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('biologist', 'developer')",
+            name="ck_invite_codes_role",
+        ),
+        {"sqlite_autoincrement": True},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(8), unique=True, nullable=False, index=True)
+    role = Column(String(20), nullable=False, default="biologist")
+    created_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    used_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    is_revoked = Column(Boolean, nullable=False, default=False)
+
+    created_by = relationship(
+        "User", foreign_keys=[created_by_user_id], back_populates="created_invites"
+    )
+    used_by = relationship(
+        "User", foreign_keys=[used_by_user_id], back_populates="used_invites"
     )
 
 

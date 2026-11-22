@@ -6,7 +6,7 @@ import httpx
 import pytest
 from aiogram import Bot
 from aiogram.enums import ParseMode
-from aiogram.types import Chat, Message, User
+from aiogram.types import CallbackQuery, Chat, Message, User
 
 from clients.telegram_bot.api_client import GrowVisionApiClient
 from clients.telegram_bot.config import BotConfig
@@ -136,4 +136,29 @@ def create_test_message(
         chat=Chat(id=chat_id, type="private"),
         from_user=User(id=user_id, is_bot=False, first_name="Тест"),
         text=text,
+    )
+
+
+def create_test_callback_query(
+    data: str,
+    user_id: int = 12345,
+    chat_id: int = 12345,
+    message_id: int = 99,
+) -> CallbackQuery:
+    """Создает валидный pydantic экземпляр CallbackQuery aiogram."""
+    user = User(id=user_id, is_bot=False, first_name="Тест")
+    chat = Chat(id=chat_id, type="private")
+    msg = Message(
+        message_id=message_id,
+        date=datetime.now(UTC),
+        chat=chat,
+        from_user=user,
+        text="Контекст сообщения",
+    )
+    return CallbackQuery(
+        id="query_100",
+        from_user=user,
+        chat_instance="instance_abc",
+        message=msg,
+        data=data,
     )

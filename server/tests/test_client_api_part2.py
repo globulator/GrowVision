@@ -110,11 +110,12 @@ def login_user(client: TestClient, role: str) -> dict[str, str]:
     login_limiter.clear()
     pwd = DEV_PASS if role == "developer" else BIO_PASS
     ext_id = f"{role}-user-id"
+    c_type = "cli" if role == "developer" else "telegram"
     r = client.post(
         "/api/auth/login",
         headers={"X-Client-Key": CLIENT_KEY},
         json={
-            "client_type": "cli",
+            "client_type": c_type,
             "external_id": ext_id,
             "login": role,
             "password": pwd,
@@ -123,7 +124,7 @@ def login_user(client: TestClient, role: str) -> dict[str, str]:
     assert r.status_code == 200
     return {
         "X-Client-Key": CLIENT_KEY,
-        "X-Client-Type": "cli",
+        "X-Client-Type": c_type,
         "X-External-Id": ext_id,
     }
 
