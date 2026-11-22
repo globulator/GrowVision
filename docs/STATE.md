@@ -7,15 +7,15 @@
 - Текущий этап: 6.1 (тестовые инструменты агента)
 - Название этапа: Тестовые инструменты агента (TEST_CAPTURE_INTERVAL_SEC, simulator seed, mock синтетика)
 - Режим: FULL
-- Статус: STAGE_PASS
+- Статус: DONE
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт финализация документации Scribe)
+- Ждём от пользователя: приёмка этапа 6.1 и дальнейшие указания (запуск этапа 8 Web SPA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| Scribe | docs | main | — | — |
+| — | — | — | — | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-6/test-tools создана от main (3377084)
@@ -25,6 +25,8 @@
 - a794dc5 docs(edge): add testing without waiting section and handoff report
 - f5b95e5 docs(repo): prepare stage 6.1 qa task and update state to testing
 - a103e1a chore(repo): merge stage-6/test-tools into main
+- 63653cb docs(repo): update state to stage pass for stage 6.1
+- 8aee77d docs(repo): add server deployment guide and stage 6.1 report
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 6.1)
@@ -39,6 +41,7 @@
 - Этап 4: Client API, часть 2 + доработки fixes (принят QA, слит в main, отчёт docs/stage_reports/stage-4.md)
 - Этап 5: CLI-клиент + доработки fixes (принят QA, слит в main, версия 0.2.0, отчёт docs/stage_reports/stage-5.md)
 - Этап 6: Edge-агент для Raspberry Pi 5 + доработки fixes + fixes-2 (принят QA, слит в main, версия 0.3.0, отчёт docs/stage_reports/stage-6.md)
+- Этап 6.1: Тестовые инструменты агента (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-6.1.md)
 - Этап 7: Telegram-бот (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.md)
 
 ## История (последние 15 событий)
@@ -50,6 +53,13 @@
 - 2026-11-22: Пользователь дал команду запустить этап 6.1 (тестовые инструменты агента) в режиме FULL
 - 2026-11-22: Создана ветка stage-6/test-tools от main
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-6-test-tools-builder.md
+- 2026-11-22: Этап 6.1 переведён в статус BUILDING, задача передана Builder-у
+- 2026-11-22: Builder реализовал TEST_CAPTURE_INTERVAL_SEC, simulator seed, mock-генератор и тесты, статус READY_FOR_QA
+- 2026-11-22: Подготовлена карточка docs/tasks/stage-6-test-tools-qa.md, статус изменён на TESTING, задача передана QA
+- 2026-11-22: QA проверил этап 6.1, вердикт PASS (230 тестов, 0 дефектов)
+- 2026-11-22: Ветка stage-6/test-tools слита в main (версия 0.3.1 сохранена без изменений)
+- 2026-11-22: Scribe создал docs/DEPLOYMENT_SERVER.md, docs/stage_reports/stage-6.1.md и обновил README.md
+- 2026-11-22: Этап 6.1 окончательно закрыт (DONE)
 - 2026-11-22: Этап 6.1 переведён в статус BUILDING, задача передана Builder-у
 - 2026-11-22: Builder реализовал TEST_CAPTURE_INTERVAL_SEC, simulator seed, mock-генератор и тесты, статус READY_FOR_QA
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-6-test-tools-qa.md, статус изменён на TESTING, задача передана QA
