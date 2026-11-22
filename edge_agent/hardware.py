@@ -52,6 +52,7 @@ class HardwareManager:
         self.lock = threading.Lock()
         self._gpio_devices: dict[int, Any] = {}
         self._mock_pins: dict[int, bool] = {}
+        self._mock_frame_counter: int = 0
 
         if self.mode == "rpi":
             try:
@@ -190,7 +191,14 @@ class HardwareManager:
     ) -> bytes:
         """Захватывает сырой кадр с указанной камеры (с прогревом)."""
         if self.mode == "mock":
-            return MOCK_JPEG_FRAME
+            from edge_agent.synthetic import generate_synthetic_frame
+
+            frame = generate_synthetic_frame(
+                frame_index=self._mock_frame_counter,
+                camera_id=camera_hardware_id,
+            )
+            self._mock_frame_counter += 1
+            return frame
 
         # В режиме RPi строгая проверка OpenCV
         try:

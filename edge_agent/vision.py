@@ -71,11 +71,7 @@ class VisionPipeline:
         """Обнаруживает ArUco-маркер и вычисляет его площадь в пикселях.
 
         Возвращает None, если маркер не найден или если cv2 недоступен.
-        В mock-режиме возвращает детерминированное значение 1200.0.
         """
-        if self.mock_mode:
-            return 1200.0
-
         if not CV2_AVAILABLE:
             return None
 
@@ -113,11 +109,9 @@ class VisionPipeline:
 
         Возвращает кортеж (annotated_image_bytes, measurements).
         """
-        # 1. Mock-режим: детерминированная эмуляция для тестов на ПК
+        # 1. Mock-режим: настоящая сегментация по цветовому порогу HSV
         if self.mock_mode:
-            measurements = [PlantMeasurementMeta(plant_index=0, area_px=5400.0)]
-            annotated_bytes = self._generate_fallback_annotated(image_bytes)
-            return annotated_bytes, measurements
+            return self._segment_plants_hsv(image_bytes)
 
         # 2. Боевой режим без модели / без cv2 / без сессии:
         # СТРОГО: measurements=[], annotated_image = сырой кадр, лог ERROR!
@@ -199,6 +193,64 @@ class VisionPipeline:
 
         except Exception as e:  # noqa: BLE001
             logger.error(f"Ошибка сегментации модели: {e}. Возврат сырого кадра.")
+            return image_bytes, []
+
+    def _segment_plants_hsv(
+        self,
+        image_bytes: bytes,
+    ) -> tuple[bytes, list[PlantMeasurementMeta]]:
+        """Сегментация растений в mock-режиме по цветовому порогу HSV."""
+        if not CV2_AVAILABLE:
+            return image_bytes, []
+
+        try:
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is None:
+                return image_bytes, []
+
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            lower_green = np.array([35, 40, 40], dtype=np.uint8)
+            upper_green = np.array([85, 255, 255], dtype=np.uint8)
+            mask = cv2.inRange(hsv, lower_green, upper_green)
+
+            raw_contours, _ = cv2.findContours(
+                mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+
+            valid_contours_with_area = []
+            for cnt in raw_contours:
+                area = float(cv2.contourArea(cnt))
+                if area > 50.0:  # Фильтрация шума
+                    valid_contours_with_area.append((cnt, area))
+
+            valid_contours_with_area.sort(key=lambda x: x[1], reverse=True)
+
+            if not valid_contours_with_area:
+                return image_bytes, []
+
+            measurements: list[PlantMeasurementMeta] = []
+            annotated = img.copy()
+
+            color_mask = np.zeros_like(img)
+            color_mask[mask > 0] = (0, 255, 0)
+            annotated = cv2.addWeighted(annotated, 1.0, color_mask, 0.4, 0)
+
+            for plant_idx, (cnt, area) in enumerate(valid_contours_with_area):
+                measurements.append(
+                    PlantMeasurementMeta(
+                        plant_index=plant_idx,
+                        area_px=round(area, 1),
+                    )
+                )
+                cv2.drawContours(annotated, [cnt], -1, (0, 200, 0), 2)
+
+            success, enc_img = cv2.imencode(".jpg", annotated)
+            annotated_bytes = enc_img.tobytes() if success else image_bytes
+            return annotated_bytes, measurements
+
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Ошибка при HSV-сегментации в mock-режиме: {exc}")
             return image_bytes, []
 
     def _generate_fallback_annotated(self, image_bytes: bytes) -> bytes:

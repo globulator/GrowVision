@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import dotenv_values
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ENV_FILE = REPO_ROOT / "edge_agent" / ".env"
@@ -34,7 +34,17 @@ class EdgeConfig(BaseModel):
     offline_queue_dir: Path = Field(default=DEFAULT_OFFLINE_QUEUE_DIR)
     model_path: Path = Field(default=DEFAULT_MODEL_PATH)
     capture_interval_hours: int = Field(default=1, gt=0)
+    test_capture_interval_sec: int | None = Field(default=None)
     debug_mode: bool = Field(default=False)
+
+    @field_validator("test_capture_interval_sec")
+    @classmethod
+    def validate_test_interval(cls, v: int | None) -> int | None:
+        if v is not None and v < 10:
+            raise ValueError(
+                f"TEST_CAPTURE_INTERVAL_SEC должен быть не менее 10 секунд (получено: {v})"
+            )
+        return v
 
     # Параметры железа и таймингов
     relay_switch_delay_ms: int = Field(default=200, ge=0)
@@ -131,6 +141,20 @@ def load_config(env_path: Path | str | None = None) -> EdgeConfig:
     except ValueError:
         capture_interval_hours = 1
 
+    test_interval_raw = get_val("TEST_CAPTURE_INTERVAL_SEC")
+    test_capture_interval_sec: int | None = None
+    if test_interval_raw is not None and test_interval_raw.strip() != "":
+        try:
+            test_capture_interval_sec = int(test_interval_raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"Некорректное значение TEST_CAPTURE_INTERVAL_SEC='{test_interval_raw}'. Должно быть целым числом."
+            ) from exc
+        if test_capture_interval_sec < 10:
+            raise ValueError(
+                f"TEST_CAPTURE_INTERVAL_SEC должен быть не менее 10 секунд (получено: {test_capture_interval_sec})"
+            )
+
     debug_mode_raw = (get_val("DEBUG_MODE", "false") or "false").lower()
     debug_mode = debug_mode_raw in ("true", "1", "yes")
 
@@ -167,6 +191,7 @@ def load_config(env_path: Path | str | None = None) -> EdgeConfig:
         offline_queue_dir=queue_dir,
         model_path=model_path,
         capture_interval_hours=capture_interval_hours,
+        test_capture_interval_sec=test_capture_interval_sec,
         debug_mode=debug_mode,
         relay_switch_delay_ms=relay_switch_delay_ms,
         camera_warmup_frames=camera_warmup_frames,
