@@ -42,8 +42,9 @@ def test_load_config_with_proxy_and_debug_log(tmp_path: Path):
     assert cfg.debug_log is True
 
     repr_str = repr(cfg)
+    assert "proxyuser" not in repr_str
     assert "proxypass" not in repr_str
-    assert "proxyuser:***@" in repr_str
+    assert "socks5://***:***@127.0.0.1:1080" in repr_str
 
 
 def test_missing_required_variables_raises_error(

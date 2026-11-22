@@ -129,10 +129,11 @@ async def test_installation_create_flow(bot_config: BotConfig, mock_bot):
     assert created_payload["culture_name"] == "Мята перечная"
     assert created_payload["light_gpio_pin"] == 22
     assert created_payload["flash_gpio_pin"] == 23
-    assert created_payload["aruco_size_mm"] == 50.0
+    assert created_payload["aruco_size_mm"] is None
 
     final_text = mock_bot.send_message.call_args[1]["text"]
     assert "успешно создана" in final_text
+    assert "не задан" in final_text
 
 
 @pytest.mark.asyncio

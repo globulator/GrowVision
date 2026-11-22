@@ -12,6 +12,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_ENV_FILE = Path(__file__).resolve().parent / ".env"
 
 
+def mask_proxy_url(proxy_url: str | None) -> str | None:
+    """Маскирует учетные данные в URL прокси до вида protocol://***:***@host:port."""
+    if not proxy_url:
+        return proxy_url
+    res = re.sub(r"://([^:/@]+):([^/@]+)@", r"://***:***@", proxy_url)
+    res = re.sub(r"://([^:/@]+)@", r"://***@", res)
+    return res
+
+
 @dataclass(frozen=True)
 class BotConfig:
     """Конфигурация Telegram-бота GrowVision."""
@@ -35,10 +44,7 @@ class BotConfig:
             if len(self.client_api_key) > 4
             else "***"
         )
-        masked_proxy = self.telegram_proxy
-        if masked_proxy and "@" in masked_proxy:
-            # Маскируем пароль в URL прокси вида http://user:pass@host:port
-            masked_proxy = re.sub(r"://([^:]+):([^@]+)@", r"://\1:***@", masked_proxy)
+        masked_proxy = mask_proxy_url(self.telegram_proxy)
 
         return (
             f"BotConfig(server_url='{self.server_url}', "

@@ -4,27 +4,23 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 7 (Telegram-бот, исправления раунд 2)
-- Название этапа: Telegram-бот (исправления раунд 2: профиль, карточки, user_id, set_my_commands, bug notes, прокси, мастер создания)
-- Режим: FULL
-- Статус: DONE
+- Текущий этап: 7 (Telegram-бот, исправления раунд 3)
+- Название этапа: Telegram-бот (исправления раунд 3, LIGHT: ArUco null, retry подключения 5..60с, маскирование прокси, html.escape, защита пароля в JSONL, изоляция логов)
+- Режим: LIGHT
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: приёмка исправлений бота (раунд 2) и дальнейшие указания (запуск этапа 8 Web SPA)
+- Ждём от пользователя: ничего (идёт тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| QA | bot | stage-7/bot-fixes-3 | docs/tasks/stage-7-bot-fixes-3-qa.md | — |
 
 ## Коммиты текущего этапа
-- Ветка stage-7/bot-fixes-2 создана от main (9633ae7)
-- dc907cd docs(repo): prepare stage 7 fixes round 2 task and update state to building
-- aa1c044 feat(bot): implement round 2 bot fixes, bug log tools, and e2e tests
-- ee56290 docs(repo): prepare stage 7 fixes round 2 qa task and update state to testing
-- 4ddaa5d chore(repo): merge stage-7/bot-fixes-2 into main
-- 6c70bdb docs(repo): update state to stage pass for stage 7 fixes round 2
-- e2e17dd docs(repo): update stage 7 report with round 2 fixes
+- Ветка stage-7/bot-fixes-3 создана от main (93066c0)
+- 70f4d52 docs(repo): prepare stage 7 fixes round 3 task and update state to building
+- 2d55c45 feat(bot): implement round 3 bot fixes, reconnect resilience, html escaping, and log security
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 7, раунд 2)
@@ -43,10 +39,21 @@
 - Этап 7: Telegram-бот + fixes + fixes-2 (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.md)
 
 ## История (последние 15 событий)
-- 2026-11-22: QA проверил этап 6.1, вердикт PASS (230 тестов, 0 дефектов)
-- 2026-11-22: Ветка stage-6/test-tools слита в main (версия 0.3.1 сохранена без изменений)
-- 2026-11-22: Scribe создал docs/DEPLOYMENT_SERVER.md, docs/stage_reports/stage-6.1.md и обновил README.md
-- 2026-11-22: Этап 6.1 окончательно закрыт (DONE)
+- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-2-builder.md
+- 2026-11-22: Статус изменён на BUILDING, задача передана Builder-у
+- 2026-11-22: Builder реализовал исправления раунда 2 (38 unit-тестов, 5 e2e-тестов), статус READY_FOR_QA
+- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-2-qa.md, статус изменён на TESTING, задача передана QA
+- 2026-11-22: QA проверил исправления бота раунда 2, вердикт PASS (243 теста, 0 дефектов)
+- 2026-11-22: Ветка stage-7/bot-fixes-2 слита в main (версия 0.3.1 сохранена без изменений)
+- 2026-11-22: Статус этапа 7 (раунд 2) изменён на STAGE_PASS, задача передана Scribe
+- 2026-11-22: Scribe обновил docs/stage_reports/stage-7.md и README.md
+- 2026-11-22: Исправления бота (раунд 2) окончательно закрыты (DONE)
+- 2026-11-22: Пользователь запустил «исправления бота, раунд 3» в режиме LIGHT
+- 2026-11-22: Создана ветка stage-7/bot-fixes-3 от main
+- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-3-builder.md
+- 2026-11-22: Статус изменён на BUILDING (режим LIGHT), задача передана Builder-у
+- 2026-11-22: Builder реализовал исправления раунда 3 (44 unit, 7 e2e, защита логов), статус READY_FOR_QA
+- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-3-qa.md, статус изменён на TESTING, задача передана QA
 - 2026-11-22: Пользователь принял этап 6.1 и дал команду на запуск «исправления бота, раунд 2» в режиме FULL
 - 2026-11-22: Создана ветка stage-7/bot-fixes-2 от main
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-2-builder.md

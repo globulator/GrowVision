@@ -34,6 +34,7 @@ class FakeTelegramServer:
 
         self._upd_counter = 100
         self._msg_counter = 1000
+        self.is_offline = False
 
         self.updates_queue: list[dict[str, Any]] = []
         self.sent_messages: list[dict[str, Any]] = []
@@ -128,6 +129,9 @@ class FakeTelegramServer:
         return web.json_response({"ok": True, "result": self.registered_commands})
 
     async def _handle_get_updates(self, request: web.Request) -> web.Response:
+        if self.is_offline:
+            return web.Response(status=502, text="Bad Gateway (Offline)")
+
         data = await self._extract_data(request)
         offset = int(data.get("offset", 0))
 
@@ -414,6 +418,10 @@ async def run_scenario(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Запускает фейковый Telegram-сервер и сценарий бота."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
     from aiogram import Bot
     from aiogram.client.default import DefaultBotProperties
     from aiogram.client.session.aiohttp import AiohttpSession
@@ -423,6 +431,11 @@ async def run_scenario(
     from clients.telegram_bot.api_client import GrowVisionApiClient
     from clients.telegram_bot.config import BotConfig
     from clients.telegram_bot.main import build_dispatcher, setup_bot_commands
+    from clients.telegram_bot.utils.debug_logger import DebugLogger, set_debug_logger
+
+    tmp_logs_dir = Path(tempfile.mkdtemp(prefix="fake_tg_logs_"))
+    test_logger = DebugLogger(log_dir=tmp_logs_dir, enabled=True)
+    set_debug_logger(test_logger)
 
     fake_tg = FakeTelegramServer()
     base_url = await fake_tg.start()
@@ -523,9 +536,9 @@ async def run_scenario(
             fake_tg.enqueue_user_message(user_id, "27")
             resp = await fake_tg.wait_for_new_bot_response(cnt)
             assert "Шаг 5 из 5" in resp["text"]
-            assert "по умолчанию 50 мм" in resp["text"]
+            assert "по умолчанию 50 мм" not in resp["text"]
 
-            # 8. Шаг 5: Пропустить ArUco (должно передать 50.0 мм)
+            # 8. Шаг 5: Пропустить ArUco (должно передать aruco_size_mm = None)
             cnt = fake_tg.get_total_responses_count()
             fake_tg.enqueue_callback_button(
                 user_id,
@@ -537,7 +550,7 @@ async def run_scenario(
             f_text = final_resp["text"]
             assert "успешно создана" in f_text
             assert "Уникальный Базилик E2E" in f_text
-            assert "50.0 мм" in f_text
+            assert "не задан" in f_text
             assert "Пин света (GPIO):</b> 17" in f_text
             assert "Пин вспышки (GPIO):</b> 27" in f_text
             result = {"ok": True, "card_text": f_text}
@@ -612,6 +625,53 @@ async def run_scenario(
                 "step2": step2_resp["text"],
             }
 
+        elif scenario == "network_reconnect_flow":
+            # 1. Сначала бот отвечает на /start
+            cnt = fake_tg.get_total_responses_count()
+            fake_tg.enqueue_user_message(user_id, "/start")
+            resp1 = await fake_tg.wait_for_new_bot_response(cnt)
+            assert "GrowVision" in resp1["text"]
+
+            # 2. Имитируем обрыв сети
+            fake_tg.is_offline = True
+            await asyncio.sleep(0.05)
+
+            # 3. Восстанавливаем сеть
+            fake_tg.is_offline = False
+
+            # 4. Пользователь отправляет /version
+            cnt = fake_tg.get_total_responses_count()
+            fake_tg.enqueue_user_message(user_id, "/version")
+            resp2 = await fake_tg.wait_for_new_bot_response(cnt)
+            assert "Версия системы" in resp2["text"]
+            result = {"ok": True, "start": resp1["text"], "version": resp2["text"]}
+
+        elif scenario == "html_escaping_and_security":
+            # Проверяем экранирование спецсимволов HTML в логине и профиле: A<B&C -> A&lt;B&amp;C
+            cnt = fake_tg.get_total_responses_count()
+            fake_tg.enqueue_user_message(user_id, "/login")
+            await fake_tg.wait_for_new_bot_response(cnt)
+
+            cnt = fake_tg.get_total_responses_count()
+            fake_tg.enqueue_user_message(user_id, "A<B&C")
+            resp_login = await fake_tg.wait_for_new_bot_response(cnt)
+            assert "A&lt;B&amp;C" in resp_login["text"]
+            assert "Шаг 2 из 2" in resp_login["text"]
+
+            cnt = fake_tg.get_total_responses_count()
+            fake_tg.enqueue_user_message(user_id, dev_pass)
+            resp_auth = await fake_tg.wait_for_new_bot_response(cnt)
+            assert "Вы успешно вошли как" in resp_auth["text"]
+            assert "A&lt;B&amp;C" in resp_auth["text"]
+
+            cnt = fake_tg.get_total_responses_count()
+            fake_tg.enqueue_user_message(user_id, "/profile")
+            resp_profile = await fake_tg.wait_for_new_bot_response(cnt)
+            assert "Профиль пользователя" in resp_profile["text"]
+            assert "A&lt;B&amp;C" in resp_profile["text"]
+
+            result = {"ok": True, "profile": resp_profile["text"]}
+
         else:
             raise ValueError(f"Неизвестный сценарий: {scenario}")
 
@@ -624,6 +684,8 @@ async def run_scenario(
         await api_client.close()
         await bot.session.close()
         await fake_tg.stop()
+        set_debug_logger(None)
+        shutil.rmtree(tmp_logs_dir, ignore_errors=True)
 
     return result
 
@@ -641,6 +703,8 @@ def main() -> None:
             "callback_user_id_system_and_installations",
             "unknown_message_fallback",
             "bug_note_preserves_fsm",
+            "network_reconnect_flow",
+            "html_escaping_and_security",
         ],
     )
     parser.add_argument("--server-url", required=True)

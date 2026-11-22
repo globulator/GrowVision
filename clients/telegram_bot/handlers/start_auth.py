@@ -1,4 +1,5 @@
 import contextlib
+import html
 import logging
 
 from aiogram import F, Router
@@ -198,7 +199,7 @@ async def process_login_username(
     await state.update_data(username=username)
     await state.set_state(AuthStates.waiting_password)
     await message.answer(
-        f"Логин: <b>{username}</b>\n\n"
+        f"Логин: <b>{html.escape(username)}</b>\n\n"
         "Шаг 2 из 2. Введите пароль доступа:\n"
         "<i>(Сообщение с паролем будет сразу автоматически удалено из чата для безопасности)</i>",
         reply_markup=get_cancel_inline_keyboard("auth:cancel"),
@@ -242,7 +243,7 @@ async def process_login_password(
         )
 
         await message.answer(
-            f"✅ Вы успешно вошли как <b>{username}</b> (роль: <b>{role_title}</b>)!",
+            f"✅ Вы успешно вошли как <b>{html.escape(username)}</b> (роль: <b>{role_title}</b>)!",
             reply_markup=get_menu_by_role(role),
         )
     except ApiError as exc:
@@ -332,7 +333,7 @@ async def handle_profile(
 
     text = (
         "👤 <b>Профиль пользователя</b>\n\n"
-        f"<b>Логин:</b> {login_val}\n"
+        f"<b>Логин:</b> {html.escape(str(login_val))}\n"
         f"<b>Роль:</b> {role_title}\n"
         f"<b>Время входа:</b> {auth_str}\n"
         f"<b>Последняя активность:</b> {last_str}"

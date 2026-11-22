@@ -1,4 +1,5 @@
 import contextlib
+import html
 import logging
 import os
 from datetime import datetime
@@ -260,8 +261,8 @@ async def _show_frame_in_gallery(
 
     layer_title = "Оригинал" if layer == "r" else "Разметка нейросети"
     caption = (
-        f"🌱 <b>Установка:</b> {inst_name}\n"
-        f"📷 <b>Камера:</b> #{cam_id}\n"
+        f"🌱 <b>Установка:</b> {html.escape(str(inst_name))}\n"
+        f"📷 <b>Камера:</b> #{html.escape(str(cam_id))}\n"
         f"🕒 <b>Время съёмки:</b> {cap_time} UTC\n"
         f"📐 <b>Площадь:</b> {area_text}\n"
         f"🖼 <b>Слой:</b> {layer_title}\n"
