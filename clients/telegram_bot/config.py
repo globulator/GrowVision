@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,8 @@ class BotConfig:
     server_url: str
     client_api_key: str
     web_public_url: str | None = None
+    telegram_proxy: str | None = None
+    debug_log: bool = False
 
     def __repr__(self) -> str:
         """Безопасное строковое представление без раскрытия секретов."""
@@ -32,10 +35,16 @@ class BotConfig:
             if len(self.client_api_key) > 4
             else "***"
         )
+        masked_proxy = self.telegram_proxy
+        if masked_proxy and "@" in masked_proxy:
+            # Маскируем пароль в URL прокси вида http://user:pass@host:port
+            masked_proxy = re.sub(r"://([^:]+):([^@]+)@", r"://\1:***@", masked_proxy)
+
         return (
             f"BotConfig(server_url='{self.server_url}', "
             f"bot_token='{masked_token}', client_api_key='{masked_key}', "
-            f"web_public_url='{self.web_public_url}')"
+            f"web_public_url='{self.web_public_url}', "
+            f"telegram_proxy='{masked_proxy}', debug_log={self.debug_log})"
         )
 
 
@@ -65,6 +74,8 @@ def load_config(env_path: Path | str | None = None) -> BotConfig:
     server_url = get_val("SERVER_URL")
     client_api_key = get_val("CLIENT_API_KEY")
     web_public_url_raw = get_val("WEB_PUBLIC_URL")
+    telegram_proxy_raw = get_val("TELEGRAM_PROXY")
+    debug_log_raw = get_val("BOT_DEBUG_LOG").lower() in ("true", "1", "yes")
 
     missing = []
     if not bot_token:
@@ -86,12 +97,15 @@ def load_config(env_path: Path | str | None = None) -> BotConfig:
     # Нормализуем URL (без слэша на конце)
     server_url_clean = server_url.rstrip("/")
     web_public_clean = web_public_url_raw.rstrip("/") if web_public_url_raw else None
+    telegram_proxy_clean = telegram_proxy_raw.strip() if telegram_proxy_raw else None
 
     return BotConfig(
         bot_token=bot_token,
         server_url=server_url_clean,
         client_api_key=client_api_key,
         web_public_url=web_public_clean,
+        telegram_proxy=telegram_proxy_clean,
+        debug_log=debug_log_raw,
     )
 
 

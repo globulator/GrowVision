@@ -17,19 +17,24 @@ def format_installation_card(
 ) -> str:
     """Форматирует карточку установки в зависимости от роли пользователя."""
     name = inst.get("name", "Без названия")
-    crop = inst.get("crop_type", "Не указана")
+    crop = inst.get("culture_name") or inst.get("crop_type", "Не указана")
     is_archived = inst.get("is_archived", False)
     inst_id = inst.get("id", "?")
 
-    last_capture = inst.get("last_capture") or {}
-    area_cm2 = last_capture.get("total_area_cm2")
-    area_px = last_capture.get("total_area_px")
-    if area_cm2 is not None:
-        area_str = f"{area_cm2:.1f} см²"
-    elif area_px is not None:
-        area_str = f"{int(area_px)} px"
+    # Площадь: читаем last_area_display от сервера
+    if "last_area_display" in inst:
+        area_str = inst.get("last_area_display") or "нет данных"
     else:
-        area_str = "нет данных"
+        # Резервный расчет для устаревших тестовых фикстур с last_capture
+        last_capture = inst.get("last_capture") or {}
+        area_cm2 = last_capture.get("total_area_cm2")
+        area_px = last_capture.get("total_area_px")
+        if area_cm2 is not None:
+            area_str = f"{area_cm2:.1f} см²"
+        elif area_px is not None:
+            area_str = f"{int(area_px)} px"
+        else:
+            area_str = "нет данных"
 
     lines = [
         f"🌱 <b>Установка #{inst_id}: {name}</b>",
@@ -42,15 +47,37 @@ def format_installation_card(
 
     # Поля для Biologist и Developer
     if role in ("biologist", "developer"):
-        aruco = inst.get("aruco_marker_size_mm")
-        aruco_str = f"{aruco} мм" if aruco is not None else "не задан (площадь в px)"
+        aruco = (
+            inst.get("aruco_size_mm")
+            if "aruco_size_mm" in inst
+            else inst.get("aruco_marker_size_mm")
+        )
+        if aruco is not None:
+            aruco_str = (
+                f"{float(aruco):.1f} мм"
+                if isinstance(aruco, (int, float))
+                else f"{aruco} мм"
+            )
+        else:
+            aruco_str = "не задан (площадь в px)"
         lines.append(f"📏 <b>Размер ArUco:</b> {aruco_str}")
+
+        created_at = inst.get("created_at")
+        if created_at:
+            created_str = (
+                f"{created_at} UTC"
+                if not str(created_at).endswith("Z") and "UTC" not in str(created_at)
+                else str(created_at)
+            )
+            lines.append(f"🕒 <b>Создана:</b> {created_str}")
 
         cameras = inst.get("cameras", [])
         if cameras:
             cam_lines = []
             for c in cameras:
-                cam_name = c.get("name") or f"Камера #{c.get('id')}"
+                cam_name = (
+                    c.get("auto_name") or c.get("name") or f"Камера #{c.get('id')}"
+                )
                 if role == "developer":
                     hw_id = c.get("hardware_id", "")
                     cam_lines.append(f"• {cam_name} (<code>{hw_id}</code>)")

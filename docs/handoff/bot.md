@@ -94,3 +94,58 @@
 - **Изоляция импортов (CLI проверка)**:
   `grep -rn --exclude-dir=.venv "from server\|from shared\|from edge_agent\|from clients.cli\|import server\|import shared" clients/telegram_bot` — **0 совпадений (пусто)**.
 - **База данных**: файлы `growvision.db*` в корне проекта не создаются, `git status --short` чист после тестов.
+
+---
+
+## 4. Доработки и исправления: Раунд 2 (Ветка `stage-7/bot-fixes-2`)
+
+### 4.1. Выполненные задачи
+1. **Профиль и даты (`handlers/start_auth.py`):**
+   - Добавлена поддержка команды `/profile` (и кнопки `[ 👤 Профиль / Выход ]`).
+   - Отображаются `login`, `authorized_at`, `last_active_at` из ответа `GET /api/auth/me`.
+   - Прочерк «—» отображается только при реальном значении `null` или пустой строке.
+2. **Карточка установки (`utils/formatters.py`, `handlers/installations.py`):**
+   - Форматирование адаптировано под реальный контракт `GET /api/installations/{id}`: `culture_name`, `aruco_size_mm`, `last_area_display`, `light_gpio_pin`, `flash_gpio_pin`, `is_archived`, `created_at`, камеры (`auto_name`, `hardware_id`).
+   - После изменения или сброса размера ArUco в карточке выводится актуальное значение (при сбросе шлется `{"aruco_size_mm": None}`).
+3. **Безопасный `user_id` в inline-кнопках:**
+   - Значение `user_id` извлекается строго из `callback.from_user.id` и передается явным параметром (включая `_apply_interval` в `system.py` и `_finish_create_installation` в `installations.py`).
+   - Проверка `grep -rn "target_msg\.from_user" clients/telegram_bot` дает строго 0 совпадений.
+4. **Системные команды (`main.py`):**
+   - При старте бота регистрируются команды `/start`, `/help`, `/version`, `/login`, `/cancel` через `bot.set_my_commands`.
+5. **Подсказка при неизвестном сообщении (`handlers/common.py`):**
+   - При получении произвольного текста вне FSM бот отвечает: `Не понял. Список команд: /help`.
+6. **Быстрые баг-заметки (`handlers/common.py`, `utils/debug_logger.py`):**
+   - Сообщение, начинающееся с `*`, перехватывается глобальным роутером в любом FSM-состоянии без сброса FSM.
+   - Заметка сохраняется в буфер/файл, пользователю возвращается `Записано: BUG-LOG-N`.
+7. **Структурированный JSONL-журнал и CLI-инструмент (`utils/debug_logger.py`, `tools/bug_log.py`):**
+   - При `BOT_DEBUG_LOG=true` ведется ротируемый (7 дней) JSONL-лог `clients/telegram_bot/logs/` (добавлен в `.gitignore`).
+   - Реализовано маскирование чувствительных данных (пароли, токен бота, client key).
+   - CLI-утилита `python -m clients.telegram_bot.tools.bug_log` поддерживает команды `list`, `show <N>`, `tail`.
+8. **Поддержка `TELEGRAM_PROXY` (`config.py`, `main.py`):**
+   - Поддержаны протоколы `http://` и `socks5://`, учетные данные прокси маскируются в логах.
+   - Повторные попытки с задержкой при сбоях связи с Telegram API.
+   - Обновлены `.env.example` и `docs/BOT_SPEC.md` (п. 1.1).
+9. **Улучшения мастера создания установки (`handlers/installations.py`):**
+   - На шаге 1 выполняется проверка занятости имени (`GET /api/installations?include_archived=true`). При занятом имени бот просит ввести другое без сброса FSM. Финальная обработка 409 сохранена.
+   - На шаге 5 выводится подсказка «по умолчанию 50 мм» и кнопка «⏭ Пропустить (по умолчанию 50 мм)», отправляющая `50.0`.
+10. **Фейковый сервер Telegram Bot API и E2E тесты (`tests/e2e/fake_telegram.py`, `tests/e2e/test_bot_fixes_round2_e2e.py`):**
+    - Реализован легковесный aiohttp-сервер Telegram Bot API для детерминированного тестирования aiogram long-polling, где `callback.message.from_user` — бот, а `callback.from_user` — пользователь.
+    - Реализовано 5 сценариев E2E тестов, проверяющих все ключевые исправления раунда 2.
+
+### 4.2. Итоговые результаты проверок
+- **Unit-тесты Telegram-бота**: `38 passed in 0.39s`.
+- **E2E тесты Telegram-бота (раунд 2)**: `5 passed in 16.19s`.
+- **Регрессионные тесты всех компонентов**:
+  - Edge Agent: `45 passed in 3.16s`.
+  - CLI-клиент: `42 passed in 0.43s`.
+  - Telegram-бот: `38 passed in 0.39s`.
+  - Server & E2E: `118 passed in 58.31s`.
+  - **Всего**: **243 passed**.
+- **Линтер и форматирование**:
+  - `server/.venv/bin/ruff check .` — **All checks passed!**
+  - `server/.venv/bin/ruff format --check .` — **187 files already formatted.**
+- **Изоляция и чистота**:
+  - `grep -rn "target_msg\.from_user" clients/telegram_bot` — **0 совпадений**.
+  - `grep -rn --exclude-dir=.venv "from server\|from shared\|from edge_agent\|from clients.cli\|import server\|import shared" clients/telegram_bot` — **0 совпадений**.
+  - `git status` не содержит файлов баз данных `growvision.db*`.
+

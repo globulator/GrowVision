@@ -21,6 +21,29 @@ def test_load_valid_config(tmp_path: Path):
     assert cfg.server_url == "http://localhost:8000"
     assert cfg.client_api_key == "my-super-secret-key"
     assert cfg.web_public_url == "http://192.168.1.50:8000"
+    assert cfg.telegram_proxy is None
+    assert cfg.debug_log is False
+
+
+def test_load_config_with_proxy_and_debug_log(tmp_path: Path):
+    """Проверка загрузки TELEGRAM_PROXY и BOT_DEBUG_LOG."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "TELEGRAM_BOT_TOKEN=123456789:ABCdefGhI\n"
+        "SERVER_URL=http://localhost:8000/\n"
+        "CLIENT_API_KEY=my-super-secret-key\n"
+        "TELEGRAM_PROXY=socks5://proxyuser:proxypass@127.0.0.1:1080\n"
+        "BOT_DEBUG_LOG=true\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(env_file)
+    assert cfg.telegram_proxy == "socks5://proxyuser:proxypass@127.0.0.1:1080"
+    assert cfg.debug_log is True
+
+    repr_str = repr(cfg)
+    assert "proxypass" not in repr_str
+    assert "proxyuser:***@" in repr_str
 
 
 def test_missing_required_variables_raises_error(

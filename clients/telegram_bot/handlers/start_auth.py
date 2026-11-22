@@ -272,7 +272,8 @@ async def process_login_password(
 # ================== Профиль и Выход ==================
 
 
-@router.message(F.text == "👤 Профиль / Выход")
+@router.message(Command("profile"))
+@router.message(F.text.in_({"👤 Профиль", "👤 Профиль / Выход"}))
 async def handle_profile(
     message: Message,
     api_client: GrowVisionApiClient,
@@ -293,15 +294,29 @@ async def handle_profile(
         )
         return
 
-    username = me.get("username", "—")
+    login_val = me.get("login") or me.get("username") or "—"
     role = me.get("role", "guest")
     role_title = (
         "Биолог"
         if role == "biologist"
         else ("Разработчик" if role == "developer" else role)
     )
-    created_at = me.get("created_at", "—")
-    last_activity = me.get("last_activity", "—")
+
+    auth_raw = me.get("authorized_at") or me.get("created_at")
+    if auth_raw:
+        auth_str = str(auth_raw)
+        if not auth_str.endswith("Z") and "UTC" not in auth_str:
+            auth_str = f"{auth_str} UTC"
+    else:
+        auth_str = "—"
+
+    last_raw = me.get("last_active_at") or me.get("last_activity")
+    if last_raw:
+        last_str = str(last_raw)
+        if not last_str.endswith("Z") and "UTC" not in last_str:
+            last_str = f"{last_str} UTC"
+    else:
+        last_str = "—"
 
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -317,10 +332,10 @@ async def handle_profile(
 
     text = (
         "👤 <b>Профиль пользователя</b>\n\n"
-        f"<b>Логин:</b> {username}\n"
+        f"<b>Логин:</b> {login_val}\n"
         f"<b>Роль:</b> {role_title}\n"
-        f"<b>Время входа:</b> {created_at} UTC\n"
-        f"<b>Последняя активность:</b> {last_activity} UTC"
+        f"<b>Время входа:</b> {auth_str}\n"
+        f"<b>Последняя активность:</b> {last_str}"
     )
     await message.answer(text, reply_markup=profile_kb)
 
