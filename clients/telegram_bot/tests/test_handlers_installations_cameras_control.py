@@ -72,6 +72,8 @@ async def test_installation_create_flow(bot_config: BotConfig, mock_bot):
         path = request.url.path
         if path == "/api/auth/me":
             return httpx.Response(200, json={"role": "developer", "username": "Dev"})
+        if path == "/api/installations" and request.method == "GET":
+            return httpx.Response(200, json=[])
         if path == "/api/installations" and request.method == "POST":
             import json
 
@@ -127,7 +129,7 @@ async def test_installation_create_flow(bot_config: BotConfig, mock_bot):
     assert created_payload["culture_name"] == "Мята перечная"
     assert created_payload["light_gpio_pin"] == 22
     assert created_payload["flash_gpio_pin"] == 23
-    assert created_payload["aruco_size_mm"] is None
+    assert created_payload["aruco_size_mm"] == 50.0
 
     final_text = mock_bot.send_message.call_args[1]["text"]
     assert "успешно создана" in final_text

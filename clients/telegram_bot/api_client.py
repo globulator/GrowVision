@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from clients.telegram_bot.config import BotConfig
+from clients.telegram_bot.utils.debug_logger import get_debug_logger
 from clients.telegram_bot.utils.errors import ApiError, extract_detail
 
 logger = logging.getLogger(__name__)
@@ -71,8 +72,22 @@ class GrowVisionApiClient:
                 timeout=timeout,
                 **kwargs,
             )
+            get_debug_logger().log_event(
+                "api_call",
+                user_id=int(user_id) if str(user_id).isdigit() else None,
+                method=method,
+                path=path,
+                status_code=resp.status_code,
+            )
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             logger.warning(f"Сетевая ошибка при запросе {method} {path}: {exc}")
+            get_debug_logger().log_event(
+                "api_error",
+                user_id=int(user_id) if str(user_id).isdigit() else None,
+                method=method,
+                path=path,
+                error=str(exc),
+            )
             raise
 
         if resp.status_code in (200, 201, 204):

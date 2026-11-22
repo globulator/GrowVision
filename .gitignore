@@ -23,7 +23,9 @@ venv/
 
 # Logs
 *.log
+*.jsonl
 logs/
+clients/telegram_bot/logs/
 
 # Media & Models
 server/media/*

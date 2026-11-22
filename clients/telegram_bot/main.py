@@ -7,17 +7,23 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand
 
 from clients.telegram_bot.api_client import GrowVisionApiClient
 from clients.telegram_bot.config import BotConfig, validate_and_get_config
 from clients.telegram_bot.handlers import (
     cameras,
+    common,
     control,
     installations,
     start_auth,
     system,
     timelapse,
 )
+from clients.telegram_bot.middlewares.logging_middleware import (
+    DebugLoggingMiddleware,
+)
+from clients.telegram_bot.utils.debug_logger import get_debug_logger
 
 # Настройка логирования
 logging.basicConfig(
@@ -28,22 +34,46 @@ logging.basicConfig(
 logger = logging.getLogger("growvision_bot")
 
 
+async def setup_bot_commands(bot: Bot) -> None:
+    """Устанавливает актуальный список системных команд в Telegram."""
+    commands = [
+        BotCommand(command="start", description="Главное меню"),
+        BotCommand(command="help", description="Справка"),
+        BotCommand(command="version", description="Версия системы"),
+        BotCommand(command="login", description="Вход в систему"),
+        BotCommand(command="cancel", description="Отмена текущего действия"),
+    ]
+    await bot.set_my_commands(commands)
+
+
 def build_dispatcher(config: BotConfig, api_client: GrowVisionApiClient) -> Dispatcher:
     """Создает и настраивает диспетчер aiogram со всеми обработчиками."""
     dp = Dispatcher(storage=MemoryStorage())
+
+    # Инициализация debug логгера
+    get_debug_logger(enabled=config.debug_log)
+
+    # Middleware логирования событий
+    dp.message.middleware(DebugLoggingMiddleware())
+    dp.callback_query.middleware(DebugLoggingMiddleware())
 
     # Внедрение зависимостей во все хэндлеры
     dp["api_client"] = api_client
     dp["config"] = config
 
-    # Регистрация роутеров строго в логическом порядке
+    # Регистрация роутеров:
+    # 1. bug_router (перехват заметок на * в любом состоянии)
+    # 2. Бизнес-роутеры
+    # 3. fallback_router (неизвестный текст вне ввода)
     routers = [
+        common.bug_router,
         start_auth.router,
         installations.router,
         cameras.router,
         control.router,
         timelapse.router,
         system.router,
+        common.fallback_router,
     ]
     for r in routers:
         r._parent_router = None
@@ -57,8 +87,12 @@ async def main() -> None:
     config = validate_and_get_config()
     logger.info("Конфигурация бота успешно загружена")
 
-    # Сессия бота с увеличенным таймаутом до 300 с для отправки больших видео (BOT_SPEC.md разд. 6.1)
-    session = AiohttpSession(timeout=300.0)
+    session_kwargs: dict = {"timeout": 300.0}
+    if config.telegram_proxy:
+        logger.info(f"Используется прокси для Telegram API: {config.telegram_proxy}")
+        session_kwargs["proxy"] = config.telegram_proxy
+
+    session = AiohttpSession(**session_kwargs)
     bot = Bot(
         token=config.bot_token,
         session=session,
@@ -67,6 +101,29 @@ async def main() -> None:
 
     api_client = GrowVisionApiClient(config)
     dp = build_dispatcher(config, api_client)
+
+    # Проверка подключения и установка системных команд с повторами при сбое
+    max_retries = 3
+    retry_delay_sec = 2.0
+    for attempt in range(1, max_retries + 1):
+        try:
+            bot_info = await bot.get_me()
+            logger.info(
+                f"Успешное подключение к Telegram API: @{bot_info.username} (id={bot_info.id})"
+            )
+            await setup_bot_commands(bot)
+            logger.info("Системные команды Telegram успешно зарегистрированы")
+            break
+        except Exception as exc:
+            logger.error(
+                f"Ошибка подключения к Telegram API (попытка {attempt}/{max_retries}): {exc}. "
+                f"Проверьте сетевое соединение, токен или TELEGRAM_PROXY={config.telegram_proxy}"
+            )
+            if attempt == max_retries:
+                await api_client.close()
+                await bot.session.close()
+                raise
+            await asyncio.sleep(retry_delay_sec)
 
     logger.info("Запуск long polling Telegram-бота GrowVision...")
     try:

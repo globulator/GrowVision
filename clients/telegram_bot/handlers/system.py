@@ -117,7 +117,8 @@ async def handle_quick_interval_selected(
     await callback.answer()
     parts = callback.data.split(":")
     hours = int(parts[2])
-    await _apply_interval(callback.message, state, api_client, hours)
+    user_id = callback.from_user.id if callback.from_user else 0
+    await _apply_interval(callback.message, state, api_client, hours, user_id=user_id)
 
 
 @router.message(SystemSettingsStates.waiting_interval)
@@ -134,7 +135,8 @@ async def handle_interval_text_input(
         )
         return
     hours = int(raw)
-    await _apply_interval(message, state, api_client, hours)
+    user_id = message.from_user.id if message.from_user else 0
+    await _apply_interval(message, state, api_client, hours, user_id=user_id)
 
 
 async def _apply_interval(
@@ -142,10 +144,10 @@ async def _apply_interval(
     state: FSMContext,
     api_client: GrowVisionApiClient,
     hours: int,
+    user_id: int,
 ) -> None:
     """Применяет новый интервал через API и выводит предупреждение при наличии."""
     await state.clear()
-    user_id = target_msg.from_user.id if target_msg and target_msg.from_user else 0
 
     try:
         resp = await api_client.update_system_settings(

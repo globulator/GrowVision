@@ -98,7 +98,7 @@ async def render_installations_list(
         extra=extra_flag,
         item_callback_prefix="inst:view",
         item_text_func=lambda i: (
-            f"🌱 {i.get('name', 'Установка')} ({i.get('crop_type', '—')})"
+            f"🌱 {i.get('name', 'Установка')} ({i.get('culture_name') or i.get('crop_type', '—')})"
         ),
         item_id_func=lambda i: i.get("id"),
         bottom_buttons=bottom_buttons,
@@ -235,7 +235,11 @@ async def start_create_installation(
 
 
 @router.message(InstallationCreateStates.waiting_name)
-async def process_create_name(message: Message, state: FSMContext) -> None:
+async def process_create_name(
+    message: Message,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+) -> None:
     name = (message.text or "").strip()
     if not name:
         await message.answer(
@@ -243,6 +247,19 @@ async def process_create_name(message: Message, state: FSMContext) -> None:
             reply_markup=get_cancel_inline_keyboard("inst:list"),
         )
         return
+
+    user_id = message.from_user.id if message.from_user else 0
+    try:
+        existing = await api_client.get_installations(user_id, include_archived=True)
+        if any(inst.get("name") == name for inst in existing):
+            await message.answer(
+                f"Имя установки «{name}» уже занято. Введите другое название:",
+                reply_markup=get_cancel_inline_keyboard("inst:list"),
+            )
+            return
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Ошибка проверки уникальности имени: {exc}")
+
     await state.update_data(name=name)
     await state.set_state(InstallationCreateStates.waiting_crop)
     await message.answer(
@@ -314,7 +331,7 @@ async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="⏭ Пропустить (без маркера)",
+                    text="⏭ Пропустить (по умолчанию 50 мм)",
                     callback_data="inst:skip_aruco",
                 )
             ],
@@ -323,7 +340,7 @@ async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
     )
     await message.answer(
         f"Пин вспышки: <b>GPIO {flash_pin}</b>\n\n"
-        "Шаг 5 из 5. Введите размер стороны маркера ArUco в миллиметрах (число > 0, например: <code>40.0</code>) "
+        "Шаг 5 из 5. Введите размер стороны маркера ArUco в миллиметрах (по умолчанию 50 мм, например: <code>50.0</code>) "
         "или нажмите [ Пропустить ]:",
         reply_markup=aruco_kb,
     )
@@ -335,10 +352,10 @@ async def _finish_create_installation(
     api_client: GrowVisionApiClient,
     config: BotConfig,
     aruco_val: float | None,
+    user_id: int,
 ) -> None:
     data = await state.get_data()
     await state.clear()
-    user_id = target_msg.from_user.id if target_msg.from_user else 0
 
     payload = {
         "name": data["name"],
@@ -386,11 +403,17 @@ async def process_create_skip_aruco(
     api_client: GrowVisionApiClient,
     config: BotConfig,
 ) -> None:
-    """Пропуск ввода маркера ArUco."""
+    """Пропуск ввода маркера ArUco (по умолчанию 50.0 мм)."""
     await callback.answer()
+    user_id = callback.from_user.id if callback.from_user else 0
     if callback.message and isinstance(callback.message, Message):
         await _finish_create_installation(
-            callback.message, state, api_client, config, aruco_val=None
+            callback.message,
+            state,
+            api_client,
+            config,
+            aruco_val=50.0,
+            user_id=user_id,
         )
 
 
@@ -409,11 +432,14 @@ async def process_create_aruco_text(
             raise ValueError()
     except ValueError:
         await message.answer(
-            "Размер маркера должен быть положительным числом (например, 40.0) или нажмите [ Пропустить ]:"
+            "Размер маркера должен быть положительным числом (например, 50.0) или нажмите [ Пропустить ]:"
         )
         return
 
-    await _finish_create_installation(message, state, api_client, config, aruco_val=val)
+    user_id = message.from_user.id if message.from_user else 0
+    await _finish_create_installation(
+        message, state, api_client, config, aruco_val=val, user_id=user_id
+    )
 
 
 # ================== Редактирование установки ==================
@@ -462,7 +488,7 @@ async def handle_edit_field_selected(
     if field == "reset_aruco":
         try:
             updated = await api_client.update_installation(
-                user_id, inst_id, {"aruco_marker_size_mm": None}
+                user_id, inst_id, {"aruco_size_mm": None}
             )
             card_text = format_installation_card(
                 updated, role="developer", web_public_url=config.web_public_url
