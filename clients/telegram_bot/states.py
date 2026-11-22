@@ -58,3 +58,15 @@ class CaptureDelayStates(StatesGroup):
     """FSM-состояния настройки задержки съёмки."""
 
     waiting_delay = State()
+
+
+class ProfileStates(StatesGroup):
+    """FSM-состояния управления профилем."""
+
+    waiting_new_name = State()
+
+
+class SessionStates(StatesGroup):
+    """FSM-состояния управления сессиями."""
+
+    waiting_rename_name = State()

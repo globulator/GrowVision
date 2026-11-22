@@ -13,6 +13,22 @@ class InMemoryState:
         self._lock = threading.Lock()
         self._command_to_captures: dict[int, list[int]] = {}
         self._command_to_scanned_cameras: dict[int, list[str]] = {}
+        self._pin_states: dict[int, bool] = {}
+
+    def set_pin_state(self, pin: int, state: bool) -> None:
+        """Сохраняет состояние реле для GPIO-пина."""
+        with self._lock:
+            self._pin_states[pin] = state
+
+    def get_pin_state(self, pin: int) -> bool:
+        """Возвращает текущее состояние реле для GPIO-пина (по умолчанию False)."""
+        with self._lock:
+            return self._pin_states.get(pin, False)
+
+    def get_all_pin_states(self) -> dict[int, bool]:
+        """Возвращает снимок состояний всех известных GPIO-пинов."""
+        with self._lock:
+            return dict(self._pin_states)
 
     def bind_command_capture(self, command_id: int, capture_id: int) -> None:
         """Связывает команду со снимком."""
@@ -59,6 +75,7 @@ class InMemoryState:
         with self._lock:
             self._command_to_captures.clear()
             self._command_to_scanned_cameras.clear()
+            self._pin_states.clear()
 
     def cleanup_stale_entries(self, db: Any, max_age_seconds: float = 300.0) -> int:
         """Удаляет записи app_state для команд, завершенных более max_age_seconds назад."""

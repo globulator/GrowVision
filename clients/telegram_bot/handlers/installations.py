@@ -379,8 +379,12 @@ async def _finish_create_installation(
         kb = get_installation_card_keyboard(
             inst_id, role="developer", is_archived=False
         )
+        warnings = created.get("warnings") or []
+        warn_block = ""
+        if warnings:
+            warn_block = "\n\n" + "\n".join(html.escape(w) for w in warnings)
         await target_msg.answer(
-            f"✅ Установка «<b>{html.escape(data['name'])}</b>» успешно создана!\n\n{card_text}",
+            f"✅ Установка «<b>{html.escape(data['name'])}</b>» успешно создана!{warn_block}\n\n{card_text}",
             reply_markup=kb,
         )
     except ApiError as exc:
@@ -601,8 +605,13 @@ async def process_edit_value(
         kb = get_installation_card_keyboard(
             inst_id, role=role, is_archived=updated.get("is_archived", False)
         )
+        warnings = updated.get("warnings") or []
+        warn_block = ""
+        if warnings:
+            warn_block = "\n\n" + "\n".join(html.escape(w) for w in warnings)
         await message.answer(
-            f"✅ Изменения успешно сохранены!\n\n{card_text}", reply_markup=kb
+            f"✅ Изменения успешно сохранены!{warn_block}\n\n{card_text}",
+            reply_markup=kb,
         )
     except ApiError as exc:
         err = format_api_error(exc)

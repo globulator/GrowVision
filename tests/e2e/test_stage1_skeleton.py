@@ -404,7 +404,7 @@ def test_qa_lifecycle_installation_and_pin_uniqueness(qa_isolated_db):
         session.commit()
     session.rollback()
 
-    # Конфликт уникальности пина света среди активных
+    # Этап 7.4: Общие пины разрешены для активных установок
     inst_dup_light = Installation(
         name="QA Inst 2",
         culture_name="Мята",
@@ -413,20 +413,19 @@ def test_qa_lifecycle_installation_and_pin_uniqueness(qa_isolated_db):
         is_archived=False,
     )
     session.add(inst_dup_light)
-    with pytest.raises(IntegrityError):
-        session.commit()
-    session.rollback()
+    session.commit()
+    assert inst_dup_light.id is not None
 
     # Архивация первой установки
     inst1.is_archived = True
     session.commit()
 
-    # Теперь установка с light_gpio_pin=17 разрешена!
+    # Установка с light_gpio_pin=17 разрешена
     inst_reuse_light = Installation(
-        name="QA Inst 2 (новая)",
+        name="QA Inst 3 (новая)",
         culture_name="Мята",
         light_gpio_pin=17,
-        flash_gpio_pin=23,
+        flash_gpio_pin=24,
         is_archived=False,
     )
     session.add(inst_reuse_light)

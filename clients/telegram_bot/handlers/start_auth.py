@@ -13,7 +13,7 @@ from clients.telegram_bot.keyboards.reply import (
     get_guest_reply_keyboard,
     get_menu_by_role,
 )
-from clients.telegram_bot.states import AuthStates
+from clients.telegram_bot.states import AuthStates, ProfileStates
 from clients.telegram_bot.utils.errors import ApiError, format_api_error
 from clients.telegram_bot.utils.formatters import format_tg_user_link
 
@@ -401,9 +401,14 @@ async def handle_profile(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
+                    text="✏️ Изменить имя", callback_data="auth:rename_me"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="🚪 Выйти из аккаунта", callback_data="auth:logout"
                 )
-            ]
+            ],
         ]
     )
 
@@ -415,6 +420,72 @@ async def handle_profile(
         f"<b>Последняя активность:</b> {last_str}"
     )
     await message.answer(text, reply_markup=profile_kb)
+
+
+@router.callback_query(F.data == "auth:rename_me")
+async def handle_rename_me_start(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """Запрос нового имени пользователя."""
+    await callback.answer()
+    await state.set_state(ProfileStates.waiting_new_name)
+    if callback.message and isinstance(callback.message, Message):
+        await callback.message.answer(
+            "✏️ Введите ваше новое отображаемое имя (Имя и Фамилия, до 64 символов):",
+            reply_markup=get_cancel_inline_keyboard("auth:cancel_rename"),
+        )
+
+
+@router.callback_query(F.data == "auth:cancel_rename")
+async def handle_rename_me_cancel(
+    callback: CallbackQuery,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Отмена изменения имени."""
+    await callback.answer()
+    await state.clear()
+    if callback.message and isinstance(callback.message, Message):
+        await handle_profile(callback.message, api_client)
+
+
+@router.message(ProfileStates.waiting_new_name)
+async def process_rename_me_name(
+    message: Message,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Обработка ввода нового имени текущего пользователя."""
+    new_name = (message.text or "").strip()
+    if not new_name:
+        await message.answer(
+            "Имя не может быть пустым. Пожалуйста, введите корректное имя:",
+            reply_markup=get_cancel_inline_keyboard("auth:cancel_rename"),
+        )
+        return
+
+    if len(new_name) > 64:
+        await message.answer(
+            "Длина имени не должна превышать 64 символа. Повторите ввод:",
+            reply_markup=get_cancel_inline_keyboard("auth:cancel_rename"),
+        )
+        return
+
+    user_id = message.from_user.id if message.from_user else 0
+    try:
+        await api_client.update_me(user_id, new_name)
+        await state.clear()
+        await message.answer(
+            f"✅ Имя успешно изменено на: <b>{html.escape(new_name)}</b>!"
+        )
+        await handle_profile(message, api_client)
+    except Exception as exc:  # noqa: BLE001
+        err = format_api_error(exc)
+        await message.answer(
+            f"❌ Не удалось изменить имя:\n{err}",
+            reply_markup=get_cancel_inline_keyboard("auth:cancel_rename"),
+        )
 
 
 @router.callback_query(F.data == "auth:logout")

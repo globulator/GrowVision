@@ -14,6 +14,7 @@ from server.api.deps import (
     require_role,
 )
 from server.core.area import calculate_area_display
+from server.core.state import app_state
 from server.db.models import Capture, Installation, User
 
 router = APIRouter(prefix="/api/installations", tags=["installations"])
@@ -90,7 +91,10 @@ def get_installation_last_area_display(
 
 
 def serialize_installation(
-    inst: Installation, role: str, db: Session
+    inst: Installation,
+    role: str,
+    db: Session,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """Строит проекцию карточки установки в зависимости от роли клиента."""
     area_display = get_installation_last_area_display(inst.id, inst.aruco_size_mm, db)
@@ -100,6 +104,7 @@ def serialize_installation(
         "culture_name": inst.culture_name,
         "is_archived": inst.is_archived,
         "last_area_display": area_display,
+        "warnings": warnings if warnings is not None else [],
     }
 
     if role == "guest":
@@ -130,19 +135,21 @@ def serialize_installation(
             {
                 "light_gpio_pin": inst.light_gpio_pin,
                 "flash_gpio_pin": inst.flash_gpio_pin,
+                "light_state": app_state.get_pin_state(inst.light_gpio_pin),
+                "flash_state": app_state.get_pin_state(inst.flash_gpio_pin),
             }
         )
 
     return data
 
 
-def validate_pin_uniqueness(
+def check_pin_conflicts_and_warnings(
     light_pin: int,
     flash_pin: int,
     db: Session,
     exclude_id: int | None = None,
-) -> None:
-    """Проверяет уникальность GPIO пинов среди активных установок (DB_SCHEMA п. 4.3)."""
+) -> list[str]:
+    """Проверяет пины внутри одной установки и собирает предупреждения о занятых пинах."""
     if light_pin == flash_pin:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -154,17 +161,37 @@ def validate_pin_uniqueness(
         query = query.filter(Installation.id != exclude_id)
     active_installations = query.all()
 
-    for other in active_installations:
-        if light_pin in (other.light_gpio_pin, other.flash_gpio_pin):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Пин света {light_pin} уже занят установкой '{other.name}'",
-            )
-        if flash_pin in (other.light_gpio_pin, other.flash_gpio_pin):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Пин вспышки {flash_pin} уже занят установкой '{other.name}'",
-            )
+    warnings: list[str] = []
+
+    # Проверка занятости light_pin
+    light_used_by = [
+        inst.name
+        for inst in active_installations
+        if light_pin in (inst.light_gpio_pin, inst.flash_gpio_pin)
+    ]
+    if light_used_by:
+        names_str = ", ".join(f"«{name}»" for name in light_used_by)
+        warnings.append(
+            f"⚠️ Пин {light_pin} уже занят ({names_str}). Реле будут общими."
+        )
+
+    # Проверка занятости flash_pin
+    flash_used_by = [
+        inst.name
+        for inst in active_installations
+        if flash_pin in (inst.light_gpio_pin, inst.flash_gpio_pin)
+    ]
+    if flash_used_by:
+        names_str = ", ".join(f"«{name}»" for name in flash_used_by)
+        warnings.append(
+            f"⚠️ Пин {flash_pin} уже занят ({names_str}). Реле будут общими."
+        )
+
+    return warnings
+
+
+# Для обратной совместимости вызовов
+validate_pin_uniqueness = check_pin_conflicts_and_warnings
 
 
 def validate_name_uniqueness(
@@ -236,7 +263,9 @@ def create_installation(
     Создание новой установки с валидацией имени и пинов.
     """
     validate_name_uniqueness(body.name, db)
-    validate_pin_uniqueness(body.light_gpio_pin, body.flash_gpio_pin, db)
+    warnings = check_pin_conflicts_and_warnings(
+        body.light_gpio_pin, body.flash_gpio_pin, db
+    )
 
     inst = Installation(
         name=body.name,
@@ -251,7 +280,7 @@ def create_installation(
     db.commit()
     db.refresh(inst)
 
-    return serialize_installation(inst, current_user.role, db)
+    return serialize_installation(inst, current_user.role, db, warnings=warnings)
 
 
 @router.patch("/{installation_id}", response_model=dict[str, Any])
@@ -294,6 +323,7 @@ def patch_installation(
     if "culture_name" in update_data:
         inst.culture_name = update_data["culture_name"]
 
+    warnings: list[str] = []
     # Валидация пинов (только Developer)
     if "light_gpio_pin" in update_data or "flash_gpio_pin" in update_data:
         if inst.is_archived:
@@ -303,7 +333,9 @@ def patch_installation(
             )
         new_light = update_data.get("light_gpio_pin", inst.light_gpio_pin)
         new_flash = update_data.get("flash_gpio_pin", inst.flash_gpio_pin)
-        validate_pin_uniqueness(new_light, new_flash, db, exclude_id=inst.id)
+        warnings = check_pin_conflicts_and_warnings(
+            new_light, new_flash, db, exclude_id=inst.id
+        )
         inst.light_gpio_pin = new_light
         inst.flash_gpio_pin = new_flash
 
@@ -316,7 +348,7 @@ def patch_installation(
     db.commit()
     db.refresh(inst)
 
-    return serialize_installation(inst, current_user.role, db)
+    return serialize_installation(inst, current_user.role, db, warnings=warnings)
 
 
 @router.post("/{installation_id}/archive", response_model=dict[str, Any])

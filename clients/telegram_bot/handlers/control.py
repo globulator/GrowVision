@@ -1,6 +1,7 @@
 import contextlib
 import html
 import logging
+from typing import Any
 
 from aiogram import F, Router
 from aiogram.types import (
@@ -28,6 +29,93 @@ router = Router(name="control")
 
 # Локальное состояние реле: target -> {"light": bool, "flash": bool}
 _relay_states: dict[str, dict[str, bool]] = {}
+# Состояние реле по GPIO-пинам: pin -> bool
+_pin_states: dict[int, bool] = {}
+# Привязка установок к пинам: target -> {"light": pin, "flash": pin}
+_target_pins: dict[str, dict[str, int]] = {}
+
+
+async def _sync_pins_for_target(
+    api_client: GrowVisionApiClient, user_id: int, target: str
+) -> None:
+    """Синхронизирует номера пинов и состояния реле с сервером."""
+    if target == "all":
+        with contextlib.suppress(Exception):
+            insts = await api_client.get_installations(user_id, include_archived=False)
+            for item in insts:
+                t = str(item.get("id"))
+                lp = item.get("light_gpio_pin")
+                fp = item.get("flash_gpio_pin")
+                if lp is not None and fp is not None:
+                    _target_pins[t] = {"light": lp, "flash": fp}
+                if "light_state" in item and lp is not None:
+                    _pin_states[lp] = item["light_state"]
+                if "flash_state" in item and fp is not None:
+                    _pin_states[fp] = item["flash_state"]
+    else:
+        with contextlib.suppress(Exception):
+            inst = await api_client.get_installation(user_id, int(target))
+            lp = inst.get("light_gpio_pin")
+            fp = inst.get("flash_gpio_pin")
+            if lp is not None and fp is not None:
+                _target_pins[target] = {"light": lp, "flash": fp}
+            if "light_state" in inst and lp is not None:
+                _pin_states[lp] = inst["light_state"]
+            if "flash_state" in inst and fp is not None:
+                _pin_states[fp] = inst["flash_state"]
+
+
+def _get_target_relay_states(target: str) -> tuple[bool, bool]:
+    """Возвращает (light_state, flash_state) для target с учётом пинов."""
+    pins = _target_pins.get(target)
+    st = _relay_states.get(target, {})
+    if pins:
+        light_pin = pins.get("light")
+        flash_pin = pins.get("flash")
+        light_state = (
+            _pin_states.get(light_pin, st.get("light", False))
+            if light_pin is not None
+            else st.get("light", False)
+        )
+        flash_state = (
+            _pin_states.get(flash_pin, st.get("flash", False))
+            if flash_pin is not None
+            else st.get("flash", False)
+        )
+        return light_state, flash_state
+    return st.get("light", False), st.get("flash", False)
+
+
+def _update_relay_pin_state(
+    target: str,
+    is_flash: bool,
+    state_bool: bool,
+    pin_states_from_api: dict[str, Any] | None = None,
+) -> None:
+    """Обновляет состояние пина и синхронизирует все связанные установки."""
+    key = "flash" if is_flash else "light"
+
+    if pin_states_from_api:
+        for p_str, val in pin_states_from_api.items():
+            if str(p_str).isdigit():
+                _pin_states[int(p_str)] = bool(val)
+
+    if target == "all":
+        _relay_states.setdefault("all", {})[key] = state_bool
+        for t, pins in _target_pins.items():
+            pin = pins.get(key)
+            if pin is not None:
+                _pin_states[pin] = state_bool
+            _relay_states.setdefault(t, {})[key] = state_bool
+    else:
+        _relay_states.setdefault(target, {})[key] = state_bool
+        pins = _target_pins.get(target)
+        if pins and pins.get(key) is not None:
+            pin = pins[key]
+            _pin_states[pin] = state_bool
+            for other_t, other_pins in _target_pins.items():
+                if other_pins.get(key) == pin:
+                    _relay_states.setdefault(other_t, {})[key] = state_bool
 
 
 # ================== Свет и реле (Developer) ==================
@@ -126,11 +214,12 @@ async def handle_control_direct_from_card(
         inst = await api_client.get_installation(user_id, int(inst_id))
         inst_name = f"«{inst.get('name')}»"
 
-    st = _relay_states.get(inst_id, {})
+    await _sync_pins_for_target(api_client, user_id, inst_id)
+    light_st, flash_st = _get_target_relay_states(inst_id)
     kb = get_control_panel_keyboard(
         target=inst_id,
-        light_state=st.get("light", False),
-        flash_state=st.get("flash", False),
+        light_state=light_st,
+        flash_state=flash_st,
     )
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
@@ -159,11 +248,12 @@ async def handle_control_target_selected(
             inst = await api_client.get_installation(user_id, int(target))
             target_title = f"«{inst.get('name')}»"
 
-    st = _relay_states.get(target, {})
+    await _sync_pins_for_target(api_client, user_id, target)
+    light_st, flash_st = _get_target_relay_states(target)
     kb = get_control_panel_keyboard(
         target=target,
-        light_state=st.get("light", False),
-        flash_state=st.get("flash", False),
+        light_state=light_st,
+        flash_state=flash_st,
     )
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
@@ -201,7 +291,12 @@ async def handle_control_light_action(
 
     try:
         resp = await api_client.control_light_main(user_id, target, state_bool)
-        _relay_states.setdefault(target, {})["light"] = state_bool
+        _update_relay_pin_state(
+            target,
+            is_flash=False,
+            state_bool=state_bool,
+            pin_states_from_api=resp.get("pin_states"),
+        )
         res_msg = resp.get("result_message", "Успешно")
         debug_info = resp.get("debug_info")
         debug_log = (
@@ -221,11 +316,11 @@ async def handle_control_light_action(
             else ""
         )
 
-        st = _relay_states.get(target, {})
+        light_st, flash_st = _get_target_relay_states(target)
         kb = get_control_panel_keyboard(
             target=target,
-            light_state=state_bool,
-            flash_state=st.get("flash", False),
+            light_state=light_st,
+            flash_state=flash_st,
         )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
@@ -234,11 +329,11 @@ async def handle_control_light_action(
             )
     except ApiError as exc:
         err = format_api_error(exc, is_control=True)
-        st = _relay_states.get(target, {})
+        light_st, flash_st = _get_target_relay_states(target)
         kb = get_control_panel_keyboard(
             target=target,
-            light_state=st.get("light", False),
-            flash_state=st.get("flash", False),
+            light_state=light_st,
+            flash_state=flash_st,
         )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
@@ -273,7 +368,12 @@ async def handle_control_flash_action(
 
     try:
         resp = await api_client.control_light_flash(user_id, target, state_bool)
-        _relay_states.setdefault(target, {})["flash"] = state_bool
+        _update_relay_pin_state(
+            target,
+            is_flash=True,
+            state_bool=state_bool,
+            pin_states_from_api=resp.get("pin_states"),
+        )
         res_msg = resp.get("result_message", "Успешно")
         debug_info = resp.get("debug_info")
         debug_log = (
@@ -292,11 +392,11 @@ async def handle_control_flash_action(
             else ""
         )
 
-        st = _relay_states.get(target, {})
+        light_st, flash_st = _get_target_relay_states(target)
         kb = get_control_panel_keyboard(
             target=target,
-            light_state=st.get("light", False),
-            flash_state=state_bool,
+            light_state=light_st,
+            flash_state=flash_st,
         )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
@@ -305,11 +405,11 @@ async def handle_control_flash_action(
             )
     except ApiError as exc:
         err = format_api_error(exc, is_control=True)
-        st = _relay_states.get(target, {})
+        light_st, flash_st = _get_target_relay_states(target)
         kb = get_control_panel_keyboard(
             target=target,
-            light_state=st.get("light", False),
-            flash_state=st.get("flash", False),
+            light_state=light_st,
+            flash_state=flash_st,
         )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(

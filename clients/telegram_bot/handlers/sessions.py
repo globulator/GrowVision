@@ -5,6 +5,7 @@ from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -13,6 +14,8 @@ from aiogram.types import (
 )
 
 from clients.telegram_bot.api_client import GrowVisionApiClient
+from clients.telegram_bot.keyboards.inline import get_cancel_inline_keyboard
+from clients.telegram_bot.states import SessionStates
 from clients.telegram_bot.utils.errors import format_api_error
 from clients.telegram_bot.utils.formatters import format_tg_user_link
 
@@ -399,6 +402,14 @@ async def handle_view_session(
     buttons.append(
         [
             InlineKeyboardButton(
+                text="✏️ Переименовать",
+                callback_data=f"sess:rename:{session_id}",
+            )
+        ]
+    )
+    buttons.append(
+        [
+            InlineKeyboardButton(
                 text="⬅️ К списку сессий",
                 callback_data="sess:list",
             )
@@ -410,6 +421,68 @@ async def handle_view_session(
             await callback.message.edit_text(
                 text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
             )
+
+
+@router.callback_query(F.data.startswith("sess:rename:"))
+async def handle_rename_session_start(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """Запуск процесса переименования пользователя сессии (Developer)."""
+    await callback.answer()
+    session_id_str = callback.data.split(":")[-1]
+    if not session_id_str.isdigit():
+        return
+    session_id = int(session_id_str)
+    await state.set_state(SessionStates.waiting_rename_name)
+    await state.update_data(rename_session_id=session_id)
+
+    if callback.message and isinstance(callback.message, Message):
+        await callback.message.answer(
+            f"✏️ Введите новое отображаемое имя для пользователя сессии #{session_id} (до 64 символов):",
+            reply_markup=get_cancel_inline_keyboard(f"sess:view:{session_id}"),
+        )
+
+
+@router.message(SessionStates.waiting_rename_name)
+async def process_rename_session_name(
+    message: Message,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Обработка ввода нового имени пользователя сессии."""
+    new_name = (message.text or "").strip()
+    data = await state.get_data()
+    session_id = data.get("rename_session_id")
+    cancel_cb = f"sess:view:{session_id}" if session_id else "sess:list"
+
+    if not new_name:
+        await message.answer(
+            "Имя пользователя не может быть пустым. Повторите ввод:",
+            reply_markup=get_cancel_inline_keyboard(cancel_cb),
+        )
+        return
+
+    if len(new_name) > 64:
+        await message.answer(
+            "Длина имени не должна превышать 64 символа. Повторите ввод:",
+            reply_markup=get_cancel_inline_keyboard(cancel_cb),
+        )
+        return
+
+    user_id = message.from_user.id if message.from_user else 0
+    try:
+        await api_client.rename_session(user_id, int(session_id), new_name)
+        await state.clear()
+        await message.answer(
+            f"✅ Пользователь сессии #{session_id} успешно переименован в: <b>{html.escape(new_name)}</b>!"
+        )
+    except Exception as exc:  # noqa: BLE001
+        err = format_api_error(exc)
+        await message.answer(
+            f"❌ Не удалось переименовать пользователя:\n{err}",
+            reply_markup=get_cancel_inline_keyboard(cancel_cb),
+        )
 
 
 @router.callback_query(F.data.startswith("sess:terminate:"))

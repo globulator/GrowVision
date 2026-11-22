@@ -37,10 +37,26 @@ def _render_unit_card(inst: dict[str, Any]) -> Panel:
         lines.append(f"[bold]Задержка съёмки:[/bold] {delay_str}")
 
     if "light_gpio_pin" in inst and "flash_gpio_pin" in inst:
+        light_st_str = ""
+        if "light_state" in inst:
+            light_st_str = (
+                " [green]● ON[/green]"
+                if inst.get("light_state")
+                else " [dim]○ OFF[/dim]"
+            )
+        flash_st_str = ""
+        if "flash_state" in inst:
+            flash_st_str = (
+                " [green]● ON[/green]"
+                if inst.get("flash_state")
+                else " [dim]○ OFF[/dim]"
+            )
         lines.append(
-            f"[bold]GPIO основного света:[/bold] GPIO {inst.get('light_gpio_pin')}"
+            f"[bold]GPIO основного света:[/bold] GPIO {inst.get('light_gpio_pin')}{light_st_str}"
         )
-        lines.append(f"[bold]GPIO вспышки:[/bold] GPIO {inst.get('flash_gpio_pin')}")
+        lines.append(
+            f"[bold]GPIO вспышки:[/bold] GPIO {inst.get('flash_gpio_pin')}{flash_st_str}"
+        )
 
     if "cameras" in inst:
         cams = inst.get("cameras") or []
@@ -260,6 +276,9 @@ def unit_add(
     )
 
     if isinstance(inst, dict):
+        warnings = inst.get("warnings") or []
+        for w in warnings:
+            console.print(f"[yellow]{w}[/yellow]")
         console.print("[green]Установка успешно добавлена:[/green]")
         console.print(_render_unit_card(inst))
 
@@ -338,6 +357,9 @@ def unit_edit(
     )
 
     if isinstance(inst, dict):
+        warnings = inst.get("warnings") or []
+        for w in warnings:
+            console.print(f"[yellow]{w}[/yellow]")
         console.print("[green]Параметры установки успешно обновлены:[/green]")
         console.print(_render_unit_card(inst))
 

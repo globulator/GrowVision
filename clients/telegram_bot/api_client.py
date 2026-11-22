@@ -228,6 +228,28 @@ class GrowVisionApiClient:
             timeout=15.0,
         )
 
+    async def update_me(self, user_id: int, login: str) -> dict[str, Any]:
+        """Изменение собственного отображаемого имени."""
+        return await self._request(
+            "PATCH",
+            "/api/auth/me",
+            user_id=user_id,
+            json={"login": login},
+            timeout=15.0,
+        )
+
+    async def rename_session(
+        self, user_id: int, session_id: int, login: str
+    ) -> dict[str, Any]:
+        """Переименование пользователя сессии (только developer)."""
+        return await self._request(
+            "PATCH",
+            f"/api/auth/sessions/{session_id}",
+            user_id=user_id,
+            json={"login": login},
+            timeout=15.0,
+        )
+
     # ------------------ 3. Установки ------------------
 
     async def get_installations(
@@ -401,6 +423,26 @@ class GrowVisionApiClient:
             json=payload,
             timeout=35.0,
             is_control_command=True,
+        )
+
+    async def get_relays_status(self, user_id: int) -> dict[str, Any]:
+        """Получить текущие состояния всех GPIO-пинов."""
+        return await self._request(
+            "GET",
+            "/api/control/relays",
+            user_id=user_id,
+            timeout=15.0,
+        )
+
+    async def get_installation_relays(
+        self, user_id: int, inst_id: int
+    ) -> dict[str, Any]:
+        """Получить состояния реле конкретной установки."""
+        return await self._request(
+            "GET",
+            f"/api/control/relays/{inst_id}",
+            user_id=user_id,
+            timeout=15.0,
         )
 
     async def take_snap(

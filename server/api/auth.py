@@ -56,6 +56,24 @@ class MeResponse(BaseModel):
     last_active_at: str
 
 
+class UpdateLoginRequest(BaseModel):
+    """Тело запроса на изменение отображаемого имени пользователя."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    login: str
+
+    @field_validator("login")
+    @classmethod
+    def validate_login(cls, v: str) -> str:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError("Имя пользователя не может быть пустым")
+        val = v.strip()
+        if len(val) > 64:
+            raise ValueError("Длина имени не должна превышать 64 символа")
+        return val
+
+
 class InviteCreateResponse(BaseModel):
     """Ответ на создание одноразового кода."""
 
@@ -252,6 +270,27 @@ def auth_me(
     )
 
 
+@router.patch("/me", response_model=MeResponse)
+def update_me(
+    body: UpdateLoginRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> MeResponse:
+    """4.1. PATCH /api/auth/me.
+
+    Изменение отображаемого имени текущего пользователя.
+    """
+    current_user.login = body.login
+    db.commit()
+    db.refresh(current_user)
+    return MeResponse(
+        login=current_user.login,
+        role=current_user.role,
+        authorized_at=format_utc_z(current_user.authorized_at) or "",
+        last_active_at=format_utc_z(current_user.last_active_at) or "",
+    )
+
+
 # ================== Управление приглашениями (Developer) ==================
 
 
@@ -379,3 +418,33 @@ def terminate_session(
     target_user.logged_out_at = datetime.now(UTC)
     db.commit()
     return {"ok": True}
+
+
+@router.patch("/sessions/{session_id}", response_model=SessionInfo)
+def rename_session_user(
+    session_id: int,
+    body: UpdateLoginRequest,
+    current_user: Annotated[User, Depends(require_role("developer"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> SessionInfo:
+    """Изменение отображаемого имени пользователя любой сессии (Developer)."""
+    target_user = db.query(User).filter(User.id == session_id).first()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Сессия #{session_id} не найдена",
+        )
+    target_user.login = body.login
+    db.commit()
+    db.refresh(target_user)
+    return SessionInfo(
+        id=target_user.id,
+        client_type=target_user.client_type,
+        external_id=target_user.external_id,
+        login=target_user.login,
+        role=target_user.role,
+        is_active=target_user.is_active,
+        authorized_at=format_utc_z(target_user.authorized_at) or "",
+        last_active_at=format_utc_z(target_user.last_active_at) or "",
+        logged_out_at=format_utc_z(target_user.logged_out_at),
+    )
