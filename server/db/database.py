@@ -78,3 +78,9 @@ def init_db(target_engine: Engine | None = None) -> None:
                     text("ALTER TABLE users ADD COLUMN logged_out_at DATETIME;")
                 )
                 conn.commit()
+
+        # Безопасное удаление устаревших уникальных индексов на GPIO-пины (Этап 7.4)
+        with contextlib.suppress(Exception):
+            conn.execute(text("DROP INDEX IF EXISTS uq_active_light_pin;"))
+            conn.execute(text("DROP INDEX IF EXISTS uq_active_flash_pin;"))
+            conn.commit()

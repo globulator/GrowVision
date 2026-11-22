@@ -281,10 +281,23 @@ async def control_light_main(
 
     finished_cmd = await wait_command_result(cmd.id, 10.0, db)
 
+    if finished_cmd.status == "done":
+        if is_global:
+            all_insts = (
+                db.query(Installation).filter(Installation.is_archived.is_(False)).all()
+            )
+            for item in all_insts:
+                app_state.set_pin_state(item.light_gpio_pin, body.state)
+        elif inst_id:
+            inst = db.query(Installation).filter(Installation.id == inst_id).first()
+            if inst:
+                app_state.set_pin_state(inst.light_gpio_pin, body.state)
+
     resp: dict[str, Any] = {
         "command_id": finished_cmd.id,
         "status": finished_cmd.status,
         "result_message": finished_cmd.result_message or "OK",
+        "pin_states": {str(k): v for k, v in app_state.get_all_pin_states().items()},
     }
     debug_info = build_debug_info(finished_cmd, current_user, db)
     if debug_info:
@@ -318,10 +331,23 @@ async def control_light_flash(
 
     finished_cmd = await wait_command_result(cmd.id, 10.0, db)
 
+    if finished_cmd.status == "done":
+        if is_global:
+            all_insts = (
+                db.query(Installation).filter(Installation.is_archived.is_(False)).all()
+            )
+            for item in all_insts:
+                app_state.set_pin_state(item.flash_gpio_pin, body.state)
+        elif inst_id:
+            inst = db.query(Installation).filter(Installation.id == inst_id).first()
+            if inst:
+                app_state.set_pin_state(inst.flash_gpio_pin, body.state)
+
     resp: dict[str, Any] = {
         "command_id": finished_cmd.id,
         "status": finished_cmd.status,
         "result_message": finished_cmd.result_message or "OK",
+        "pin_states": {str(k): v for k, v in app_state.get_all_pin_states().items()},
     }
     debug_info = build_debug_info(finished_cmd, current_user, db)
     if debug_info:
@@ -364,3 +390,33 @@ async def control_relay_test(
     if debug_info:
         resp["debug_info"] = debug_info
     return resp
+
+
+@router.get("/relays", response_model=dict[str, Any])
+def get_relays_status(
+    current_user: Annotated[User, Depends(require_role("developer"))],
+) -> dict[str, Any]:
+    """Возвращает текущие программные состояния всех GPIO-пинов."""
+    return {"pins": {str(k): v for k, v in app_state.get_all_pin_states().items()}}
+
+
+@router.get("/relays/{installation_id}", response_model=dict[str, Any])
+def get_installation_relays(
+    installation_id: int,
+    current_user: Annotated[User, Depends(require_role("developer"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Возвращает программные состояния реле конкретной установки."""
+    inst = db.query(Installation).filter(Installation.id == installation_id).first()
+    if not inst:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Установка не найдена",
+        )
+    return {
+        "installation_id": inst.id,
+        "light_gpio_pin": inst.light_gpio_pin,
+        "light_state": app_state.get_pin_state(inst.light_gpio_pin),
+        "flash_gpio_pin": inst.flash_gpio_pin,
+        "flash_state": app_state.get_pin_state(inst.flash_gpio_pin),
+    }

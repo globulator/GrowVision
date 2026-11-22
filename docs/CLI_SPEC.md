@@ -103,6 +103,7 @@
 | `auth invite revoke` | `<invite_id>` | Developer | `DELETE /api/auth/invites/{id}` | Досрочно отзывает неиспользованный код доступа. |
 | `auth sessions` | — | Developer | `GET /api/auth/sessions` | Таблица всех сессий: `ID`, `Клиент`, `External ID`, `Логин`, `Роль`, `Статус` (🟢 Активна / ⚪️ Завершена), `Авторизован`, `Активность`, `Выход`. |
 | `auth kick` | `<session_id>` | Developer | `POST /api/auth/sessions/{id}/terminate` | Принудительно завершает активную сессию пользователя. |
+| `auth rename` | `<session_id>` `<new_name>` | Developer | `PATCH /api/auth/sessions/{id}` | Изменяет отображаемое имя пользователя указанной сессии. |
 
 ### 3.3. Раздел `unit` — Гидропонные установки
 
@@ -110,9 +111,9 @@
 | :--- | :--- | :---: | :--- | :--- |
 | `unit info` | — | Все | — | Справка по разделу `unit` с примерами. |
 | `unit list` | `--archived` (флаг, по умолч. `False`) | Гость / Bio / Dev | `GET /api/installations?include_archived=...` | Выводит таблицу: `ID`, `Название`, `Культура`, `Площадь` (`last_area_display` или `—`), `Статус` (`Активна`/`Архив`) + колонки `Камеры` (для Bio/Dev) и `Light GPIO` / `Flash GPIO` (для Dev). Если список пуст — пишет `Установок пока нет`. |
-| `unit show` | `<target>` (`ID`, имя или `all`) | Гость / Bio / Dev | `GET /api/installations/{id}` (для `all` — `GET /api/installations`) | Выводит подробную карточку установки (или всех активных установок для `all`), включая список привязанных камер (`0`, `1` или `N` штук со статусом `online`/`offline`), размер ArUco и последнюю площадь. |
-| `unit add` | `--name`, `--culture`, `--light-pin`, `--flash-pin`, `--aruco-mm` (опц.) | Dev | `POST /api/installations` | Если флаги не переданы, запрашивает параметры интерактивно. После `201` выводит созданную карточку установки. |
-| `unit edit` | `<target>`, `--name`, `--culture`, `--light-pin`, `--flash-pin`, `--aruco-mm`, `--clear-aruco` (флаг) | Bio (`--name`, `--culture`) / Dev (все) | `PATCH /api/installations/{id}` | Разрешает `<target>` (не поддерживает `all`). Флаг `--clear-aruco` передаёт `"aruco_size_mm": null` для сброса маркера. Выводит обновлённую карточку. |
+| `unit show` | `<target>` (`ID`, имя или `all`) | Гость / Bio / Dev | `GET /api/installations/{id}` (для `all` — `GET /api/installations`) | Выводит подробную карточку установки (или всех активных установок для `all`), включая список привязанных камер (`0`, `1` или `N` штук со статусом `online`/`offline`), размер ArUco, задержку съёмки, пины реле и их текущие состояния (`● ON` / `○ OFF`). |
+| `unit add` | `--name`, `--culture`, `--light-pin`, `--flash-pin`, `--aruco-mm` (опц.), `--delay` (опц.) | Dev | `POST /api/installations` | Создание установки. Общие пины разрешены: при совпадении с другой активной установкой выводит предупреждение `⚠️ Пин X уже занят («Имя»). Реле будут общими.`. После `201` выводит созданную карточку. |
+| `unit edit` | `<target>`, `--name`, `--culture`, `--light-pin`, `--flash-pin`, `--aruco-mm`, `--clear-aruco`, `--delay`, `--clear-delay` | Bio (`--name`, `--culture`, `--delay`) / Dev (все) | `PATCH /api/installations/{id}` | Редактирование установки. При смене пинов выводит предупреждения о совместном использовании реле. |
 | `unit archive` | `<target>`, `--yes / -y` | Dev | `POST /api/installations/{id}/archive` | Запрашивает подтверждение `y/N` (если нет `-y`), переводит установку в архив и отвязывает все её камеры. |
 | `unit delete` | `<target>`, `--yes / -y` | Dev | `DELETE /api/installations/{id}` | Запрашивает подтверждение `y/N` (если нет `-y`). При `204` сообщает об удалении; при `409` выводит точную причину (есть снимки, нужна архивация). |
 

@@ -379,18 +379,34 @@ def test_installation_crud_and_pin_validations(client: TestClient, test_env):
     )
     assert r_dup_name.status_code == 409
 
-    # 3. Конфликт пинов (пин света новой = пин вспышки первой) -> 409
-    r_conflict_pin = client.post(
+    # 3. Совпадение пинов света и вспышки внутри одной установки -> 409
+    r_same_pins = client.post(
         "/api/installations",
         headers=dev_hdrs,
         json={
             "name": "Другая",
             "culture_name": "Перец",
-            "light_gpio_pin": 11,  # занят как flash в inst1
+            "light_gpio_pin": 21,
             "flash_gpio_pin": 21,
         },
     )
-    assert r_conflict_pin.status_code == 409
+    assert r_same_pins.status_code == 409
+
+    # Использование пина другой установки разрешено (201) с предупреждением (Этап 7.4)
+    r_shared_pin = client.post(
+        "/api/installations",
+        headers=dev_hdrs,
+        json={
+            "name": "Другая",
+            "culture_name": "Перец",
+            "light_gpio_pin": 11,  # занят как flash в первой установке
+            "flash_gpio_pin": 21,
+        },
+    )
+    assert r_shared_pin.status_code == 201
+    assert any(
+        "⚠️ Пин 11 уже занят" in w for w in r_shared_pin.json().get("warnings", [])
+    )
 
     # 4. PATCH: Biologist правит только name и culture_name
     r_bio_ok = client.patch(

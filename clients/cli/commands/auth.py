@@ -24,22 +24,24 @@ def auth_info() -> None:
 [bold]Минимальная роль:[/bold] Developer (для CLI разрешён вход только роли Developer).
 
 [bold]Список подкоманд:[/bold]
-  [green]auth info[/green]                   - Показать эту справку
-  [green]auth login[/green]                  - Вход разработчика по логину и паролю
-  [green]auth status[/green]                 - Проверить текущую сессию и роль
-  [green]auth logout[/green]                 - Завершить сессию
-  [green]auth invite create [--role][/green] - Создать одноразовый код для биолога
-  [green]auth invite list[/green]            - Список активных кодов доступа
-  [green]auth invite revoke <id>[/green]    - Отозвать одноразовый код
-  [green]auth sessions[/green]               - Список всех сессий
-  [green]auth kick <session_id>[/green]     - Принудительно завершить сессию
-
+  [green]auth info[/green]                         - Показать эту справку
+  [green]auth login[/green]                        - Вход разработчика по логину и паролю
+  [green]auth status[/green]                       - Проверить текущую сессию и роль
+  [green]auth logout[/green]                       - Завершить сессию
+  [green]auth invite create [--role][/green]       - Создать одноразовый код для биолога
+  [green]auth invite list[/green]                  - Список активных кодов доступа
+  [green]auth invite revoke <id>[/green]          - Отозвать одноразовый код
+  [green]auth sessions[/green]                     - Список всех сессий
+  [green]auth kick <session_id>[/green]           - Принудительно завершить сессию
+  [green]auth rename <session_id> <name>[/green] - Переименовать пользователя
+ 
 [bold]Примеры:[/bold]
   auth login
   auth invite create
   auth invite list
   auth sessions
   auth kick 2
+  auth rename 2 "Петр Иванов"
 """
     console.print(info_text)
 
@@ -257,4 +259,27 @@ def auth_kick(
     )
     console.print(
         f"[green]Сессия #{session_id} успешно завершена (пользователь отключён).[/green]"
+    )
+
+
+@auth_app.command(name="rename")
+def auth_rename(
+    session_id: int = typer.Argument(..., help="ID сессии для переименования"),
+    new_name: str = typer.Argument(..., help="Новое отображаемое имя"),
+) -> None:
+    """Изменение отображаемого имени пользователя (Developer)."""
+    cleaned_name = new_name.strip()
+    if not cleaned_name:
+        console.print("[red]Имя пользователя не может быть пустым.[/red]")
+        raise typer.Exit(code=1)
+
+    client = APIClient()
+    client.request(
+        method="PATCH",
+        url=f"/api/auth/sessions/{session_id}",
+        context="auth rename",
+        json_data={"login": cleaned_name},
+    )
+    console.print(
+        f"[green]Пользователь сессии #{session_id} успешно переименован в «{cleaned_name}».[/green]"
     )

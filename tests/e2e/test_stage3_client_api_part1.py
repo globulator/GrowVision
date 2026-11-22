@@ -338,7 +338,7 @@ def test_qa_installation_crud_permissions_and_constraints(client_api_test_env):
     assert r_create_dev.status_code == 201
     new_inst_id = r_create_dev.json()["id"]
 
-    # Конфликт пина света (уже занят пином 12) -> 409
+    # Этап 7.4: Общий пин света (уже занят пином 12) -> 201 Created с предупреждением
     r_dup_pin = client.post(
         "/api/installations",
         headers=dev_headers,
@@ -349,8 +349,22 @@ def test_qa_installation_crud_permissions_and_constraints(client_api_test_env):
             "flash_gpio_pin": 14,
         },
     )
-    assert r_dup_pin.status_code == 409
-    assert "Пин света" in r_dup_pin.json()["detail"]
+    assert r_dup_pin.status_code == 201
+    assert "warnings" in r_dup_pin.json()
+    assert any("Пин 12 уже занят" in w for w in r_dup_pin.json()["warnings"])
+
+    # Конфликт: одинаковые пины света и вспышки внутри одной установки -> 409
+    r_same_pin = client.post(
+        "/api/installations",
+        headers=dev_headers,
+        json={
+            "name": "С одинаковыми пинами",
+            "culture_name": "Огурец",
+            "light_gpio_pin": 20,
+            "flash_gpio_pin": 20,
+        },
+    )
+    assert r_same_pin.status_code == 409
 
     # 2. PATCH: Biologist может менять name и culture_name
     r_patch_bio_ok = client.patch(

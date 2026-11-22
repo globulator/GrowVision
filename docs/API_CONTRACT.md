@@ -397,6 +397,16 @@ pending --claim--> running --result--> done | error
 - `POST /api/auth/sessions/{session_id}/terminate`:
   Принудительное завершение активной сессии (перевод в `is_active = False`, фиксация `logged_out_at = now`). Позволяет завершить сессию любого биолога или другого разработчика.
   Ответ `200 {"ok": true}`.
+- `PATCH /api/auth/me`:
+  Изменение собственного отображаемого имени (`login`, Имя и Фамилия).
+  Доступ: `biologist`, `developer`.
+  Тело: `{"login": "Анна Сидорова"}` (строка 1..64 символов).
+  Ответ `200` (`MeResponse`).
+- `PATCH /api/auth/sessions/{session_id}`:
+  Изменение отображаемого имени пользователя любой сессии (активной или неактивной).
+  Доступ: только `developer` (для биолога `403 Forbidden`).
+  Тело: `{"login": "Иван Биолог"}` (строка 1..64 символов).
+  Ответ `200` (`SessionInfo`).
 
 ### 4.2. Установки
 
@@ -404,9 +414,16 @@ pending --claim--> running --result--> done | error
 
 | Роль | Поля |
 |---|---|
-| Гость | `id`, `name`, `culture_name`, `is_archived`, `last_area_display`. Без пинов и `hardware_id`. |
-| Biologist | Поля Гостя + `aruco_size_mm`, `created_at`, `cameras[]` (`id`, `auto_name`, `is_online`). |
-| Developer | Поля Biologist + `light_gpio_pin`, `flash_gpio_pin`, `cameras[].hardware_id`. |
+| Гость | `id`, `name`, `culture_name`, `is_archived`, `last_area_display`, `warnings[]`. Без пинов и `hardware_id`. |
+| Biologist | Поля Гостя + `aruco_size_mm`, `created_at`, `cameras[]` (`id`, `auto_name`, `is_online`), `capture_delay_sec`. |
+| Developer | Поля Biologist + `light_gpio_pin`, `flash_gpio_pin`, `light_state`, `flash_state`, `cameras[].hardware_id`. |
+
+При создании (`POST /api/installations`) и редактировании пинов (`PATCH /api/installations/{id}`):
+- Один и тот же GPIO-пин может использоваться несколькими установками (общие реле).
+- Если пин уже используется другой активной установкой, операция не блокируется, а возвращает информационное предупреждение в массиве `warnings`:
+  `"warnings": ["⚠️ Пин 4 уже занят («Установка 1»). Реле будут общими."]`
+- Совпадение пина света и вспышки внутри одной установки по-прежнему возвращает `409 Conflict`.
+- Для Developer карточка содержит актуальные программные состояния реле по пинам: `light_state` (основной свет) и `flash_state` (вспышка).
 
 `last_area_display` считается сервером по правилу из `DB_SCHEMA.md` для последнего планового кадра (`is_manual = FALSE`), `plant_index = 0`. Значения: `"48.3 см²"` при наличии маркера и `aruco_size_mm`, иначе `"15430 px"`, `null`, если кадров или замеров нет.
 
@@ -511,8 +528,15 @@ pending --claim--> running --result--> done | error
 `POST /api/control/light/main` и `POST /api/control/light/flash` (Developer): `{"target": 1, "state": true}` (`target` может быть `"all"`). `POST /api/control/relay-test` (Developer): `{"target": 1}` (свет и вспышка одновременно на 3 с). Ответ `200`:
 
 ```json
-{"command_id": 44, "status": "done", "result_message": "OK"}
+{"command_id": 44, "status": "done", "result_message": "OK", "pin_states": {"4": true, "5": false}}
 ```
+
+- `GET /api/control/relays` (Developer): текущие программные состояния всех известных GPIO-пинов:
+  `{"pins": {"4": true, "5": false}}`
+- `GET /api/control/relays/{installation_id}` (Developer): состояние реле конкретной установки:
+  `{"installation_id": 1, "light_gpio_pin": 4, "light_state": true, "flash_gpio_pin": 5, "flash_state": false}`
+
+При переключении света или вспышки состояние соответствующего GPIO-пина синхронно обновляется для всех установок, использующих этот пин.
 
 ### 4.5. Таймлапс
 

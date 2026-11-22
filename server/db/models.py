@@ -13,7 +13,6 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
-    text,
 )
 from sqlalchemy.orm import relationship
 
@@ -37,20 +36,6 @@ class Installation(Base):
         CheckConstraint(
             "aruco_size_mm > 0",
             name="ck_installations_aruco_size_positive",
-        ),
-        Index(
-            "uq_active_light_pin",
-            "light_gpio_pin",
-            unique=True,
-            sqlite_where=text("is_archived = 0"),
-            postgresql_where=text("NOT is_archived"),
-        ),
-        Index(
-            "uq_active_flash_pin",
-            "flash_gpio_pin",
-            unique=True,
-            sqlite_where=text("is_archived = 0"),
-            postgresql_where=text("NOT is_archived"),
         ),
         {"sqlite_autoincrement": True},
     )

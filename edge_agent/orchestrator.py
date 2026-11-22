@@ -341,6 +341,7 @@ class EdgeOrchestrator:
         pins: list[int] = []
         for inst in targets:
             pins.extend([inst.light_gpio_pin, inst.flash_gpio_pin])
+        pins = list(dict.fromkeys(pins))
 
         if not pins:
             self.client.send_command_result(

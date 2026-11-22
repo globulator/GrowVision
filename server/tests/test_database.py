@@ -67,28 +67,16 @@ def test_db_tables_and_pragmas(test_db):
         assert busy == 5000, f"PRAGMA busy_timeout должен быть 5000, получено {busy}"
 
 
-def test_active_installation_pins_uniqueness(test_db):
-    """Критерий: Две активные установки с одинаковым GPIO-пином нарушают ограничение,
+def test_shared_gpio_pins_allowed(test_db):
+    """Критерий (Этап 7.4): Общие GPIO-пины разрешены.
 
-    а архивная с тем же пином — нет (DB_SCHEMA.md п. 4.3).
+    Две активные установки могут использовать один и тот же GPIO-пин.
     """
     _, session_factory = test_db
     session = session_factory()
 
-    # 1. Создаем архивную установку с light_gpio_pin=17
-    inst_archived = Installation(
-        name="Установка 1 (в архиве)",
-        culture_name="Салат",
-        light_gpio_pin=17,
-        flash_gpio_pin=27,
-        is_archived=True,
-    )
-    session.add(inst_archived)
-    session.commit()
-
-    # 2. Создаем активную установку с тем же light_gpio_pin=17 (не должно быть ошибки)
     inst_active1 = Installation(
-        name="Установка 2 (активная)",
+        name="Установка 1 (активная)",
         culture_name="Базилик",
         light_gpio_pin=17,
         flash_gpio_pin=27,
@@ -97,31 +85,20 @@ def test_active_installation_pins_uniqueness(test_db):
     session.add(inst_active1)
     session.commit()
 
-    # 3. Создаем вторую активную установку с light_gpio_pin=17 — должно выбросить IntegrityError
+    # Вторая активная установка с теми же пинами — теперь разрешена
     inst_active2 = Installation(
-        name="Установка 3 (конфликт light)",
+        name="Установка 2 (общие пины)",
         culture_name="Томат",
         light_gpio_pin=17,
-        flash_gpio_pin=22,
-        is_archived=False,
-    )
-    session.add(inst_active2)
-    with pytest.raises(IntegrityError):
-        session.commit()
-    session.rollback()
-
-    # 4. Создаем вторую активную установку с flash_gpio_pin=27 — должно выбросить IntegrityError
-    inst_active3 = Installation(
-        name="Установка 4 (конфликт flash)",
-        culture_name="Томат",
-        light_gpio_pin=23,
         flash_gpio_pin=27,
         is_archived=False,
     )
-    session.add(inst_active3)
-    with pytest.raises(IntegrityError):
-        session.commit()
-    session.rollback()
+    session.add(inst_active2)
+    session.commit()
+
+    assert inst_active1.id is not None
+    assert inst_active2.id is not None
+    assert inst_active1.light_gpio_pin == inst_active2.light_gpio_pin
 
     session.close()
 
