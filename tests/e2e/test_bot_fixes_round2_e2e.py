@@ -115,7 +115,7 @@ def test_bot_e2e_installation_create_name_validation_and_aruco_default(
     card_text = res.get("card_text", "")
     assert "Уникальный Базилик E2E" in card_text
     assert "Базилик Изумрудный" in card_text
-    assert "50.0 мм" in card_text
+    assert "не задан" in card_text
     assert "Пин света (GPIO):</b> 17" in card_text
     assert "Пин вспышки (GPIO):</b> 27" in card_text
 
@@ -189,3 +189,29 @@ def test_bot_e2e_bug_note_preserves_fsm(e2e_uvicorn_server):
     assert res.get("ok") is True
     assert "BUG-LOG-" in res.get("bug_tag", "")
     assert "Шаг 2 из 5" in res.get("step2", "")
+
+
+def test_bot_e2e_network_reconnect_flow(e2e_uvicorn_server):
+    """E2E: Самовосстановление long polling при временном обрыве сети."""
+    srv = e2e_uvicorn_server
+    res = run_fake_bot_scenario(
+        scenario="network_reconnect_flow",
+        server_url=srv["base_url"],
+        client_key=srv["client_key"],
+    )
+    assert res.get("ok") is True
+    assert "GrowVision" in res.get("start", "")
+    assert "Версия системы" in res.get("version", "")
+
+
+def test_bot_e2e_html_escaping_and_security(e2e_uvicorn_server):
+    """E2E: Экранирование спецсимволов HTML в логине и профиле (A<B&C)."""
+    srv = e2e_uvicorn_server
+    res = run_fake_bot_scenario(
+        scenario="html_escaping_and_security",
+        server_url=srv["base_url"],
+        client_key=srv["client_key"],
+        dev_pass=srv["dev_pass"],
+    )
+    assert res.get("ok") is True
+    assert "A&lt;B&amp;C" in res.get("profile", "")

@@ -1,4 +1,5 @@
 import contextlib
+import html
 import logging
 
 from aiogram import F, Router
@@ -480,8 +481,8 @@ async def _execute_snap(
 
             is_last = idx == len(captures) - 1
             caption_lines = [
-                f"🌱 <b>Установка:</b> {inst_name}",
-                f"📷 <b>Камера:</b> <code>{cam_hw_id}</code>",
+                f"🌱 <b>Установка:</b> {html.escape(str(inst_name))}",
+                f"📷 <b>Камера:</b> <code>{html.escape(str(cam_hw_id))}</code>",
                 f"🕒 <b>Время съёмки:</b> {cap_time} UTC",
                 f"📐 <b>Площадь:</b> {area_text}",
             ]

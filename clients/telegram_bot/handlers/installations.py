@@ -1,4 +1,5 @@
 import contextlib
+import html
 import logging
 
 from aiogram import F, Router
@@ -253,7 +254,7 @@ async def process_create_name(
         existing = await api_client.get_installations(user_id, include_archived=True)
         if any(inst.get("name") == name for inst in existing):
             await message.answer(
-                f"Имя установки «{name}» уже занято. Введите другое название:",
+                f"Имя установки «{html.escape(name)}» уже занято. Введите другое название:",
                 reply_markup=get_cancel_inline_keyboard("inst:list"),
             )
             return
@@ -263,7 +264,7 @@ async def process_create_name(
     await state.update_data(name=name)
     await state.set_state(InstallationCreateStates.waiting_crop)
     await message.answer(
-        f"Название: <b>{name}</b>\n\n"
+        f"Название: <b>{html.escape(name)}</b>\n\n"
         "Шаг 2 из 5. Введите выращиваемую культуру (например: <code>Базилик зеленый</code>):",
         reply_markup=get_cancel_inline_keyboard("inst:list"),
     )
@@ -281,7 +282,7 @@ async def process_create_crop(message: Message, state: FSMContext) -> None:
     await state.update_data(crop_type=crop)
     await state.set_state(InstallationCreateStates.waiting_light_pin)
     await message.answer(
-        f"Культура: <b>{crop}</b>\n\n"
+        f"Культура: <b>{html.escape(crop)}</b>\n\n"
         "Шаг 3 из 5. Введите GPIO-пин основного света на Raspberry Pi (целое число, например: <code>17</code>):",
         reply_markup=get_cancel_inline_keyboard("inst:list"),
     )
@@ -331,7 +332,7 @@ async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="⏭ Пропустить (по умолчанию 50 мм)",
+                    text="⏭ Пропустить",
                     callback_data="inst:skip_aruco",
                 )
             ],
@@ -340,7 +341,7 @@ async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
     )
     await message.answer(
         f"Пин вспышки: <b>GPIO {flash_pin}</b>\n\n"
-        "Шаг 5 из 5. Введите размер стороны маркера ArUco в миллиметрах (по умолчанию 50 мм, например: <code>50.0</code>) "
+        "Шаг 5 из 5. Введите размер стороны маркера ArUco в миллиметрах (например: <code>50.0</code>) "
         "или нажмите [ Пропустить ]:",
         reply_markup=aruco_kb,
     )
@@ -375,7 +376,7 @@ async def _finish_create_installation(
             inst_id, role="developer", is_archived=False
         )
         await target_msg.answer(
-            f"✅ Установка «<b>{data['name']}</b>» успешно создана!\n\n{card_text}",
+            f"✅ Установка «<b>{html.escape(data['name'])}</b>» успешно создана!\n\n{card_text}",
             reply_markup=kb,
         )
     except ApiError as exc:
@@ -403,7 +404,7 @@ async def process_create_skip_aruco(
     api_client: GrowVisionApiClient,
     config: BotConfig,
 ) -> None:
-    """Пропуск ввода маркера ArUco (по умолчанию 50.0 мм)."""
+    """Пропуск ввода маркера ArUco (размер не задан, расчет площади в px)."""
     await callback.answer()
     user_id = callback.from_user.id if callback.from_user else 0
     if callback.message and isinstance(callback.message, Message):
@@ -412,7 +413,7 @@ async def process_create_skip_aruco(
             state,
             api_client,
             config,
-            aruco_val=50.0,
+            aruco_val=None,
             user_id=user_id,
         )
 

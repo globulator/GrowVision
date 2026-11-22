@@ -1,4 +1,5 @@
 import contextlib
+import html
 import logging
 from typing import Any
 
@@ -186,12 +187,12 @@ async def handle_cameras_scan(
             inst_name = cam.get("installation_name")
 
             if inst_id:
-                bind_status = f"Привязана к установке «{inst_name}»"
+                bind_status = f"Привязана к установке «{html.escape(str(inst_name))}»"
             else:
                 bind_status = "Свободна — можно привязать"
 
             lines.append(
-                f"• <b>{cname}</b> (<code>{hw_id}</code>)\n  Статус: {bind_status}"
+                f"• <b>{html.escape(str(cname))}</b> (<code>{html.escape(str(hw_id))}</code>)\n  Статус: {bind_status}"
             )
             buttons.append(
                 [
@@ -269,14 +270,16 @@ async def handle_camera_view(
         inst_name = cam.get("installation_name")
 
         lines = [
-            f"📷 <b>{cname}</b>",
-            f"<b>Hardware ID:</b> <code>{hw_id}</code>",
+            f"📷 <b>{html.escape(str(cname))}</b>",
+            f"<b>Hardware ID:</b> <code>{html.escape(str(hw_id))}</code>",
             f"<b>Статус:</b> {status_str}",
         ]
 
         buttons: list[list[InlineKeyboardButton]] = []
         if inst_id:
-            lines.append(f"🔗 <b>Привязана к установке:</b> #{inst_id} «{inst_name}»")
+            lines.append(
+                f"🔗 <b>Привязана к установке:</b> #{inst_id} «{html.escape(str(inst_name))}»"
+            )
             buttons.append(
                 [
                     InlineKeyboardButton(

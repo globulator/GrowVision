@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -9,6 +10,18 @@ from aiogram.types import Chat, Message, User
 
 from clients.telegram_bot.api_client import GrowVisionApiClient
 from clients.telegram_bot.config import BotConfig
+from clients.telegram_bot.utils.debug_logger import DebugLogger, set_debug_logger
+
+
+@pytest.fixture(autouse=True)
+def isolate_debug_logger(tmp_path: Path):
+    """Изолирует DebugLogger на время тестов во временную директорию."""
+    test_log_dir = tmp_path / "bot_logs"
+    test_log_dir.mkdir(parents=True, exist_ok=True)
+    test_logger = DebugLogger(log_dir=test_log_dir, enabled=True)
+    set_debug_logger(test_logger)
+    yield test_logger
+    set_debug_logger(None)
 
 
 @pytest.fixture

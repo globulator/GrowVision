@@ -1,3 +1,4 @@
+import html
 from typing import Any
 
 
@@ -16,8 +17,10 @@ def format_installation_card(
     web_public_url: str | None = None,
 ) -> str:
     """Форматирует карточку установки в зависимости от роли пользователя."""
-    name = inst.get("name", "Без названия")
-    crop = inst.get("culture_name") or inst.get("crop_type", "Не указана")
+    name = html.escape(str(inst.get("name", "Без названия")))
+    crop = html.escape(
+        str(inst.get("culture_name") or inst.get("crop_type", "Не указана"))
+    )
     is_archived = inst.get("is_archived", False)
     inst_id = inst.get("id", "?")
 
@@ -75,11 +78,12 @@ def format_installation_card(
         if cameras:
             cam_lines = []
             for c in cameras:
-                cam_name = (
+                raw_name = (
                     c.get("auto_name") or c.get("name") or f"Камера #{c.get('id')}"
                 )
+                cam_name = html.escape(str(raw_name))
                 if role == "developer":
-                    hw_id = c.get("hardware_id", "")
+                    hw_id = html.escape(str(c.get("hardware_id", "")))
                     cam_lines.append(f"• {cam_name} (<code>{hw_id}</code>)")
                 else:
                     cam_lines.append(f"• {cam_name}")

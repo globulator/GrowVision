@@ -47,10 +47,15 @@ class DebugLoggingMiddleware(BaseMiddleware):
         try:
             return await handler(event, data)
         except Exception as exc:
+            err_text = (
+                "***"
+                if current_state and "password" in current_state.lower()
+                else str(exc)
+            )
             debug_logger.log_event(
                 "handler_error",
                 state=current_state,
-                error=str(exc),
+                error=err_text,
                 error_type=type(exc).__name__,
             )
             raise

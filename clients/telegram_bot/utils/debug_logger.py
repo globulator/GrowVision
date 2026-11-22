@@ -45,8 +45,9 @@ def mask_sensitive_data(data: Any) -> Any:
     elif isinstance(data, list):
         return [mask_sensitive_data(item) for item in data]
     elif isinstance(data, str):
-        # Маскируем пароли в URL вида ://user:pass@
-        res = re.sub(r"://([^:]+):([^@]+)@", r"://\1:***@", data)
+        # Маскируем логин и пароль в URL вида ://user:pass@host:port или ://user@host
+        res = re.sub(r"://([^:/@]+):([^/@]+)@", r"://***:***@", data)
+        res = re.sub(r"://([^:/@]+)@", r"://***@", res)
         # Маскируем токены в строках вида X-Client-Key: ...
         res = re.sub(
             r"(X-Client-Key:\s*)([^\s\r\n]+)",
@@ -78,9 +79,11 @@ class DebugLogger:
         self._bug_counter = 0
 
         with contextlib_suppress_all():
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            self._init_bug_counter()
-            self.cleanup_old_logs(max_days=7)
+            if self.enabled:
+                self.log_dir.mkdir(parents=True, exist_ok=True)
+            if self.log_dir.exists():
+                self._init_bug_counter()
+                self.cleanup_old_logs(max_days=7)
 
     def _init_bug_counter(self) -> None:
         """Определяет стартовый номер баг-репорта по существующим записям."""
@@ -137,6 +140,12 @@ class DebugLogger:
     ) -> dict[str, Any]:
         """Логирует событие в кольцевой буфер и на диск (если enabled=True)."""
         clean_data = mask_sensitive_data(data)
+        if state and "password" in state.lower():
+            if "text" in clean_data:
+                clean_data["text"] = "***"
+            if "error" in clean_data:
+                clean_data["error"] = "***"
+
         event_record = {
             "timestamp": datetime.now(UTC).isoformat(),
             "event_type": event_type,
@@ -171,7 +180,11 @@ class DebugLogger:
         # Делаем снимок событий из буфера до текущего репорта
         recent = list(self._buffer)
 
-        clean_note = mask_sensitive_data(note)
+        if state and "password" in state.lower():
+            clean_note = "***"
+        else:
+            clean_note = mask_sensitive_data(note)
+
         bug_record = {
             "timestamp": datetime.now(UTC).isoformat(),
             "event_type": "bug_report",
@@ -232,6 +245,6 @@ def get_debug_logger(
     return _global_logger
 
 
-def set_debug_logger(instance: DebugLogger) -> None:
+def set_debug_logger(instance: DebugLogger | None) -> None:
     global _global_logger
     _global_logger = instance

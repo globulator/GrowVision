@@ -10,7 +10,11 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
 from clients.telegram_bot.api_client import GrowVisionApiClient
-from clients.telegram_bot.config import BotConfig, validate_and_get_config
+from clients.telegram_bot.config import (
+    BotConfig,
+    mask_proxy_url,
+    validate_and_get_config,
+)
 from clients.telegram_bot.handlers import (
     cameras,
     common,
@@ -82,6 +86,64 @@ def build_dispatcher(config: BotConfig, api_client: GrowVisionApiClient) -> Disp
     return dp
 
 
+def get_retry_delay(attempt: int) -> float:
+    """Возвращает ступенчатую паузу для повторного подключения: 5, 10, 20, 40, далее 60 с."""
+    delays = [5.0, 10.0, 20.0, 40.0]
+    if 1 <= attempt <= len(delays):
+        return delays[attempt - 1]
+    return 60.0
+
+
+async def wait_for_telegram_connection(bot: Bot, config: BotConfig) -> None:
+    """Подключение к Telegram API при старте с повторами по схеме 5, 10, 20, 40, 60... с."""
+    attempt = 1
+    masked_proxy = mask_proxy_url(config.telegram_proxy)
+    while True:
+        try:
+            bot_info = await bot.get_me()
+            logger.info(
+                f"Успешное подключение к Telegram API: @{bot_info.username} (id={bot_info.id})"
+            )
+            await setup_bot_commands(bot)
+            logger.info("Системные команды Telegram успешно зарегистрированы")
+            return
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
+        except Exception as exc:  # noqa: BLE001
+            delay = get_retry_delay(attempt)
+            proxy_info = f" (TELEGRAM_PROXY={masked_proxy})" if masked_proxy else ""
+            logger.warning(
+                f"Нет доступа к api.telegram.org: проверьте VPN или TELEGRAM_PROXY{proxy_info}. "
+                f"Ошибка: {exc}. Повторная попытка {attempt} через {int(delay)} с."
+            )
+            attempt += 1
+            await asyncio.sleep(delay)
+
+
+async def run_polling_with_reconnect(
+    dp: Dispatcher, bot: Bot, config: BotConfig
+) -> None:
+    """Запуск long polling с автоматическим переподключением при сетевых сбоях."""
+    attempt = 1
+    masked_proxy = mask_proxy_url(config.telegram_proxy)
+    while True:
+        try:
+            logger.info("Запуск long polling Telegram-бота GrowVision...")
+            await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+            break
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
+        except Exception as exc:  # noqa: BLE001
+            delay = get_retry_delay(attempt)
+            proxy_info = f" (TELEGRAM_PROXY={masked_proxy})" if masked_proxy else ""
+            logger.warning(
+                f"Нет доступа к api.telegram.org: проверьте VPN или TELEGRAM_PROXY{proxy_info}. "
+                f"Сетевой сбой в цикле polling: {exc}. Переподключение (попытка {attempt}) через {int(delay)} с."
+            )
+            attempt += 1
+            await asyncio.sleep(delay)
+
+
 async def main() -> None:
     """Точка входа Telegram-бота GrowVision."""
     config = validate_and_get_config()
@@ -89,7 +151,8 @@ async def main() -> None:
 
     session_kwargs: dict = {"timeout": 300.0}
     if config.telegram_proxy:
-        logger.info(f"Используется прокси для Telegram API: {config.telegram_proxy}")
+        masked_proxy = mask_proxy_url(config.telegram_proxy)
+        logger.info(f"Используется прокси для Telegram API: {masked_proxy}")
         session_kwargs["proxy"] = config.telegram_proxy
 
     session = AiohttpSession(**session_kwargs)
@@ -102,34 +165,11 @@ async def main() -> None:
     api_client = GrowVisionApiClient(config)
     dp = build_dispatcher(config, api_client)
 
-    # Проверка подключения и установка системных команд с повторами при сбое
-    max_retries = 3
-    retry_delay_sec = 2.0
-    for attempt in range(1, max_retries + 1):
-        try:
-            bot_info = await bot.get_me()
-            logger.info(
-                f"Успешное подключение к Telegram API: @{bot_info.username} (id={bot_info.id})"
-            )
-            await setup_bot_commands(bot)
-            logger.info("Системные команды Telegram успешно зарегистрированы")
-            break
-        except Exception as exc:
-            logger.error(
-                f"Ошибка подключения к Telegram API (попытка {attempt}/{max_retries}): {exc}. "
-                f"Проверьте сетевое соединение, токен или TELEGRAM_PROXY={config.telegram_proxy}"
-            )
-            if attempt == max_retries:
-                await api_client.close()
-                await bot.session.close()
-                raise
-            await asyncio.sleep(retry_delay_sec)
-
-    logger.info("Запуск long polling Telegram-бота GrowVision...")
     try:
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    except Exception as exc:  # noqa: BLE001
-        logger.error(f"Критическая ошибка при работе бота: {exc}")
+        await wait_for_telegram_connection(bot, config)
+        await run_polling_with_reconnect(dp, bot, config)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        logger.info("Получен сигнал остановки бота")
     finally:
         logger.info("Остановка бота и закрытие сетевых соединений...")
         await api_client.close()
