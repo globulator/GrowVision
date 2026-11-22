@@ -147,11 +147,18 @@ async def handle_cameras_scan(
     try:
         resp = await api_client.scan_cameras(user_id)
         scanned_cameras = resp.get("cameras", [])
-        debug_log = resp.get("debug_log_line")
+        debug_info = resp.get("debug_info")
+        debug_log = (
+            debug_info.get("log_line")
+            if isinstance(debug_info, dict)
+            else resp.get("debug_log_line")
+        )
 
         # Проверяем, включен ли debug_mode
         sys_status = await api_client.get_system_status(user_id)
-        debug_on = sys_status.get("settings", {}).get("debug_mode", False)
+        debug_on = sys_status.get("settings", {}).get("debug_mode", False) or bool(
+            debug_info
+        )
         debug_str = (
             format_debug_block("POST /api/cameras/scan", debug_log) if debug_on else ""
         )

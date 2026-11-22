@@ -592,3 +592,170 @@ def test_system_endpoints(client: TestClient, test_env):
         json={"capture_interval_hours": 1.5},
     )
     assert r_patch_invalid.status_code == 422
+
+
+def test_system_settings_capture_delay_sec(client: TestClient, test_env):
+    """Проверка чтения и изменения capture_delay_sec в system_settings."""
+    session_factory, _ = test_env
+    create_session(session_factory, role="developer", external_id="dev-usr-delay")
+    dev_hdrs = auth_headers(external_id="dev-usr-delay")
+
+    # 1. По умолчанию в статусе capture_delay_sec == 1.5
+    r_status = client.get("/api/system/status", headers=dev_hdrs)
+    assert r_status.status_code == 200
+    assert r_status.json()["settings"]["capture_delay_sec"] == 1.5
+
+    # 2. Изменение capture_delay_sec (валидный диапазон 0.0..30.0)
+    r_patch = client.patch(
+        "/api/system/settings",
+        headers=dev_hdrs,
+        json={"capture_delay_sec": 3.5},
+    )
+    assert r_patch.status_code == 200
+    assert r_patch.json()["capture_delay_sec"] == 3.5
+
+    # 3. Невалидные значения (<0.0 или >30.0) -> 422
+    r_bad_low = client.patch(
+        "/api/system/settings",
+        headers=dev_hdrs,
+        json={"capture_delay_sec": -1.0},
+    )
+    assert r_bad_low.status_code == 422
+
+    r_bad_high = client.patch(
+        "/api/system/settings",
+        headers=dev_hdrs,
+        json={"capture_delay_sec": 35.0},
+    )
+    assert r_bad_high.status_code == 422
+
+
+def test_installation_capture_delay_sec_crud(client: TestClient, test_env):
+    """Проверка установки capture_delay_sec при создании, редактировании и чтении."""
+    session_factory, _ = test_env
+    create_session(session_factory, role="developer", external_id="dev-usr-inst")
+    dev_hdrs = auth_headers(external_id="dev-usr-inst")
+    create_session(session_factory, role="biologist", external_id="bio-usr-inst")
+    bio_hdrs = auth_headers(external_id="bio-usr-inst")
+    guest_hdrs = {}
+
+    # 1. Создание с capture_delay_sec
+    r_create = client.post(
+        "/api/installations",
+        headers=dev_hdrs,
+        json={
+            "name": "Инст с задержкой",
+            "culture_name": "Базилик",
+            "light_gpio_pin": 11,
+            "flash_gpio_pin": 12,
+            "capture_delay_sec": 2.5,
+        },
+    )
+    assert r_create.status_code == 201
+    inst_data = r_create.json()
+    assert inst_data["capture_delay_sec"] == 2.5
+    inst_id = inst_data["id"]
+
+    # 2. Чтение карточки биологом -> capture_delay_sec видно
+    r_get_bio = client.get(f"/api/installations/{inst_id}", headers=bio_hdrs)
+    assert r_get_bio.status_code == 200
+    assert r_get_bio.json()["capture_delay_sec"] == 2.5
+
+    # Чтение гостем -> capture_delay_sec скрыто
+    r_get_guest = client.get(f"/api/installations/{inst_id}", headers=guest_hdrs)
+    assert r_get_guest.status_code == 200
+    assert "capture_delay_sec" not in r_get_guest.json()
+
+    # 3. Изменение биологом capture_delay_sec
+    r_patch_bio = client.patch(
+        f"/api/installations/{inst_id}",
+        headers=bio_hdrs,
+        json={"capture_delay_sec": 5.0},
+    )
+    assert r_patch_bio.status_code == 200
+    assert r_patch_bio.json()["capture_delay_sec"] == 5.0
+
+    # 4. Сброс capture_delay_sec в null (использовать общую)
+    r_patch_null = client.patch(
+        f"/api/installations/{inst_id}",
+        headers=bio_hdrs,
+        json={"capture_delay_sec": None},
+    )
+    assert r_patch_null.status_code == 200
+    assert r_patch_null.json()["capture_delay_sec"] is None
+
+
+def test_delete_archived_installation_with_captures_and_files(
+    client: TestClient, test_env
+):
+    """Критерий 9: удаление архивной установки с кадрами разрешено, активной — запрещено (409)."""
+    session_factory, _ = test_env
+    create_session(session_factory, role="developer", external_id="dev-usr-del")
+    dev_hdrs = auth_headers(external_id="dev-usr-del")
+    db = session_factory()
+
+    # Создаем установку с камерой и кадром
+    inst = Installation(
+        name="Inst for Delete",
+        culture_name="Салат",
+        light_gpio_pin=13,
+        flash_gpio_pin=14,
+        is_archived=False,
+    )
+    db.add(inst)
+    db.commit()
+
+    cam = Camera(
+        hardware_id="cam_del_test",
+        auto_name="Cam Del Test",
+        installation_id=inst.id,
+        is_online=True,
+    )
+    db.add(cam)
+    db.commit()
+
+    cap = Capture(
+        installation_id=inst.id,
+        camera_id=cam.id,
+        captured_at=datetime.now(UTC),
+        is_manual=False,
+        raw_image_path=f"media/{inst.id}/raw_del.jpg",
+        annotated_image_path=f"media/{inst.id}/ann_del.jpg",
+    )
+    db.add(cap)
+    db.commit()
+    inst_id = inst.id
+    cam_id = cam.id
+
+    # Создаем имитацию файлов на диске
+    from server.api.edge import get_media_dir
+
+    inst_media_dir = get_media_dir() / str(inst_id)
+    inst_media_dir.mkdir(parents=True, exist_ok=True)
+    (inst_media_dir / "raw_del.jpg").write_bytes(b"raw-data")
+    (inst_media_dir / "ann_del.jpg").write_bytes(b"ann-data")
+
+    # 1. Попытка удалить активную установку с кадрами -> 409 Conflict
+    r_del_active = client.delete(f"/api/installations/{inst_id}", headers=dev_hdrs)
+    assert r_del_active.status_code == 409
+    assert "У установки есть снимки" in r_del_active.json()["detail"]
+
+    # 2. Переводим в архив
+    r_archive = client.post(f"/api/installations/{inst_id}/archive", headers=dev_hdrs)
+    assert r_archive.status_code == 200
+
+    # 3. Удаление архивной установки с кадрами -> 204 No Content
+    r_del_archived = client.delete(f"/api/installations/{inst_id}", headers=dev_hdrs)
+    assert r_del_archived.status_code == 204
+
+    # 4. Проверяем БД: установка и кадры удалены, камера отвязана
+    db.expire_all()
+    assert db.get(Installation, inst_id) is None
+    assert db.query(Capture).filter(Capture.installation_id == inst_id).count() == 0
+    refreshed_cam = db.get(Camera, cam_id)
+    assert refreshed_cam is not None
+    assert refreshed_cam.installation_id is None
+
+    # 5. Проверяем файловую систему: каталог удалён
+    assert not inst_media_dir.exists()
+    db.close()

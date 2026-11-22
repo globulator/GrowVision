@@ -26,6 +26,7 @@ class SystemSettingsPatch(BaseModel):
 
     capture_interval_hours: int | None = Field(default=None, strict=True, ge=1)
     debug_mode: bool | None = Field(default=None, strict=True)
+    capture_delay_sec: float | None = Field(default=None, ge=0.0, le=30.0)
 
 
 @router.get("/api/version", response_model=dict[str, str])
@@ -82,6 +83,13 @@ def get_system_status(
     )
     debug_mode = debug_setting.value.lower() == "true" if debug_setting else False
 
+    delay_setting = (
+        db.query(SystemSetting).filter(SystemSetting.key == "capture_delay_sec").first()
+    )
+    capture_delay_sec = (
+        float(delay_setting.value) if delay_setting and delay_setting.value else 1.5
+    )
+
     return {
         "server_version": get_app_version(),
         "rpi_connection": rpi_connection,
@@ -89,8 +97,50 @@ def get_system_status(
         "settings": {
             "capture_interval_hours": capture_interval_hours,
             "debug_mode": debug_mode,
+            "capture_delay_sec": capture_delay_sec,
         },
         "rpi_telemetry": rpi_telemetry,
+    }
+
+
+@router.get("/api/system/settings", response_model=dict[str, Any])
+def get_system_settings(
+    current_user: Annotated[
+        User, Depends(require_role("guest", "biologist", "developer"))
+    ],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """4.6. GET /api/system/settings.
+
+    Возвращает актуальные глобальные настройки системы.
+    """
+    interval_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == "capture_interval_hours")
+        .first()
+    )
+    capture_interval_hours = (
+        int(interval_setting.value)
+        if interval_setting and interval_setting.value.isdigit()
+        else 1
+    )
+
+    debug_setting = (
+        db.query(SystemSetting).filter(SystemSetting.key == "debug_mode").first()
+    )
+    debug_mode = debug_setting.value.lower() == "true" if debug_setting else False
+
+    delay_setting = (
+        db.query(SystemSetting).filter(SystemSetting.key == "capture_delay_sec").first()
+    )
+    capture_delay_sec = (
+        float(delay_setting.value) if delay_setting and delay_setting.value else 1.5
+    )
+
+    return {
+        "capture_interval_hours": capture_interval_hours,
+        "debug_mode": debug_mode,
+        "capture_delay_sec": capture_delay_sec,
     }
 
 
@@ -102,7 +152,7 @@ def patch_system_settings(
 ) -> dict[str, Any]:
     """4.6. PATCH /api/system/settings (Developer).
 
-    Изменение интервала автосъёмки и режима отладки.
+    Изменение интервала автосъёмки, режима отладки и задержки съёмки.
     """
     now = datetime.now(UTC)
     resp: dict[str, Any] = {}
@@ -162,6 +212,31 @@ def patch_system_settings(
             )
 
     resp["debug_mode"] = current_debug
+
+    # 3. Задержка съёмки
+    delay_setting = (
+        db.query(SystemSetting).filter(SystemSetting.key == "capture_delay_sec").first()
+    )
+    current_delay = (
+        float(delay_setting.value) if delay_setting and delay_setting.value else 1.5
+    )
+
+    if body.capture_delay_sec is not None:
+        current_delay = round(float(body.capture_delay_sec), 2)
+        val_str = str(current_delay)
+        if delay_setting:
+            delay_setting.value = val_str
+            delay_setting.updated_at = now
+        else:
+            db.add(
+                SystemSetting(
+                    key="capture_delay_sec",
+                    value=val_str,
+                    updated_at=now,
+                )
+            )
+
+    resp["capture_delay_sec"] = current_delay
 
     db.commit()
 

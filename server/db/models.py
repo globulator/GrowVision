@@ -61,6 +61,7 @@ class Installation(Base):
     light_gpio_pin = Column(Integer, nullable=False)
     flash_gpio_pin = Column(Integer, nullable=False)
     aruco_size_mm = Column(Float, nullable=True)
+    capture_delay_sec = Column(Float, nullable=True)
     is_archived = Column(Boolean, nullable=False, default=False)
     created_at = Column(
         DateTime(timezone=True),

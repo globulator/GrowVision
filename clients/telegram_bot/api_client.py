@@ -185,6 +185,8 @@ class GrowVisionApiClient:
             timeout=15.0,
             is_public_endpoint=True,
         )
+        if isinstance(res, dict):
+            return res.get("frames", [])
         return res if isinstance(res, list) else []
 
     async def get_installation(self, user_id: int, inst_id: int) -> dict[str, Any]:
@@ -244,6 +246,8 @@ class GrowVisionApiClient:
     async def get_cameras(self, user_id: int) -> list[dict[str, Any]]:
         """Список всех зарегистрированных камер (Developer)."""
         res = await self._request("GET", "/api/cameras", user_id=user_id, timeout=15.0)
+        if isinstance(res, dict):
+            return res.get("frames", [])
         return res if isinstance(res, list) else []
 
     async def scan_cameras(self, user_id: int) -> dict[str, Any]:
@@ -381,6 +385,8 @@ class GrowVisionApiClient:
             timeout=15.0,
             is_public_endpoint=True,
         )
+        if isinstance(res, dict):
+            return res.get("frames", [])
         return res if isinstance(res, list) else []
 
     async def download_file(self, user_id: int, file_path_or_url: str) -> bytes:
@@ -494,6 +500,7 @@ class GrowVisionApiClient:
         user_id: int,
         capture_interval_hours: int | None = None,
         debug_mode: bool | None = None,
+        capture_delay_sec: float | None = None,
     ) -> dict[str, Any]:
         """Обновление системных настроек (Developer)."""
         payload: dict[str, Any] = {}
@@ -501,6 +508,8 @@ class GrowVisionApiClient:
             payload["capture_interval_hours"] = capture_interval_hours
         if debug_mode is not None:
             payload["debug_mode"] = debug_mode
+        if capture_delay_sec is not None:
+            payload["capture_delay_sec"] = capture_delay_sec
         return await self._request(
             "PATCH",
             "/api/system/settings",

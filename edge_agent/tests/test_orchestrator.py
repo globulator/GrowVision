@@ -1,3 +1,5 @@
+import threading
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -294,9 +296,17 @@ def test_handle_command_snap_multiple_cameras_debug_log(
 def test_handle_command_mutex_conflict_scheduled_capture_priority(
     orchestrator: EdgeOrchestrator,
     dummy_client: DummyEdgeClient,
+    monkeypatch,
 ):
-    """Проверка: при активной плановой съемке ручная команда мгновенно отклоняется."""
-    orchestrator.is_scheduled_capture_running.set()
+    """Проверка: если аппаратный мьютекс занят и не освобождается за таймаут, команда отклоняется."""
+    orchestrator.hardware.acquire_lock(blocking=True)
+    orig_acquire = orchestrator.hardware.acquire_lock
+    # Мокаем таймаут до 0.05 с для ускорения теста
+    monkeypatch.setattr(
+        orchestrator.hardware,
+        "acquire_lock",
+        lambda blocking=True, timeout=10.0: orig_acquire(blocking=True, timeout=0.05),
+    )
 
     cmd = CommandItem(
         id=6,
@@ -310,13 +320,63 @@ def test_handle_command_mutex_conflict_scheduled_capture_priority(
         ),
     )
 
-    orchestrator.handle_command(cmd)
+    try:
+        orchestrator.handle_command(cmd)
+    finally:
+        orchestrator.hardware.release_lock()
 
     assert len(dummy_client.uploaded_captures) == 0
     assert 6 in dummy_client.results
     res = dummy_client.results[6]
     assert res.status == "error"
     assert res.result_message == "Камера недоступна, попробуйте позже"
+
+
+def test_handle_command_waits_for_scheduled_capture_lock(
+    orchestrator: EdgeOrchestrator,
+    dummy_client: DummyEdgeClient,
+):
+    """Проверка: если аппаратный мьютекс освобождается в течение таймаута, команда успешно выполняется."""
+    orchestrator.hardware.acquire_lock(blocking=True)
+
+    # Запускаем освобождение блокировки через 0.1 с в параллельном потоке
+    def _release_soon():
+        time.sleep(0.1)
+        orchestrator.hardware.release_lock()
+
+    t = threading.Thread(target=_release_soon)
+    t.start()
+
+    cmd = CommandItem(
+        id=7,
+        command_type="SNAP",
+        is_global=False,
+        installation=CommandInstallation(
+            id=10,
+            light_gpio_pin=17,
+            flash_gpio_pin=27,
+            camera_hardware_ids=["mock-usb-cam-1"],
+        ),
+    )
+
+    orchestrator.handle_command(cmd)
+    t.join()
+
+    assert len(dummy_client.uploaded_captures) == 1
+    assert 7 in dummy_client.results
+    res = dummy_client.results[7]
+    assert res.status == "done"
+
+
+def test_orchestrator_distinct_frame_indices_per_installation_and_camera(
+    orchestrator: EdgeOrchestrator,
+):
+    """Проверка раздельного frame_index для каждой пары (installation_id, camera_id)."""
+    assert orchestrator._get_and_inc_frame_index(1, "cam-a") == 0
+    assert orchestrator._get_and_inc_frame_index(1, "cam-a") == 1
+    assert orchestrator._get_and_inc_frame_index(1, "cam-b") == 0
+    assert orchestrator._get_and_inc_frame_index(2, "cam-a") == 0
+    assert orchestrator._get_and_inc_frame_index(1, "cam-a") == 2
 
 
 def test_scheduled_capture_buffered_to_queue_on_network_error(

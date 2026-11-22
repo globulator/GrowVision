@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
@@ -109,6 +110,11 @@ async def wait_for_telegram_connection(bot: Bot, config: BotConfig) -> None:
             return
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
+        except TelegramUnauthorizedError as exc:
+            logger.critical(
+                f"Неверный токен Telegram-бота (BOT_TOKEN): {exc}. Завершение процесса."
+            )
+            sys.exit(1)
         except Exception as exc:  # noqa: BLE001
             delay = get_retry_delay(attempt)
             proxy_info = f" (TELEGRAM_PROXY={masked_proxy})" if masked_proxy else ""
@@ -133,6 +139,11 @@ async def run_polling_with_reconnect(
             break
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
+        except TelegramUnauthorizedError as exc:
+            logger.critical(
+                f"Неверный токен Telegram-бота (BOT_TOKEN): {exc}. Завершение процесса."
+            )
+            sys.exit(1)
         except Exception as exc:  # noqa: BLE001
             delay = get_retry_delay(attempt)
             proxy_info = f" (TELEGRAM_PROXY={masked_proxy})" if masked_proxy else ""

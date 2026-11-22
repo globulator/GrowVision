@@ -145,3 +145,37 @@ def test_system_debug_toggle(cli_runner, temp_session_file, mock_client_factory)
     res = cli_runner.invoke(app, ["system", "debug", "on"])
     assert res.exit_code == 0
     assert "Режим отладки успешно включен" in res.stdout
+
+
+def test_system_delay_success(cli_runner, temp_session_file, mock_client_factory):
+    """Команда system delay устанавливает глобальную задержку съёмки."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/system/settings"
+        assert request.method == "PATCH"
+        data = json.loads(request.content.decode())
+        assert data["capture_delay_sec"] == 2.5
+        return httpx.Response(
+            200,
+            json={
+                "capture_interval_hours": 1,
+                "capture_delay_sec": 2.5,
+                "debug_mode": False,
+            },
+        )
+
+    mock_client_factory(handler)
+    res = cli_runner.invoke(app, ["system", "delay", "2.5"])
+    assert res.exit_code == 0
+    assert "Глобальная задержка съёмки успешно изменена на 2.5 с" in res.stdout
+
+
+def test_system_delay_validation(cli_runner, temp_session_file):
+    """Команда system delay валидирует диапазон 0.0..30.0 с."""
+    res_neg = cli_runner.invoke(app, ["system", "delay", "--", "-1.0"])
+    assert res_neg.exit_code == 1
+    assert "от 0.0 до 30.0" in res_neg.output
+
+    res_big = cli_runner.invoke(app, ["system", "delay", "31.0"])
+    assert res_big.exit_code == 1
+    assert "от 0.0 до 30.0" in res_big.output

@@ -125,6 +125,13 @@ def edge_heartbeat(
     )
     debug_mode = debug_setting.value.lower() == "true" if debug_setting else False
 
+    delay_setting = (
+        db.query(SystemSetting).filter(SystemSetting.key == "capture_delay_sec").first()
+    )
+    capture_delay_sec = (
+        float(delay_setting.value) if delay_setting and delay_setting.value else 1.5
+    )
+
     # 4. Формирование списка активных установок
     active_installations = (
         db.query(Installation).filter(Installation.is_archived.is_(False)).all()
@@ -138,6 +145,7 @@ def edge_heartbeat(
                 light_gpio_pin=inst.light_gpio_pin,
                 flash_gpio_pin=inst.flash_gpio_pin,
                 camera_hardware_ids=cam_ids,
+                capture_delay_sec=inst.capture_delay_sec,
             )
         )
 
@@ -147,6 +155,7 @@ def edge_heartbeat(
         capture_interval_hours=capture_interval_hours,
         debug_mode=debug_mode,
         active_installations=active_inst_data,
+        capture_delay_sec=capture_delay_sec,
     )
 
 
@@ -199,6 +208,7 @@ def edge_claim_command(
                 "light_gpio_pin": inst.light_gpio_pin,
                 "flash_gpio_pin": inst.flash_gpio_pin,
                 "camera_hardware_ids": [c.hardware_id for c in inst.cameras],
+                "capture_delay_sec": inst.capture_delay_sec,
             }
             for inst in active_installations
         ]
@@ -218,6 +228,7 @@ def edge_claim_command(
                 "light_gpio_pin": inst.light_gpio_pin,
                 "flash_gpio_pin": inst.flash_gpio_pin,
                 "camera_hardware_ids": [c.hardware_id for c in inst.cameras],
+                "capture_delay_sec": inst.capture_delay_sec,
             }
             if inst
             else None

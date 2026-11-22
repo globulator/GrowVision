@@ -156,3 +156,43 @@ def test_orchestrator_test_interval_warning_and_debug_log(monkeypatch, caplog):
     assert debug_log is not None
     assert "[TEST_INTERVAL=12s]" in debug_log
     assert orchestrator.last_scheduled_debug_log_line == debug_log
+
+
+def test_compute_plant_radius_step_formula():
+    """Проверка ступенчатой формулы вычисления радиуса растения и ограничения max_radius."""
+    from edge_agent.synthetic import compute_plant_radius
+
+    max_r = 200
+
+    # i < 10: 24 + i * 4
+    assert compute_plant_radius(0, max_r) == 24
+    assert compute_plant_radius(5, max_r) == 44
+    assert compute_plant_radius(9, max_r) == 60
+
+    # i < 20: 64 + (i - 10) * 3
+    assert compute_plant_radius(10, max_r) == 64
+    assert compute_plant_radius(15, max_r) == 79
+    assert compute_plant_radius(19, max_r) == 91
+
+    # i < 35: 94 + (i - 20) * 2
+    assert compute_plant_radius(20, max_r) == 94
+    assert compute_plant_radius(30, max_r) == 114
+    assert compute_plant_radius(34, max_r) == 122
+
+    # i >= 35: 124 + (i - 35) * 1
+    assert compute_plant_radius(35, max_r) == 124
+    assert compute_plant_radius(50, max_r) == 139
+
+    # Ограничение max_radius
+    assert compute_plant_radius(100, max_radius=80) == 80
+
+
+def test_synthetic_frame_rotates_with_angle_offset():
+    """Проверка генерации синтетических кадров с вращением и ростом."""
+    from edge_agent.synthetic import generate_synthetic_frame
+
+    frame0 = generate_synthetic_frame(frame_index=0, camera_id="cam-1")
+    frame1 = generate_synthetic_frame(frame_index=1, camera_id="cam-1")
+    assert frame0.startswith(b"\xff\xd8")
+    assert frame1.startswith(b"\xff\xd8")
+    assert frame0 != frame1

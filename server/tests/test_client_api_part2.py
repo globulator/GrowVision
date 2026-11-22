@@ -446,6 +446,14 @@ def test_cameras_scan_endpoint_and_state_cleanup(test_env, monkeypatch):
     with session_factory() as db:
         set_rpi_online(db, delta_seconds=5.0)
         set_debug_mode(db, True)
+        # Создаем камеру, которая не будет обнаружена при следующем сканировании
+        old_cam = Camera(
+            hardware_id="cam-disconnected-hw",
+            auto_name="Disconnected Cam",
+            is_online=True,
+        )
+        db.add(old_cam)
+        db.commit()
 
     # Biologist -> 403
     r_bio = client.post("/api/cameras/scan", headers=bio_headers)
@@ -473,11 +481,21 @@ def test_cameras_scan_endpoint_and_state_cleanup(test_env, monkeypatch):
     assert r_scan.status_code == 200
     data = r_scan.json()
     assert data["status"] == "done"
+    # Только реально обнаруженные камеры (2 шт.)
     assert len(data["cameras"]) == 2
     hw_ids = [c["hardware_id"] for c in data["cameras"]]
     assert "usb-cam-1-video-0" in hw_ids
     assert "usb-cam-2-video-0" in hw_ids
+    assert "cam-disconnected-hw" not in hw_ids
     assert "debug_info" in data
+
+    # Проверяем, что отключенная камера осталась в БД со статусом is_online=False (Критерий 10)
+    with session_factory() as db:
+        disc_cam = (
+            db.query(Camera).filter(Camera.hardware_id == "cam-disconnected-hw").first()
+        )
+        assert disc_cam is not None
+        assert disc_cam.is_online is False
 
     # Проверяем, что результат сканирования удален из app_state
     assert app_state.pop_scanned_cameras(data["command_id"]) is None

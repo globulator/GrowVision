@@ -74,6 +74,13 @@ def format_installation_card(
             )
             lines.append(f"🕒 <b>Создана:</b> {created_str}")
 
+        delay = inst.get("capture_delay_sec")
+        if delay is not None:
+            delay_str = f"{float(delay):.1f} с"
+        else:
+            delay_str = "по умолчанию (общая)"
+        lines.append(f"⏱ <b>Задержка съёмки:</b> {delay_str}")
+
         cameras = inst.get("cameras", [])
         if cameras:
             cam_lines = []
@@ -172,9 +179,12 @@ def format_system_status(status_data: dict[str, Any]) -> str:
     debug = settings.get("debug_mode", False)
     debug_str = "Включен 🐞" if debug else "Выключен"
 
+    capture_delay = settings.get("capture_delay_sec", 1.5)
+
     lines.extend(
         [
             f"⏱ <b>Интервал автосъёмки:</b> {interval} ч",
+            f"⏱ <b>Задержка съёмки:</b> {capture_delay} с",
             f"🔍 <b>Debug-режим:</b> {debug_str}",
         ]
     )
@@ -188,7 +198,8 @@ def format_debug_block(command: str | None, log_line: str | None) -> str:
         return ""
     lines = ["\n🐞 <b>DEBUG:</b>"]
     if command:
-        lines.append(f"<b>Команда:</b> <code>{command}</code>")
+        lines.append(f"<b>Команда:</b> <code>{html.escape(str(command))}</code>")
     if log_line:
-        lines.append(f"<b>Лог:</b> <code>{log_line}</code>")
+        lines.append(f"<b>Лог:</b> <code>{html.escape(str(log_line))}</code>")
+    return "\n".join(lines)
     return "\n".join(lines)

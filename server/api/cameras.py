@@ -120,6 +120,7 @@ async def scan_cameras(
 
     # Регистрация новых камер и обновление существующих
     result_cameras: list[Camera] = []
+    scanned_set = set(scanned_hw_ids)
     for hw_id in scanned_hw_ids:
         cam = db.query(Camera).filter(Camera.hardware_id == hw_id).first()
         if not cam:
@@ -136,6 +137,11 @@ async def scan_cameras(
             cam.is_online = True
             cam.last_seen_at = now
         result_cameras.append(cam)
+
+    # Камеры, которые не были обнаружены при сканировании, переводятся в offline
+    for other_cam in db.query(Camera).all():
+        if other_cam.hardware_id not in scanned_set:
+            other_cam.is_online = False
 
     db.commit()
 

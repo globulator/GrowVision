@@ -188,12 +188,16 @@ async def test_control_light_and_relay(bot_config: BotConfig, mock_bot):
 
 @pytest.mark.asyncio
 async def test_control_snap_sends_album(bot_config: BotConfig, mock_bot):
-    """Проверка ручного снимка: загрузка raw и annotated фото и отправка альбомом."""
+    """Проверка ручного снимка: для биолога send_photo (только raw), для разработчика send_media_group (raw+annotated)."""
+
+    current_role = "biologist"
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path == "/api/auth/me":
-            return httpx.Response(200, json={"role": "biologist", "username": "Bio"})
+            return httpx.Response(
+                200, json={"role": current_role, "username": "Tester"}
+            )
         if path == "/api/installations":
             return httpx.Response(200, json=[{"id": 1, "name": "Рукола"}])
         if path == "/api/control/snap":
@@ -221,18 +225,32 @@ async def test_control_snap_sends_album(bot_config: BotConfig, mock_bot):
     api_client = create_mock_api_client(bot_config, handler)
     dp = build_dispatcher(bot_config, api_client)
 
+    # 1. Проверяем биолога: только raw через send_photo
     cb = create_test_callback_query("inst:snap:1")
     await dp.feed_update(mock_bot, Update(update_id=30, callback_query=cb))
 
-    # Должен быть вызван send_media_group для альбома из двух фото
-    mock_bot.send_media_group.assert_called_once()
-    media_list = mock_bot.send_media_group.call_args[1]["media"]
-    assert len(media_list) == 2
-    caption = media_list[0].caption
+    mock_bot.send_photo.assert_called_once()
+    mock_bot.send_media_group.assert_not_called()
+    caption = mock_bot.send_photo.call_args[1]["caption"]
     assert "Рукола" in caption
     assert "usb-cam-1" in caption
     assert "33.7 см²" in caption
     assert "Ручные снимки не входят в таймлапс" in caption
+
+    # 2. Проверяем разработчика: альбом raw + annotated через send_media_group
+    current_role = "developer"
+    mock_bot.send_photo.reset_mock()
+    mock_bot.send_media_group.reset_mock()
+
+    cb_dev = create_test_callback_query("inst:snap:1")
+    await dp.feed_update(mock_bot, Update(update_id=31, callback_query=cb_dev))
+
+    mock_bot.send_media_group.assert_called_once()
+    media_list = mock_bot.send_media_group.call_args[1]["media"]
+    assert len(media_list) == 2
+    dev_caption = media_list[0].caption
+    assert "Рукола" in dev_caption
+    assert "33.7 см²" in dev_caption
 
 
 @pytest.mark.asyncio
