@@ -7,18 +7,22 @@
 - Текущий этап: 6.1 (тестовые инструменты агента)
 - Название этапа: Тестовые инструменты агента (TEST_CAPTURE_INTERVAL_SEC, simulator seed, mock синтетика)
 - Режим: FULL
-- Статус: BUILDING
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт реализация Builder-ом)
+- Ждём от пользователя: ничего (идёт тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| Builder | edge | stage-6/test-tools | docs/tasks/stage-6-test-tools-builder.md | — |
+| QA | edge | stage-6/test-tools | docs/tasks/stage-6-test-tools-qa.md | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-6/test-tools создана от main (3377084)
+- 9ea7a73 docs(repo): prepare stage 6.1 task and update state to building
+- e901753 feat(edge): add test capture interval, synthetic generator and simulator seed
+- a551d99 test(edge): add unit and e2e tests for test tools and interval
+- a794dc5 docs(edge): add testing without waiting section and handoff report
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 7)
@@ -36,9 +40,6 @@
 - Этап 7: Telegram-бот (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.md)
 
 ## История (последние 15 событий)
-- 2026-11-21: Builder устранил BUG-001 и BUG-002 (тесты 8 e2e passed, 30 unit passed), статус READY_FOR_QA
-- 2026-11-21: Этап 7 переведён в статус TESTING (итерация 1/3), задача передана QA на повторную приёмку
-- 2026-11-21: QA повторно проверил этап 7, вердикт PASS (222 теста, 0 дефектов)
 - 2026-11-21: Ветка stage-7/bot слита в main
 - 2026-11-21: Централизованно поднята PATCH-версия до 0.3.1 (коммит cf5b49d)
 - 2026-11-21: Статус этапа 7 изменён на STAGE_PASS, задача передана Scribe
@@ -48,3 +49,5 @@
 - 2026-11-22: Создана ветка stage-6/test-tools от main
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-6-test-tools-builder.md
 - 2026-11-22: Этап 6.1 переведён в статус BUILDING, задача передана Builder-у
+- 2026-11-22: Builder реализовал TEST_CAPTURE_INTERVAL_SEC, simulator seed, mock-генератор и тесты, статус READY_FOR_QA
+- 2026-11-22: Подготовлена карточка docs/tasks/stage-6-test-tools-qa.md, статус изменён на TESTING, задача передана QA
