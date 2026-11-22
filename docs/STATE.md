@@ -4,29 +4,21 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 7.3 (Авторизация по одноразовому коду, управление сессиями, доработки CV-разметки, UX-полировка и фиксы раунда 5) — завершён
-- Название этапа: Авторизация по одноразовому коду, управление сессиями, доработки CV-разметки, UX-полировка и фиксы раунда 5
+- Текущий этап: 7.4
+- Название этапа: Общие GPIO-пины с программной синхронизацией и переименование пользователей
 - Режим: FULL
-- Статус: DONE
+- Статус: BUILDING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: приёмки этапа 7.3 и команды на запуск этапа 8 (Web SPA)
+- Ждём от пользователя: ничего (идёт реализация Builder-ом)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| builder | full-stack | stage-7/shared-pins-and-rename | docs/tasks/stage-7-shared-pins-and-rename-builder.md | — |
 
 ## Коммиты текущего этапа
-- Ветка stage-7/auth-and-polish создана от main (1816926)
-- be80fa8 docs(repo): prepare stage 7.3 task and update state to building
-- 8e72a62 docs(repo): prepare stage 7.3 qa task card
-- 6383ff5 feat(stage-7.3): implement auth by one-time code, session management, cv annotations, and polish
-- d6a0385 docs(repo): prepare stage 7.3 qa task and update state to testing
-- c9efc8c docs(qa): update qa_log with stage 7.3 verification
-- bb03607 chore(repo): merge stage-7/auth-and-polish into main
-- 43d434d docs(repo): update state to stage pass for stage 7.3
-- 5adc099 docs(repo): update stage 7 report with auth and polish
+- Ветка stage-7/shared-pins-and-rename создана от main (6582a3e)
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 7.3, раунд 5)
@@ -47,9 +39,6 @@
 - Этап 7.3: Авторизация по коду, управление сессиями, CV-разметка, UX-полировка и фиксы раунда 5 (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.3.md)
 
 ## История (последние 15 событий)
-- 2026-11-22: Ветка stage-7/bot-fixes-4 слита в main (версия 0.3.1 сохранена без изменений)
-- 2026-11-22: Статус этапа 7.2 изменён на STAGE_PASS, задача передана Scribe
-- 2026-11-22: Scribe создал docs/stage_reports/stage-7.2.md, дополнил docs/stage_reports/stage-7.md и README.md
 - 2026-11-22: Коммит документации 1816926 docs(repo): update stage 7 report with round 4 fixes
 - 2026-11-22: Этап 7.2 (исправления раунд 4) окончательно закрыт (DONE)
 - 2026-11-22: Запущен этап 7.3 (авторизация по коду, сессии, CV, UX-полировка, фиксы) в режиме FULL
@@ -62,3 +51,6 @@
 - 2026-11-22: Статус этапа 7.3 изменён на STAGE_PASS, задача передана Scribe
 - 2026-11-22: Scribe создал docs/stage_reports/stage-7.3.md, обновил docs/stage_reports/stage-7.md и README.md
 - 2026-11-22: Этап 7.3 окончательно закрыт (DONE)
+- 2026-11-22: Пользователь запустил этап 7.4 (общие GPIO-пины и переименование) в режиме FULL
+- 2026-11-22: Создана ветка stage-7/shared-pins-and-rename от main
+- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-shared-pins-and-rename-builder.md, статус BUILDING, задача передана Builder-у
