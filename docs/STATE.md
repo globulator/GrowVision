@@ -4,37 +4,24 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 7 (Telegram-бот)
-- Название этапа: Telegram-бот
+- Текущий этап: 6.1 (тестовые инструменты агента)
+- Название этапа: Тестовые инструменты агента (TEST_CAPTURE_INTERVAL_SEC, simulator seed, mock синтетика)
 - Режим: FULL
-- Статус: DONE
+- Статус: BUILDING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: приёмка этапа 7, поднятие версии до 0.4.0 (тег v0.4.0) и команда на запуск этапа 8 (Web SPA)
+- Ждём от пользователя: ничего (идёт реализация Builder-ом)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| Builder | edge | stage-6/test-tools | docs/tasks/stage-6-test-tools-builder.md | — |
 
 ## Коммиты текущего этапа
-- Ветка stage-7/bot создана от main (669b9f3)
-- 869fbc4 feat(bot): implement telegram bot client for GrowVision
-- 95f5575 test(bot): add unit tests for telegram bot handlers, isolation and video
-- a155d98 docs(bot): update user guide, stage task and handoff report
-- bad8e5b docs(repo): prepare stage 7 qa task and update state to testing
-- cc689ae test(bot): add e2e tests and log open defects for telegram bot
-- 49dc594 docs(repo): prepare stage 7 fixes task and update state to building
-- 4e155b8 fix(bot): fix api client request bodies, error handling and handlers
-- 92cc4f9 docs(qa): mark BUG-001 and BUG-002 as FIXED after verify
-- ddaef55 docs(repo): update state to testing for stage 7 re-evaluation
-- 4447e43 chore(repo): merge stage-7/bot into main
-- cf5b49d chore(repo): bump version to 0.3.1
-- e6f8832 docs(repo): update state to stage pass for stage 7
-- fe96be8 docs(repo): update stage 7 report and readme
+- Ветка stage-6/test-tools создана от main (3377084)
 
 ## Последний вердикт QA
-- Вердикт: PASS (по этапу 7, итерация 1/3)
+- Вердикт: PASS (по этапу 7)
 - Открытые дефекты (ID): —
 - Отложенные (DEFERRED, ID): —
 
@@ -49,10 +36,6 @@
 - Этап 7: Telegram-бот (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.md)
 
 ## История (последние 15 событий)
-- 2026-11-21: Builder реализовал Telegram-бота (30 unit-тестов, полная изоляция), статус READY_FOR_QA
-- 2026-11-21: Подготовлена карточка docs/tasks/stage-7-qa.md, статус изменён на TESTING, задача передана QA
-- 2026-11-21: QA выполнил E2E тесты (tests/e2e/test_bot_e2e.py), вердикт FAIL (BUG-001, BUG-002)
-- 2026-11-21: Подготовлена карточка docs/tasks/stage-7-bot-fixes.md, статус изменён на BUILDING (итерация 1/3), задача возвращена Builder-у
 - 2026-11-21: Builder устранил BUG-001 и BUG-002 (тесты 8 e2e passed, 30 unit passed), статус READY_FOR_QA
 - 2026-11-21: Этап 7 переведён в статус TESTING (итерация 1/3), задача передана QA на повторную приёмку
 - 2026-11-21: QA повторно проверил этап 7, вердикт PASS (222 теста, 0 дефектов)
@@ -61,3 +44,7 @@
 - 2026-11-21: Статус этапа 7 изменён на STAGE_PASS, задача передана Scribe
 - 2026-11-21: Scribe обновил docs/stage_reports/stage-7.md и README.md (DOCS_UPDATED, коммит fe96be8)
 - 2026-11-21: Этап 7 окончательно закрыт (DONE)
+- 2026-11-22: Пользователь дал команду запустить этап 6.1 (тестовые инструменты агента) в режиме FULL
+- 2026-11-22: Создана ветка stage-6/test-tools от main
+- 2026-11-22: Подготовлена карточка docs/tasks/stage-6-test-tools-builder.md
+- 2026-11-22: Этап 6.1 переведён в статус BUILDING, задача передана Builder-у
