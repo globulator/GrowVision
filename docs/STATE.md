@@ -7,18 +7,20 @@
 - Текущий этап: 7.4
 - Название этапа: Общие GPIO-пины с программной синхронизацией и переименование пользователей
 - Режим: FULL
-- Статус: BUILDING
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт реализация Builder-ом)
+- Ждём от пользователя: ничего (идёт тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| builder | full-stack | stage-7/shared-pins-and-rename | docs/tasks/stage-7-shared-pins-and-rename-builder.md | — |
+| qa | full-stack | stage-7/shared-pins-and-rename | docs/tasks/stage-7-shared-pins-and-rename-qa.md | — |
 
 ## Коммиты текущего этапа
-- Ветка stage-7/shared-pins-and-rename создана от main (6582a3e)
+- Ветка stage-7/shared-pins-and-rename создана от main (7ed7501)
+- f69b2fe docs(repo): prepare stage 7.4 task and update state to building
+- edce6b3 feat(repo): implement stage 7.4 shared gpio pins, relay sync, and user rename
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 7.3, раунд 5)
@@ -39,8 +41,6 @@
 - Этап 7.3: Авторизация по коду, управление сессиями, CV-разметка, UX-полировка и фиксы раунда 5 (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.3.md)
 
 ## История (последние 15 событий)
-- 2026-11-22: Коммит документации 1816926 docs(repo): update stage 7 report with round 4 fixes
-- 2026-11-22: Этап 7.2 (исправления раунд 4) окончательно закрыт (DONE)
 - 2026-11-22: Запущен этап 7.3 (авторизация по коду, сессии, CV, UX-полировка, фиксы) в режиме FULL
 - 2026-11-22: Создана ветка stage-7/auth-and-polish от main
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-7-auth-and-polish-builder.md, статус BUILDING, задача передана Builder-у
@@ -54,3 +54,5 @@
 - 2026-11-22: Пользователь запустил этап 7.4 (общие GPIO-пины и переименование) в режиме FULL
 - 2026-11-22: Создана ветка stage-7/shared-pins-and-rename от main
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-7-shared-pins-and-rename-builder.md, статус BUILDING, задача передана Builder-у
+- 2026-11-23: Builder реализовал этап 7.4 (290 тестов passed), статус READY_FOR_QA
+- 2026-11-23: Статус изменён на TESTING, задача передана QA
