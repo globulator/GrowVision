@@ -64,10 +64,15 @@ class EdgeOrchestrator:
         self._scheduler_thread: threading.Thread | None = None
 
         self._last_scheduled_hour: tuple[int, int, int, int] | None = None
+        self.last_scheduled_debug_log_line: str | None = None
 
     def start(self) -> None:
         """Запускает фоновые потоки оркестратора."""
         logger.info("Запуск Edge-агента GrowVision...")
+        if self.config.test_capture_interval_sec is not None:
+            logger.warning(
+                f"ТЕСТОВЫЙ ИНТЕРВАЛ СЪЁМКИ: {self.config.test_capture_interval_sec} с"
+            )
         self.running.set()
 
         # Первичный Heartbeat перед запуском потоков
@@ -485,17 +490,18 @@ class EdgeOrchestrator:
                 ),
             )
 
-    def trigger_scheduled_capture(self) -> None:
+    def trigger_scheduled_capture(self) -> str | None:
         """Запускает разовую плановую автосъемку по всем активным установкам."""
         if not self.active_installations:
             logger.debug("Нет активных установок для плановой съемки")
-            return
+            return None
 
         logger.info(
             f"Старт плановой автосъемки для {len(self.active_installations)} установок"
         )
         self.is_scheduled_capture_running.set()
         self.hardware.acquire_lock(blocking=True)
+        total_captured = 0
 
         try:
             for inst in self.active_installations:
@@ -529,7 +535,9 @@ class EdgeOrchestrator:
                             ann_bytes,
                         )
 
-                        if status_code not in (200, 201):
+                        if status_code in (200, 201):
+                            total_captured += 1
+                        else:
                             logger.warning(
                                 f"Плановый кадр для установки {inst.id} не загружен ({status_code}). Сохранение в очередь."
                             )
@@ -546,11 +554,42 @@ class EdgeOrchestrator:
         finally:
             self.hardware.release_lock()
             self.is_scheduled_capture_running.clear()
-            logger.info("Плановая автосъемка завершена")
-            self.trigger_async_flush()
+
+        debug_lines = []
+        if self.config.test_capture_interval_sec is not None:
+            debug_lines.append(
+                f"[TEST_INTERVAL={self.config.test_capture_interval_sec}s]"
+            )
+        debug_lines.append(
+            f"Scheduled capture completed for {len(self.active_installations)} installations ({total_captured} frames)"
+        )
+        debug_log = " ".join(debug_lines)
+        self.last_scheduled_debug_log_line = debug_log
+        logger.info(f"Плановая автосъемка завершена: {debug_log}")
+
+        self.trigger_async_flush()
+        return debug_log
 
     def _scheduler_loop(self) -> None:
-        """Фоновый цикл проверки астрономической сетки плановой автосъемки (в начале N-го часа UTC)."""
+        """Фоновый цикл плановой автосъемки: по тестовому интервалу в секундах или по часовой сетке UTC."""
+        if self.config.test_capture_interval_sec is not None:
+            interval_sec = float(self.config.test_capture_interval_sec)
+            last_run = time.time()
+            while self.running.is_set():
+                time.sleep(0.5)
+                if not self.running.is_set():
+                    break
+                now_t = time.time()
+                if now_t - last_run >= interval_sec:
+                    last_run = now_t
+                    try:
+                        self.trigger_scheduled_capture()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error(
+                            f"Исключение в автосъемке по тестовому интервалу: {exc}"
+                        )
+            return
+
         while self.running.is_set():
             time.sleep(1.0)
             if not self.running.is_set():
