@@ -4,29 +4,21 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 7.4 (Общие GPIO-пины с программной синхронизацией и переименование пользователей) — завершён
-- Название этапа: Общие GPIO-пины с программной синхронизацией и переименование пользователей
+- Текущий этап: 8
+- Название этапа: Полноценный Web SPA-клиент (роли, паритет с Telegram-ботом, плеер таймлапса, консоль разработчика)
 - Режим: FULL
-- Статус: DONE
+- Статус: BUILDING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: приёмки этапа 7.4 и команды на запуск этапа 8 (Web SPA)
+- Ждём от пользователя: ничего (идёт реализация Builder-ом)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| builder | full-stack | stage-8/web-spa | docs/tasks/stage-8-web-spa-builder.md | — |
 
 ## Коммиты текущего этапа
-- Ветка stage-7/shared-pins-and-rename создана от main (7ed7501)
-- f69b2fe docs(repo): prepare stage 7.4 task and update state to building
-- edce6b3 feat(repo): implement stage 7.4 shared gpio pins, relay sync, and user rename
-- 343065c docs(repo): update state to testing and include v2 roadmap
-- 3736475 docs(qa): update qa_log with stage 7.4 verification
-- a4a9cf4 chore(repo): merge stage-7/shared-pins-and-rename into main
-- 5410dd4 chore(repo): bump version to 0.3.3
-- 7172d3f docs(repo): update state to stage pass for stage 7.4
-- 7f6666b docs(repo): update stage 7 report with shared pins and rename
+- Ветка stage-8/web-spa создана от main (6b5e6e3)
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 7.4)
@@ -48,11 +40,6 @@
 - Этап 7.4: Общие GPIO-пины с программной синхронизацией и переименование пользователей (принят QA, слит в main, версия 0.3.3, отчёт docs/stage_reports/stage-7.4.md)
 
 ## История (последние 15 событий)
-- 2026-11-22: QA проверил этап 7.3, вердикт PASS (279 тестов, 0 дефектов)
-- 2026-11-22: Ветка stage-7/auth-and-polish слита в main (версия 0.3.1 сохранена без изменений)
-- 2026-11-22: Статус этапа 7.3 изменён на STAGE_PASS, задача передана Scribe
-- 2026-11-22: Scribe создал docs/stage_reports/stage-7.3.md, обновил docs/stage_reports/stage-7.md и README.md
-- 2026-11-22: Этап 7.3 окончательно закрыт (DONE)
 - 2026-11-22: Пользователь запустил этап 7.4 (общие GPIO-пины и переименование) в режиме FULL
 - 2026-11-22: Создана ветка stage-7/shared-pins-and-rename от main
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-7-shared-pins-and-rename-builder.md, статус BUILDING, задача передана Builder-у
@@ -63,3 +50,6 @@
 - 2026-11-23: Статус этапа 7.4 изменён на STAGE_PASS, задача передана Scribe
 - 2026-11-23: Scribe создал docs/stage_reports/stage-7.4.md, обновил docs/stage_reports/stage-7.md и README.md
 - 2026-11-23: Этап 7.4 окончательно закрыт (DONE)
+- 2026-11-23: Пользователь запустил этап 8 (полноценный Web SPA-клиент) в режиме FULL
+- 2026-11-23: Создана ветка stage-8/web-spa от main
+- 2026-11-23: Подготовлена карточка docs/tasks/stage-8-web-spa-builder.md, статус BUILDING, задача передана Builder-у
