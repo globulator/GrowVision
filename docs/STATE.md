@@ -7,18 +7,21 @@
 - Текущий этап: 7.3
 - Название этапа: Авторизация по одноразовому коду, управление сессиями, доработки CV-разметки, UX-полировка и фиксы раунда 5
 - Режим: FULL
-- Статус: BUILDING
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт реализация Builder-ом)
+- Ждём от пользователя: ничего (идёт тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| builder | full-stack | stage-7/auth-and-polish | docs/tasks/stage-7-auth-and-polish-builder.md | — |
+| qa | full-stack | stage-7/auth-and-polish | docs/tasks/stage-7-auth-and-polish-qa.md | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-7/auth-and-polish создана от main (1816926)
+- be80fa8 docs(repo): prepare stage 7.3 task and update state to building
+- 8e72a62 docs(repo): prepare stage 7.3 qa task card
+- 6383ff5 feat(stage-7.3): implement auth by one-time code, session management, cv annotations, and polish
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 7.2, раунд 4)
@@ -38,8 +41,6 @@
 - Этап 7.2: Комплексные исправления раунда 4 (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.2.md)
 
 ## История (последние 15 событий)
-- 2026-11-22: Пользователь запустил этап 7.2 («исправления раунд 4») в режиме FULL
-- 2026-11-22: Создана ветка stage-7/bot-fixes-4 от main
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-4-builder.md
 - 2026-11-22: Статус изменён на BUILDING (режим FULL), задача передана Builder-у
 - 2026-11-22: Builder реализовал комплексные исправления раунда 4 (268 тестов passed), статус READY_FOR_QA
@@ -50,6 +51,8 @@
 - 2026-11-22: Scribe создал docs/stage_reports/stage-7.2.md, дополнил docs/stage_reports/stage-7.md и README.md
 - 2026-11-22: Коммит документации 1816926 docs(repo): update stage 7 report with round 4 fixes
 - 2026-11-22: Этап 7.2 (исправления раунд 4) окончательно закрыт (DONE)
-- 2026-11-22: Пользователь запустил этап 7.3 (авторизация по коду, сессии, CV, UX-полировка, фиксы) в режиме FULL
-- 2026-11-22: Создана ветка stage-7/auth-and-polish от main (1816926)
+- 2026-11-22: Запущен этап 7.3 (авторизация по коду, сессии, CV, UX-полировка, фиксы) в режиме FULL
+- 2026-11-22: Создана ветка stage-7/auth-and-polish от main
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-7-auth-and-polish-builder.md, статус BUILDING, задача передана Builder-у
+- 2026-11-22: Builder реализовал этап 7.3 (279 тестов passed), статус READY_FOR_QA
+- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-auth-and-polish-qa.md, статус изменён на TESTING, задача передана QA
