@@ -70,13 +70,34 @@ def test_stage7_4_e2e_shared_pins_and_rename(e2e_uvicorn_server, tmp_path: Path)
     app_state.clear()
 
     # Посылаем heartbeat от edge, чтобы сервер знал, что RPi онлайн
-    from tests.e2e.conftest import SAMPLE_HEARTBEAT_PAYLOAD
+    heartbeat_payload = {
+        "software": {
+            "edge_version": "0.1.0",
+            "python_version": "3.12.0",
+            "model_name": "model_test.onnx",
+        },
+        "hardware": {
+            "board_model": "Raspberry Pi 5 Model B",
+            "os_info": "Debian GNU/Linux 12 (bookworm)",
+            "uptime_sec": 1200,
+            "cpu_temp_c": 47.0,
+            "cpu_usage_percent": 12.0,
+            "ram_used_mb": 512,
+            "ram_total_mb": 4096,
+            "disk_free_gb": 16.0,
+            "gpio_mode": "bcm",
+        },
+        "offline_queue_count": 0,
+        "detected_cameras": [
+            {"hardware_id": "cam-rpi-01", "auto_name": "RPi CSI Camera 1"}
+        ],
+    }
 
     with httpx.Client(base_url=server_url) as http_client:
         r_hb = http_client.post(
             "/api/edge/heartbeat",
             headers={"X-Edge-Key": edge_key},
-            json=SAMPLE_HEARTBEAT_PAYLOAD,
+            json=heartbeat_payload,
         )
         assert r_hb.status_code == 200
 
