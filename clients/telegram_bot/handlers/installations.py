@@ -672,15 +672,20 @@ async def handle_confirm_action(
     user_id = callback.from_user.id if callback.from_user else 0
 
     if not confirmed:
-        # Отмена подтверждения: возвращаемся в карточку
+        # Отмена подтверждения: возвращаемся в карточку без мутации callback.data
         if callback.message and isinstance(callback.message, Message):
-            callback.data = f"inst:view:{inst_id}"
-            # перенаправляем на просмотр карточки
-            await handle_installation_view(
-                callback,
-                api_client,
-                config=BotConfig(bot_token="", server_url="", client_api_key=""),
-            )
+            try:
+                inst = await api_client.get_installation(user_id, inst_id)
+                me = await api_client.get_me(user_id)
+                role = me.get("role", "guest") if me else "guest"
+                card_text = format_installation_card(inst, role=role)
+                kb = get_installation_card_keyboard(
+                    inst_id, role=role, is_archived=inst.get("is_archived", False)
+                )
+                await callback.message.edit_text(card_text, reply_markup=kb)
+            except Exception as exc:  # noqa: BLE001
+                err = format_api_error(exc)
+                await callback.message.edit_text(f"Ошибка загрузки карточки:\n{err}")
         return
 
     if action == "archive":

@@ -107,9 +107,14 @@ pending --claim--> running --result--> done | error
 
 | Метод | URL | Доступ | Назначение |
 |---|---|---|---|
-| POST | `/api/auth/login` | Все (с `X-Client-Key`) | Вход по логину и паролю, создание сессии. |
-| POST | `/api/auth/logout` | Biologist, Developer | Выход, удаление сессии. |
+| POST | `/api/auth/login` | Все (с `X-Client-Key`) | Вход по логину и паролю/коду, создание/активация сессии. |
+| POST | `/api/auth/logout` | Biologist, Developer | Выход, перевод сессии в `is_active = False`. |
 | GET | `/api/auth/me` | Biologist, Developer | Роль, логин, время активности. |
+| POST | `/api/auth/invites` | Developer | Создать одноразовый код приглашения (TTL 10 мин). |
+| GET | `/api/auth/invites` | Developer | Список активных одноразовых кодов. |
+| DELETE | `/api/auth/invites/{invite_id}` | Developer | Отозвать неиспользованный одноразовый код. |
+| GET | `/api/auth/sessions` | Developer | Список всех сессий (активных и завершённых). |
+| POST | `/api/auth/sessions/{session_id}/terminate` | Developer | Принудительное завершение активной сессии. |
 | GET | `/api/version` | Гость, Biologist, Developer | Версия сервера. |
 | GET | `/api/installations` | Гость, Biologist, Developer | Список установок (проекция зависит от роли). |
 | GET | `/api/installations/{id}` | Гость, Biologist, Developer | Карточка установки. |
@@ -121,11 +126,12 @@ pending --claim--> running --result--> done | error
 | POST | `/api/cameras/scan` | Developer | Сканирование камер на RPi (SCAN_CAMERAS). |
 | POST | `/api/cameras/{camera_id}/bind` | Developer | Привязать или отвязать камеру. |
 | POST | `/api/control/snap` | Biologist, Developer | Ручной снимок (SNAP). |
+| GET | `/api/control/captures/{capture_id}` | Biologist, Developer | Получение ссылок на кадр (`raw_url`, `annotated_url`). |
 | POST | `/api/control/light/main` | Developer | Основной свет (LIGHT_MAIN). |
 | POST | `/api/control/light/flash` | Developer | Вспышка (LIGHT_FLASH). |
 | POST | `/api/control/relay-test` | Developer | Тест реле (RELAY_TEST), 3 с. |
 | GET | `/api/timelapse/{installation_id}/frames` | Гость, Biologist, Developer | Плановые кадры таймлапса. |
-| POST | `/api/timelapse/{installation_id}/video` | Biologist, Developer | MP4 из всех плановых кадров (опционально с прореживанием `step`); при одном плановом кадре — JPEG. |
+| POST | `/api/timelapse/{installation_id}/video` | Biologist, Developer | MP4 из всех плановых кадров (с прореживанием `step` или целевой длительностью `duration_sec`); при одном плановом кадре — JPEG. |
 | GET | `/api/system/status` | Developer | Версия сервера, телеметрия RPi, настройки, связь. |
 | PATCH | `/api/system/settings` | Developer | Изменить глобальные настройки. |
 
@@ -297,25 +303,100 @@ pending --claim--> running --result--> done | error
 
 ## 4. Client API: схемы
 
-### 4.1. Авторизация
+### 4.1. Авторизация и управление сессиями
 
-`POST /api/auth/login` (двухшаговый ввод остаётся на стороне клиента: сначала логин, затем пароль, на сервер уходит пара):
+`POST /api/auth/login`:
 
+Тело запроса:
 ```json
-{"client_type": "telegram", "external_id": "123456789", "login": "Иван Петров", "password": "secret"}
+{
+  "client_type": "telegram",
+  "external_id": "123456789",
+  "password": "secret_or_invite_code",
+  "login": "Андрей Бармин"
+}
 ```
 
-Ответ `200`: `{"role": "biologist", "login": "Иван Петров"}`. Неверный пароль → `401`; лимит превышен → `429`.
+Правила обработки:
+- Поле `login` является опциональным (`login: str | None = None`).
+- Для `client_type == "cli"` принимается **только** постоянный пароль разработчика (`settings.developer_password`), поле `login` обязательно; при успехе возвращается роль `developer`.
+- Для `client_type == "telegram"`:
+  - Если передан `settings.developer_password` — назначается роль `developer`.
+  - Если передан активный одноразовый код из `invite_codes` (`used_at IS NULL`, `is_revoked == False`, `expires_at > now`) — назначается роль `biologist`.
+- Если запись `(client_type, external_id)` уже существует в `users` и `login` не передан — сервер автоматически подтягивает сохранённый `user.login`.
+- Если записи в `users` нет и `login` не передан (первичный вход) — код **не сжигается**, сервер возвращает ответ:
+  ```json
+  {"status": "needs_login", "role": "biologist"}
+  ```
+  чтобы клиент запросил у пользователя Имя и Фамилию и повторил запрос с `login`.
+- При успешном завершении входа:
+  - Одноразовый код помечается использованным (`used_at = now`, `used_by_user_id = user.id`).
+  - Сессия активируется (`is_active = True`, `logged_out_at = None`, обновляются `authorized_at` и `last_active_at`).
+  - Ответ `200`: `{"role": "biologist", "login": "Андрей Бармин"}`.
 
-Если сессия для `(client_type, external_id)` уже есть, она обновляется (логин, роль, `authorized_at`, `last_active_at`).
+Ошибки:
+- Неверный пароль или недействительный/просроченный код → `401`.
+- Превышен лимит попыток (более 5 в минуту) → `429` с заголовком `Retry-After`.
 
-`POST /api/auth/logout` → `200 {"ok": true}` (запись удаляется из `users`).
+`POST /api/auth/logout`:
+Завершение текущей сессии. Запись из таблицы `users` **не удаляется**, а переводится в `is_active = False` с фиксацией времени `logged_out_at = now`. Ответ: `200 {"ok": true}`.
 
-`GET /api/auth/me` → `200`:
-
+`GET /api/auth/me`:
+Возвращает профиль текущей активной сессии:
 ```json
-{"login": "Иван Петров", "role": "biologist", "authorized_at": "2026-11-18T18:00:00Z", "last_active_at": "2026-11-18T19:25:10Z"}
+{
+  "login": "Андрей Бармин",
+  "role": "biologist",
+  "authorized_at": "2026-11-18T18:00:00Z",
+  "last_active_at": "2026-11-18T19:25:10Z"
+}
 ```
+Если сессия не найдена или `is_active == False` → `401`.
+
+#### Эндпоинты управления кодами приглашений (только Developer)
+
+- `POST /api/auth/invites`:
+  Генерация одноразового кода для биолога (TTL 10 минут). Тело запроса (опционально): `{"role": "biologist"}`.
+  Ответ `200`:
+  ```json
+  {
+    "id": 1,
+    "code": "A7K9PX",
+    "role": "biologist",
+    "created_at": "2026-11-22T19:00:00Z",
+    "expires_at": "2026-11-22T19:10:00Z"
+  }
+  ```
+- `GET /api/auth/invites`:
+  Список всех активных неиспользованных кодов (`used_at IS NULL`, `is_revoked == False`, `expires_at > now`).
+  Ответ `200`: `[ { "id": 1, "code": "A7K9PX", "role": "biologist", ... } ]`.
+- `DELETE /api/auth/invites/{invite_id}`:
+  Досрочный отзыв неиспользованного кода (`is_revoked = True`).
+  Ответ `200 {"ok": true}`.
+
+#### Эндпоинты управления сессиями (только Developer)
+
+- `GET /api/auth/sessions`:
+  Список всех сессий пользователей (активных и завершённых).
+  Ответ `200`:
+  ```json
+  [
+    {
+      "id": 1,
+      "client_type": "telegram",
+      "external_id": "123456789",
+      "login": "Андрей Бармин",
+      "role": "biologist",
+      "is_active": true,
+      "authorized_at": "2026-11-22T18:00:00Z",
+      "last_active_at": "2026-11-22T18:30:00Z",
+      "logged_out_at": null
+    }
+  ]
+  ```
+- `POST /api/auth/sessions/{session_id}/terminate`:
+  Принудительное завершение активной сессии (перевод в `is_active = False`, фиксация `logged_out_at = now`). Позволяет завершить сессию любого биолога или другого разработчика.
+  Ответ `200 {"ok": true}`.
 
 ### 4.2. Установки
 
@@ -412,6 +493,21 @@ pending --claim--> running --result--> done | error
 - Если RPi занята плановой съёмкой, ответ тот же, что и при ошибке RPi: `200` с `"status": "error"` и `"result_message": "Камера недоступна, попробуйте позже"` (см. 1.4).
 - Ручные кадры сохраняются с `is_manual = TRUE` и в таймлапс не попадают.
 
+`GET /api/control/captures/{capture_id}` (Biologist, Developer):
+Возвращает метаданные и прямые ссылки на сырой и размеченный кадр по `capture_id`:
+```json
+{
+  "capture_id": 105,
+  "installation_id": 1,
+  "camera_id": 1,
+  "captured_at": "2026-11-18T19:30:01Z",
+  "raw_url": "/media/1/raw_105.jpg",
+  "annotated_url": "/media/1/ann_105.jpg",
+  "area_display": "48.3 см²"
+}
+```
+Используется Telegram-ботом при переключении слоёв «Исходник / Разметка» в карточке ручного снимка. Если кадр не найден → `404`.
+
 `POST /api/control/light/main` и `POST /api/control/light/flash` (Developer): `{"target": 1, "state": true}` (`target` может быть `"all"`). `POST /api/control/relay-test` (Developer): `{"target": 1}` (свет и вспышка одновременно на 3 с). Ответ `200`:
 
 ```json
@@ -449,10 +545,12 @@ pending --claim--> running --result--> done | error
 `POST /api/timelapse/{installation_id}/video` (Biologist, Developer):
 
 ```json
-{"camera_id": null, "step": 1}
+{"camera_id": null, "step": 1, "duration_sec": 10.0}
 ```
 
-- `camera_id` необязателен. `step` необязателен: целое ≥ 1, по умолчанию `1` (прореживание выключено, берутся все плановые кадры). `step = N` — берётся каждый N-й плановый кадр, начиная с первого; последний кадр включается всегда, поэтому при двух и более плановых кадрах в видео всегда есть минимум 2 кадра.
+- `camera_id` необязателен.
+- `step` необязателен: целое ≥ 1, по умолчанию `1` (прореживание выключено, берутся все плановые кадры). `step = N` — берётся каждый N-й плановый кадр, начиная с первого; последний кадр включается всегда, поэтому при двух и более плановых кадрах в видео всегда есть минимум 2 кадра.
+- `duration_sec` необязателен: целевая длительность результирующего видео в секундах (> 0). Если параметр передан, сервер рассчитывает FPS для получения заданной длительности (`fps = clamp(total_frames / duration_sec, 1.0, 60.0)`). По умолчанию используется базовый FPS (10.0).
 - Видео собирается из плановых кадров установки за всю историю (включая архивные установки и кадры сменённых камер) в порядке `captured_at ASC`. Число кадров сервер не ограничивает. `step` по умолчанию выключен; прореживание запрашивают CLI (`--step`) и Telegram-бот (при превышении лимита 50 МБ). Веб видео не запрашивает: он загружает кадры через `GET .../frames` и проигрывает их сам.
 - Ответ зависит от числа плановых кадров N (с учётом `camera_id`, до прореживания):
 

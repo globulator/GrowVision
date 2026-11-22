@@ -272,14 +272,18 @@ async def _show_frame_in_gallery(
 
     cam_id = target_frame.get("camera_id", "cam")
     cap_time = target_frame.get("captured_at", "—")
-    area_cm2 = target_frame.get("total_area_cm2")
-    area_px = target_frame.get("total_area_px")
-    if area_cm2 is not None:
-        area_text = format_area_display(area_cm2, is_px=False)
-    elif area_px is not None:
-        area_text = format_area_display(area_px, is_px=True)
+    area_display = target_frame.get("area_display")
+    if area_display:
+        area_text = str(area_display)
     else:
-        area_text = "площадь не определена"
+        area_cm2 = target_frame.get("total_area_cm2")
+        area_px = target_frame.get("total_area_px")
+        if area_cm2 is not None:
+            area_text = format_area_display(area_cm2, is_px=False)
+        elif area_px is not None:
+            area_text = format_area_display(area_px, is_px=True)
+        else:
+            area_text = "площадь не определена"
 
     layer_title = "Оригинал" if layer == "r" else "Разметка нейросети"
     if is_guest:
@@ -518,9 +522,9 @@ async def handle_video_installation_selected(
                 )
             return
 
-        # Камера одна или нет привязанных камер -> сразу запускаем сборку
+        # Камера одна или нет привязанных камер -> шаг выбора длительности видео
         selected_cam_id = cameras[0].get("id") if len(cameras) == 1 else None
-        await _execute_video_pipeline(
+        await _prompt_video_duration(
             callback=callback,
             api_client=api_client,
             inst_id=inst_id,
@@ -539,7 +543,7 @@ async def handle_video_camera_selected(
     callback: CallbackQuery,
     api_client: GrowVisionApiClient,
 ) -> None:
-    """Выбрана конкретная камера для сборки видео."""
+    """Выбрана конкретная камера для сборки видео -> переход к выбору длительности."""
     await callback.answer()
     parts = callback.data.split(":")
     inst_id = int(parts[1])
@@ -552,7 +556,7 @@ async def handle_video_camera_selected(
 
     resolved_cam_id = await _resolve_inst_cam_id(user_id, api_client, inst_id, cam_val)
     inst = await api_client.get_installation(user_id, inst_id)
-    await _execute_video_pipeline(
+    await _prompt_video_duration(
         callback=callback,
         api_client=api_client,
         inst_id=inst_id,
@@ -561,21 +565,289 @@ async def handle_video_camera_selected(
     )
 
 
-async def _execute_video_pipeline(
+async def _prompt_video_duration(
     callback: CallbackQuery,
     api_client: GrowVisionApiClient,
     inst_id: int,
     inst_name: str,
     camera_id: int | None,
 ) -> None:
-    """Выполняет полный пайплайн сборки видео с циклом прореживания (до 5 попыток)."""
+    """Шаг выбора длительности видео перед запуском сборки."""
     user_id = callback.from_user.id if callback.from_user else 0
+    try:
+        frames_resp = await api_client.get_timelapse_frames(
+            user_id, inst_id, camera_id=camera_id
+        )
+        frames_list = (
+            frames_resp.get("frames", [])
+            if isinstance(frames_resp, dict)
+            else frames_resp
+        )
+        total_frames = len(frames_list)
+    except Exception:  # noqa: BLE001
+        # Если эндпоинт frames недоступен (например, в минимальных фикстурах), запускаем сборку напрямую
+        await _execute_video_pipeline(
+            callback=callback,
+            api_client=api_client,
+            inst_id=inst_id,
+            inst_name=inst_name,
+            camera_id=camera_id,
+            duration_sec=None,
+        )
+        return
+
+    if total_frames == 0:
+        if callback.message and isinstance(callback.message, Message):
+            await callback.message.edit_text(
+                f"В установке «{html.escape(inst_name)}» пока нет плановых кадров для сборки таймлапса.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="⬅️ Назад",
+                                callback_data=f"inst:view:{inst_id}",
+                            )
+                        ]
+                    ]
+                ),
+            )
+        return
+
+    if total_frames == 1:
+        # Для 1 кадра видео не собирается, отдаем единственный кадр
+        await _execute_video_pipeline(
+            callback=callback,
+            api_client=api_client,
+            inst_id=inst_id,
+            inst_name=inst_name,
+            camera_id=camera_id,
+            duration_sec=None,
+        )
+        return
+
+    # Рекомендованная длительность: из расчета ~10 кадров в секунду (fps=10) для плавной анимации
+    rec_sec = max(3, min(60, round(total_frames / 10.0)))
+    cam_part = str(camera_id) if camera_id is not None else "none"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"⭐ Рекомендованная ({rec_sec} сек)",
+                    callback_data=f"vid_dur:{inst_id}:{cam_part}:{rec_sec}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="5 сек",
+                    callback_data=f"vid_dur:{inst_id}:{cam_part}:5",
+                ),
+                InlineKeyboardButton(
+                    text="10 сек",
+                    callback_data=f"vid_dur:{inst_id}:{cam_part}:10",
+                ),
+                InlineKeyboardButton(
+                    text="30 сек",
+                    callback_data=f"vid_dur:{inst_id}:{cam_part}:30",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⌨️ Ввести вручную",
+                    callback_data=f"vid_dur_manual:{inst_id}:{cam_part}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Отмена",
+                    callback_data=f"inst:view:{inst_id}",
+                )
+            ],
+        ]
+    )
+
+    text = (
+        f"🎬 <b>Параметры сборки таймлапса</b>\n\n"
+        f"Установка: <b>{html.escape(inst_name)}</b>\n"
+        f"Кадров для видео: <b>{total_frames}</b>\n\n"
+        f"Выберите желаемую длительность готового видео (рекомендовано <b>{rec_sec} сек</b> для плавности 10 fps) "
+        f"или выберите пресет / введите число секунд вручную:"
+    )
+
+    if callback.message and isinstance(callback.message, Message):
+        with contextlib.suppress(Exception):
+            await callback.message.edit_text(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("vid_dur:"))
+async def handle_video_duration_preset_selected(
+    callback: CallbackQuery,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Выбрана длительность по кнопке-пресету."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    inst_id = int(parts[1])
+    cam_str = parts[2]
+    duration = float(parts[3])
+    cam_id = None if cam_str == "none" else int(cam_str)
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    if user_id in _user_video_locks:
+        await callback.answer("Видео уже собирается, подождите", show_alert=True)
+        return
+
+    inst = await api_client.get_installation(user_id, inst_id)
+    await _execute_video_pipeline(
+        callback=callback,
+        api_client=api_client,
+        inst_id=inst_id,
+        inst_name=inst.get("name", f"Установка #{inst_id}"),
+        camera_id=cam_id,
+        duration_sec=duration,
+    )
+
+
+@router.callback_query(F.data.startswith("vid_dur_manual:"))
+async def handle_video_duration_manual_selected(
+    callback: CallbackQuery,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Пользователь выбрал ручной ввод длительности."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    inst_id = int(parts[1])
+    cam_str = parts[2]
+    cam_id = None if cam_str == "none" else int(cam_str)
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    inst = await api_client.get_installation(user_id, inst_id)
+    await state.set_state(TimelapseStates.waiting_duration)
+    await state.update_data(
+        inst_id=inst_id,
+        inst_name=inst.get("name", f"Установка #{inst_id}"),
+        camera_id=cam_id,
+    )
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data=f"vid_dur_cancel:{inst_id}",
+                )
+            ]
+        ]
+    )
+
+    if callback.message and isinstance(callback.message, Message):
+        with contextlib.suppress(Exception):
+            await callback.message.edit_text(
+                "Введите длительность видео в секундах (целое число от 1 до 60, например: <code>10</code>):",
+                reply_markup=kb,
+            )
+
+
+@router.callback_query(F.data.startswith("vid_dur_cancel:"))
+async def handle_video_duration_cancel(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """Отмена ручного ввода длительности."""
+    await callback.answer()
+    await state.clear()
+    inst_id = int(callback.data.split(":")[-1])
+    if callback.message and isinstance(callback.message, Message):
+        with contextlib.suppress(Exception):
+            await callback.message.edit_text(
+                "Сборка видео отменена.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="⬅️ К установке",
+                                callback_data=f"inst:view:{inst_id}",
+                            )
+                        ]
+                    ]
+                ),
+            )
+
+
+@router.message(TimelapseStates.waiting_duration)
+async def process_video_duration_input(
+    message: Message,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Обработка текстового ввода длительности видео в секундах."""
+    raw_val = (message.text or "").strip()
+    try:
+        dur = float(raw_val)
+        if not (1.0 <= dur <= 300.0):
+            raise ValueError("Вне диапазона")
+    except ValueError:
+        await message.answer(
+            "Некорректная длительность. Введите число секунд от 1 до 60 (например: <code>10</code>):"
+        )
+        return
+
+    data = await state.get_data()
+    await state.clear()
+    inst_id = data.get("inst_id")
+    inst_name = data.get("inst_name", "")
+    camera_id = data.get("camera_id")
+
+    user_id = message.from_user.id if message.from_user else 0
+    if user_id in _user_video_locks:
+        await message.answer("Видео уже собирается, подождите...")
+        return
+
+    await _execute_video_pipeline(
+        callback=None,
+        api_client=api_client,
+        inst_id=inst_id,
+        inst_name=inst_name,
+        camera_id=camera_id,
+        duration_sec=dur,
+        message=message,
+    )
+
+
+async def _execute_video_pipeline(
+    callback: CallbackQuery | None,
+    api_client: GrowVisionApiClient,
+    inst_id: int,
+    inst_name: str,
+    camera_id: int | None,
+    duration_sec: float | None = None,
+    message: Message | None = None,
+) -> None:
+    """Выполняет полный пайплайн сборки видео с циклом прореживания (до 5 попыток)."""
+    user_id = (
+        callback.from_user.id
+        if callback and callback.from_user
+        else (message.from_user.id if message and message.from_user else 0)
+    )
+    bot = callback.bot if callback else (message.bot if message else None)
+    chat_id = (
+        callback.message.chat.id
+        if callback and callback.message
+        else (message.chat.id if message else user_id)
+    )
     _user_video_locks.add(user_id)
 
     status_msg: Message | None = None
-    if callback.message and isinstance(callback.message, Message):
+    if callback and callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
             status_msg = await callback.message.answer(
+                "⏳ <b>Собираю видео таймлапса.</b>\n"
+                "Для длинных таймлапсов это может занять несколько минут..."
+            )
+    elif message:
+        with contextlib.suppress(Exception):
+            status_msg = await message.answer(
                 "⏳ <b>Собираю видео таймлапса.</b>\n"
                 "Для длинных таймлапсов это может занять несколько минут..."
             )
@@ -587,20 +859,20 @@ async def _execute_video_pipeline(
             inst_id=inst_id,
             camera_id=camera_id,
             step=1,
+            duration_sec=duration_sec,
         )
-
-        chat_id = callback.message.chat.id if callback.message else user_id
 
         # Случай 1: Плановый кадр всего один (image/jpeg)
         if content_type == "image/jpeg" and isinstance(payload, bytes):
             if status_msg:
                 with contextlib.suppress(Exception):
                     await status_msg.delete()
-            await callback.bot.send_photo(
-                chat_id=chat_id,
-                photo=BufferedInputFile(payload, filename="single_frame.jpg"),
-                caption=f"Плановый кадр пока один, видео не собрано.\nУстановка: {inst_name}",
-            )
+            if bot:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=BufferedInputFile(payload, filename="single_frame.jpg"),
+                    caption=f"Плановый кадр пока один, видео не собрано.\nУстановка: {inst_name}",
+                )
             return
 
         # Случай 2: Полное видео уложилось в лимит
@@ -612,13 +884,14 @@ async def _execute_video_pipeline(
                 caption = f"🎬 <b>Таймлапс:</b> {inst_name}"
                 if camera_id:
                     caption += f" (камера #{camera_id})"
-                await callback.bot.send_video(
-                    chat_id=chat_id,
-                    video=FSInputFile(str(payload)),
-                    caption=caption,
-                    parse_mode="HTML",
-                    supports_streaming=True,
-                )
+                if bot:
+                    await bot.send_video(
+                        chat_id=chat_id,
+                        video=FSInputFile(str(payload)),
+                        caption=caption,
+                        parse_mode="HTML",
+                        supports_streaming=True,
+                    )
             finally:
                 with contextlib.suppress(Exception):
                     os.unlink(payload)
@@ -650,6 +923,7 @@ async def _execute_video_pipeline(
                 inst_id=inst_id,
                 camera_id=camera_id,
                 step=step,
+                duration_sec=duration_sec,
             )
 
             if ctype == "video/mp4" and isinstance(p_path, Path):
@@ -663,13 +937,14 @@ async def _execute_video_pipeline(
                         f"Прореженная версия: каждый {step}-й кадр.\n"
                         f"<i>(Полную версию можно скачать через консольный клиент: snap video {inst_id})</i>"
                     )
-                    await callback.bot.send_video(
-                        chat_id=chat_id,
-                        video=FSInputFile(str(p_path)),
-                        caption=caption,
-                        parse_mode="HTML",
-                        supports_streaming=True,
-                    )
+                    if bot:
+                        await bot.send_video(
+                            chat_id=chat_id,
+                            video=FSInputFile(str(p_path)),
+                            caption=caption,
+                            parse_mode="HTML",
+                            supports_streaming=True,
+                        )
                 finally:
                     with contextlib.suppress(Exception):
                         os.unlink(p_path)
@@ -684,8 +959,8 @@ async def _execute_video_pipeline(
             )
             if status_msg:
                 await status_msg.edit_text(fail_text)
-            else:
-                await callback.bot.send_message(chat_id, fail_text)
+            elif bot:
+                await bot.send_message(chat_id, fail_text)
 
     except ApiError as exc:
         err = format_api_error(exc)
@@ -699,9 +974,9 @@ async def _execute_video_pipeline(
 
         if status_msg:
             await status_msg.edit_text(f"❌ Не удалось собрать видео:\n{err}")
-        else:
-            await callback.bot.send_message(
-                callback.message.chat.id if callback.message else user_id,
+        elif bot:
+            await bot.send_message(
+                chat_id,
                 f"❌ Не удалось собрать видео:\n{err}",
             )
     except Exception as exc:  # noqa: BLE001

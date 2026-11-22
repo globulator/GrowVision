@@ -33,6 +33,7 @@ class VideoRequest(BaseModel):
 
     camera_id: int | None = None
     step: int = Field(default=1, strict=True, ge=1)
+    duration_sec: float | None = Field(default=None, ge=0.5, le=300.0)
 
 
 def get_frame_file_path(image_path: str) -> Path:
@@ -222,7 +223,9 @@ def generate_timelapse_video(
     min_dur = settings.video_min_duration_sec
     n_selected = len(selected)
 
-    if n_selected >= fps_max * min_dur:
+    if body.duration_sec and body.duration_sec > 0:
+        framerate_str = f"{n_selected}/{body.duration_sec}"
+    elif n_selected >= fps_max * min_dur:
         framerate_str = str(fps_max)
     else:
         framerate_str = f"{n_selected}/{min_dur}"

@@ -25,6 +25,7 @@ erDiagram
         VARCHAR culture_name
         INTEGER light_gpio_pin
         INTEGER flash_gpio_pin
+        INTEGER capture_delay_sec
         FLOAT aruco_size_mm
         BOOLEAN is_archived
         DATETIME created_at
@@ -63,8 +64,22 @@ erDiagram
         VARCHAR external_id
         VARCHAR login
         VARCHAR role
+        BOOLEAN is_active
         DATETIME authorized_at
         DATETIME last_active_at
+        DATETIME logged_out_at
+    }
+
+    invite_codes {
+        INTEGER id PK
+        VARCHAR code UK
+        VARCHAR role
+        INTEGER created_by_user_id FK
+        DATETIME created_at
+        DATETIME expires_at
+        DATETIME used_at
+        INTEGER used_by_user_id FK
+        BOOLEAN is_revoked
     }
 
     edge_commands {
@@ -93,9 +108,11 @@ erDiagram
     installations o|--o{ edge_commands : "receives"
     cameras o|--o{ captures : "takes"
     captures ||--o{ plant_measurements : "contains"
+    users o|--o{ invite_codes : "creates"
+    users o|--o{ invite_codes : "uses"
 ```
 
-Таблицы `users` и `system_settings` с остальными связями не соединены: первая хранит сессии, вторая — настройки.
+Таблица `system_settings` хранит системные настройки и последнюю телеметрию. Таблица `invite_codes` связана с `users` связями создания и использования одноразовых кодов.
 
 ## 2. Связи между таблицами
 
@@ -106,6 +123,8 @@ erDiagram
 | cameras | captures | `captures.camera_id` | 0..1 → 0..N | SET NULL | Хранит, какой камерой сделан кадр; при удалении камеры кадры остаются. |
 | captures | plant_measurements | `plant_measurements.capture_id` | 1 → 0..N | CASCADE | Замеры бессмысленны без снимка; у кадра их может не быть (растение не обнаружено). |
 | installations | edge_commands | `edge_commands.installation_id` | 0..1 → 0..N | CASCADE | Команда на конкретную установку; глобальные команды без установки. |
+| users | invite_codes | `invite_codes.created_by_user_id` | 0..1 → 0..N | SET NULL | Создатель одноразового кода (только роль developer). |
+| users | invite_codes | `invite_codes.used_by_user_id` | 0..1 → 0..N | SET NULL | Пользователь, активировавший одноразовый код при входе. |
 
 ---
 
@@ -122,6 +141,7 @@ erDiagram
 | culture_name | VARCHAR(100) | NOT NULL | Выращиваемая культура (напр. «Салат Афицион»). |
 | light_gpio_pin | INTEGER | NOT NULL | Пин BCM на RPi для реле основного света. |
 | flash_gpio_pin | INTEGER | NOT NULL | Пин BCM на RPi для реле вспышки. |
+| capture_delay_sec | INTEGER | NOT NULL, DEFAULT 0, CHECK (>= 0) | Задержка перед съёмкой (сек) после включения вспышки для стабилизации экспозиции. |
 | aruco_size_mm | FLOAT | NULLABLE, CHECK (> 0) | Реальная длина стороны ArUco-маркера в мм. Если NULL — площадь выводится только в px. |
 | is_archived | BOOLEAN | NOT NULL, DEFAULT FALSE | Флаг архивации. Архивные установки не снимаются по таймеру, но доступны для просмотра в вебе. |
 | created_at | DATETIME | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Время создания (UTC). |
@@ -167,21 +187,23 @@ erDiagram
 | plant_index | INTEGER | NOT NULL, DEFAULT 0 | Порядковый номер куста на кадре (0 для MVP). |
 | area_px | FLOAT | NOT NULL, CHECK (>= 0) | Площадь маски растения в px. |
 
-### 3.5. `users` — Авторизованные сессии (Telegram-бот и CLI)
+### 3.5. `users` — Пользователи и сессии (Telegram-бот и CLI)
 
-Хранит активные сессии после двухэтапной авторизации (логин → пароль). При выходе запись удаляется. Роль «Гость» отдельной записью не хранится: это неавторизованный клиент, которому в таблице соответствует отсутствие записи.
+Хранит историю пользователей и статус сессий авторизации. При выходе (`logout`) или принудительном завершении сессии (`terminate`/кик) запись **не удаляется**: она переводится в `is_active = FALSE` с фиксацией времени `logged_out_at` (что сохраняет историю сессий и привязку `login` к `external_id`). Роль «Гость» отдельной записью не хранится: это неавторизованный клиент, которому в таблице соответствует отсутствие активной записи (`is_active = TRUE`).
 
 | Поле | Тип | Ограничения | Описание |
 |---|---|---|---|
 | id | INTEGER | PK, AUTOINCREMENT | Уникальный ID записи. |
 | client_type | VARCHAR(20) | NOT NULL, CHECK (IN ('telegram', 'cli')) | Тип клиента. |
 | external_id | VARCHAR(100) | NOT NULL | `telegram_id` для бота или идентификатор профиля CLI (`cli_<uuid4>`). |
-| login | VARCHAR(100) | NOT NULL | Логин (имя), введённый пользователем (напр. «Иван Иванов»). |
-| role | VARCHAR(20) | NOT NULL, CHECK (IN ('biologist', 'developer')) | Роль, определённая по введённому паролю. |
+| login | VARCHAR(100) | NOT NULL | Логин (имя), введённый пользователем (напр. «Андрей Бармин»). |
+| role | VARCHAR(20) | NOT NULL, CHECK (IN ('biologist', 'developer')) | Роль, определённая по паролю разработчика или инвайт-коду. |
+| is_active | BOOLEAN | NOT NULL, DEFAULT TRUE | Признак активной сессии. Только активные пользователи считаются авторизованными. |
 | authorized_at | DATETIME | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Время последней успешной авторизации (UTC). |
 | last_active_at | DATETIME | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Время последнего выполненного действия (UTC). |
+| logged_out_at | DATETIME | NULLABLE | Время выхода или принудительного завершения сессии (UTC). |
 
-Составное ограничение: `UNIQUE(client_type, external_id)`, то есть у одного клиента одна активная сессия.
+Составное ограничение: `UNIQUE(client_type, external_id)`, то есть у одного клиента одна запись пользователя.
 
 ### 3.6. `edge_commands` — Очередь команд Server → Raspberry Pi
 
@@ -233,6 +255,22 @@ Pull-модель: сервер ставит команды в очередь, �
 | `debug_mode` | `"false"` | Режим отладки (`"true"` / `"false"`). |
 | `rpi_last_telemetry` | — | JSON с последним heartbeat RPi: CPU, RAM, температура, свободное место, версия ПО из Git, размер `offline_queue`. |
 
+### 3.8. `invite_codes` — Одноразовые коды доступа (приглашения)
+
+Таблица одноразовых кодов для авторизации биологов в Telegram-боте. Коды генерируются пользователями с ролью Developer со сроком действия 10 минут. При входе код сжигается (`used_at`, `used_by_user_id`). Разработчик может также досрочно отозвать неиспользованный код (`is_revoked = TRUE`).
+
+| Поле | Тип | Ограничения | Описание |
+|---|---|---|---|
+| id | INTEGER | PK, AUTOINCREMENT | Уникальный ID записи. |
+| code | VARCHAR(20) | UNIQUE, NOT NULL | Уникальный код доступа из 6–8 читаемых символов. |
+| role | VARCHAR(20) | NOT NULL, DEFAULT 'biologist' | Назначаемая роль при входе по данному коду (`biologist`). |
+| created_by_user_id | INTEGER | FK → users.id (SET NULL), NULLABLE | ID разработчика, создавшего код доступа. |
+| created_at | DATETIME | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Время создания кода (UTC). |
+| expires_at | DATETIME | NOT NULL | Время истечения срока действия кода (UTC, `created_at + 10 минут`). |
+| used_at | DATETIME | NULLABLE | Время использования кода (UTC). При использовании фиксируется и код больше не действует. |
+| used_by_user_id | INTEGER | FK → users.id (SET NULL), NULLABLE | ID пользователя, активировавшего код. |
+| is_revoked | BOOLEAN | NOT NULL, DEFAULT FALSE | Признак ручного отзыва кода разработчиком. |
+
 ---
 
 ## 4. Ограничения, индексы и бизнес-правила
@@ -253,6 +291,8 @@ Pull-модель: сервер ставит команды в очередь, �
 | `captures.camera_id` | SET NULL |
 | `plant_measurements.capture_id` | CASCADE |
 | `edge_commands.installation_id` | CASCADE |
+| `invite_codes.created_by_user_id` | SET NULL |
+| `invite_codes.used_by_user_id` | SET NULL |
 
 Удаление установки с накопленными снимками блокируется на уровне БД. Штатный сценарий завершения цикла выращивания — перевод в `is_archived = TRUE`.
 

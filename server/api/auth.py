@@ -1,8 +1,9 @@
 import secrets
-from datetime import UTC, datetime
-from typing import Annotated, Literal
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
 from sqlalchemy.orm import Session
 
@@ -10,11 +11,12 @@ from server.api.deps import (
     format_utc_z,
     get_current_user,
     get_db,
+    require_role,
     verify_client_key,
 )
 from server.config import get_settings
 from server.core.rate_limit import login_limiter
-from server.db.models import User
+from server.db.models import InviteCode, User
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -26,22 +28,23 @@ class LoginRequest(BaseModel):
 
     client_type: Literal["telegram", "cli"]
     external_id: str
-    login: str
     password: str
+    login: str | None = None
 
-    @field_validator("login", "external_id")
+    @field_validator("external_id")
     @classmethod
-    def validate_non_empty(cls, v: str, info: ValidationInfo) -> str:
+    def validate_external_id(cls, v: str, info: ValidationInfo) -> str:
         if not isinstance(v, str) or not v.strip():
             raise ValueError(f"Поле {info.field_name} не может быть пустым")
         return v.strip()
 
 
 class LoginResponse(BaseModel):
-    """Ответ на успешный вход."""
+    """Ответ на успешный вход или запрос ввода логина."""
 
     role: str
-    login: str
+    login: str | None = None
+    status: str | None = None
 
 
 class MeResponse(BaseModel):
@@ -53,19 +56,50 @@ class MeResponse(BaseModel):
     last_active_at: str
 
 
+class InviteCreateResponse(BaseModel):
+    """Ответ на создание одноразового кода."""
+
+    id: int
+    code: str
+    role: str
+    created_at: str
+    expires_at: str
+
+
+class SessionInfo(BaseModel):
+    """Информация о сессии пользователя."""
+
+    id: int
+    client_type: str
+    external_id: str
+    login: str
+    role: str
+    is_active: bool
+    authorized_at: str
+    last_active_at: str
+    logged_out_at: str | None = None
+
+
+def generate_invite_code(length: int = 6) -> str:
+    """Генерирует читаемый уникальный код из букв и цифр без похожих символов."""
+    chars = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+    return "".join(secrets.choice(chars) for _ in range(length))
+
+
 @router.post(
     "/login",
     response_model=LoginResponse,
+    response_model_exclude_none=True,
     dependencies=[Depends(verify_client_key)],
 )
 def auth_login(
     body: LoginRequest,
     response: Response,
     db: Annotated[Session, Depends(get_db)],
-) -> LoginResponse:
+) -> Any:
     """4.1. POST /api/auth/login.
 
-    Вход по логину и паролю. Лимит: не более 5 попыток в минуту.
+    Вход по логину/паролю или одноразовому коду. Лимит: не более 5 попыток в минуту.
     """
     # 1. Проверка лимита попыток входа
     allowed, retry_after = login_limiter.is_allowed(body.client_type, body.external_id)
@@ -77,28 +111,63 @@ def auth_login(
             headers={"Retry-After": str(retry_after)},
         )
 
-    # 2. Проверка пароля через secrets.compare_digest
     settings = get_settings()
-    pwd_bytes = body.password.encode("utf-8")
+    pwd_bytes = body.password.strip().encode("utf-8")
+    now = datetime.now(UTC)
 
     role: str | None = None
-    if settings.developer_password and secrets.compare_digest(
-        pwd_bytes, settings.developer_password.encode("utf-8")
-    ):
-        role = "developer"
-    elif settings.biologist_password and secrets.compare_digest(
-        pwd_bytes, settings.biologist_password.encode("utf-8")
-    ):
-        role = "biologist"
+    matched_invite: InviteCode | None = None
 
-    if not role:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверный пароль",
-        )
+    # 2. Проверка прав в зависимости от типа клиента
+    if body.client_type == "cli":
+        # В CLI принимается ТОЛЬКО пароль разработчика
+        if settings.developer_password and secrets.compare_digest(
+            pwd_bytes, settings.developer_password.encode("utf-8")
+        ):
+            role = "developer"
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Неверный пароль разработчика",
+            )
+        if not body.login or not body.login.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Для входа через CLI необходимо указать login",
+            )
+    else:
+        # Для Telegram: проверяем пароль разработчика или одноразовый код
+        if settings.developer_password and secrets.compare_digest(
+            pwd_bytes, settings.developer_password.encode("utf-8")
+        ):
+            role = "developer"
+        else:
+            # Ищем активный неиспользованный одноразовый код
+            invite = (
+                db.query(InviteCode)
+                .filter(
+                    InviteCode.code == body.password.strip().upper(),
+                    InviteCode.used_at.is_(None),
+                    InviteCode.is_revoked.is_(False),
+                    InviteCode.expires_at > now,
+                )
+                .first()
+            )
+            if invite:
+                role = invite.role
+                matched_invite = invite
+            elif settings.biologist_password and secrets.compare_digest(
+                pwd_bytes, settings.biologist_password.encode("utf-8")
+            ):
+                # Поддержка постоянного пароля биолога (legacy/fallback)
+                role = "biologist"
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Неверный пароль или одноразовый код",
+                )
 
-    # 3. Создание или обновление сессии в users
-    now = datetime.now(UTC)
+    # 3. Поиск существующего пользователя по (client_type, external_id)
     user = (
         db.query(User)
         .filter(
@@ -107,25 +176,47 @@ def auth_login(
         )
         .first()
     )
-    if user:
-        user.login = body.login
-        user.role = role
-        user.authorized_at = now
-        user.last_active_at = now
-    else:
+
+    resolved_login = body.login.strip() if (body.login and body.login.strip()) else None
+
+    if not user:
+        # Новый пользователь: если login не передан, НЕ сжигаем код и запрашиваем имя
+        if not resolved_login:
+            return JSONResponse(
+                status_code=200,
+                content={"status": "needs_login", "role": role},
+            )
         user = User(
             client_type=body.client_type,
             external_id=body.external_id,
-            login=body.login,
+            login=resolved_login,
             role=role,
+            is_active=True,
             authorized_at=now,
             last_active_at=now,
+            logged_out_at=None,
         )
         db.add(user)
+        db.flush()
+    else:
+        # Пользователь уже существует: подтягиваем сохранённый login, если не передан новый
+        if not resolved_login:
+            resolved_login = user.login
+        user.login = resolved_login
+        user.role = role
+        user.is_active = True
+        user.authorized_at = now
+        user.last_active_at = now
+        user.logged_out_at = None
+
+    # Если использован одноразовый код — помечаем его
+    if matched_invite:
+        matched_invite.used_at = now
+        matched_invite.used_by_user_id = user.id
 
     db.commit()
 
-    return LoginResponse(role=role, login=body.login)
+    return LoginResponse(role=role, login=resolved_login)
 
 
 @router.post("/logout", response_model=dict[str, bool])
@@ -135,9 +226,10 @@ def auth_logout(
 ) -> dict[str, bool]:
     """4.1. POST /api/auth/logout.
 
-    Выход из системы, удаление активной сессии пользователя.
+    Выход из системы. Запись пользователя сохраняется с is_active=False и logged_out_at.
     """
-    db.delete(current_user)
+    current_user.is_active = False
+    current_user.logged_out_at = datetime.now(UTC)
     db.commit()
     return {"ok": True}
 
@@ -158,3 +250,132 @@ def auth_me(
         authorized_at=auth_at,
         last_active_at=last_act,
     )
+
+
+# ================== Управление приглашениями (Developer) ==================
+
+
+@router.post("/invites", response_model=InviteCreateResponse)
+def create_invite_code(
+    current_user: Annotated[User, Depends(require_role("developer"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> InviteCreateResponse:
+    """Генерация одноразового инвайт-кода для биолога (срок действия 10 минут)."""
+    now = datetime.now(UTC)
+    expires = now + timedelta(minutes=10)
+
+    # Генерируем уникальный код
+    code = generate_invite_code(6)
+    while db.query(InviteCode).filter(InviteCode.code == code).first():
+        code = generate_invite_code(6)
+
+    invite = InviteCode(
+        code=code,
+        role="biologist",
+        created_by_user_id=current_user.id,
+        created_at=now,
+        expires_at=expires,
+        is_revoked=False,
+    )
+    db.add(invite)
+    db.commit()
+
+    return InviteCreateResponse(
+        id=invite.id,
+        code=invite.code,
+        role=invite.role,
+        created_at=format_utc_z(invite.created_at) or "",
+        expires_at=format_utc_z(invite.expires_at) or "",
+    )
+
+
+@router.get("/invites", response_model=list[InviteCreateResponse])
+def list_active_invites(
+    current_user: Annotated[User, Depends(require_role("developer"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[InviteCreateResponse]:
+    """Список активных неиспользованных инвайт-кодов."""
+    now = datetime.now(UTC)
+    invites = (
+        db.query(InviteCode)
+        .filter(
+            InviteCode.used_at.is_(None),
+            InviteCode.is_revoked.is_(False),
+            InviteCode.expires_at > now,
+        )
+        .order_by(InviteCode.created_at.desc())
+        .all()
+    )
+    return [
+        InviteCreateResponse(
+            id=i.id,
+            code=i.code,
+            role=i.role,
+            created_at=format_utc_z(i.created_at) or "",
+            expires_at=format_utc_z(i.expires_at) or "",
+        )
+        for i in invites
+    ]
+
+
+@router.delete("/invites/{invite_id}", response_model=dict[str, bool])
+def revoke_invite(
+    invite_id: int,
+    current_user: Annotated[User, Depends(require_role("developer"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, bool]:
+    """Отзыв неиспользованного инвайт-кода."""
+    invite = db.query(InviteCode).filter(InviteCode.id == invite_id).first()
+    if not invite:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Инвайт-код #{invite_id} не найден",
+        )
+    invite.is_revoked = True
+    db.commit()
+    return {"ok": True}
+
+
+# ================== Управление сессиями (Developer) ==================
+
+
+@router.get("/sessions", response_model=list[SessionInfo])
+def list_sessions(
+    current_user: Annotated[User, Depends(require_role("developer"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[SessionInfo]:
+    """Список всех сессий пользователей (активных и неактивных)."""
+    users = db.query(User).order_by(User.last_active_at.desc()).all()
+    return [
+        SessionInfo(
+            id=u.id,
+            client_type=u.client_type,
+            external_id=u.external_id,
+            login=u.login,
+            role=u.role,
+            is_active=u.is_active,
+            authorized_at=format_utc_z(u.authorized_at) or "",
+            last_active_at=format_utc_z(u.last_active_at) or "",
+            logged_out_at=format_utc_z(u.logged_out_at),
+        )
+        for u in users
+    ]
+
+
+@router.post("/sessions/{session_id}/terminate", response_model=dict[str, bool])
+def terminate_session(
+    session_id: int,
+    current_user: Annotated[User, Depends(require_role("developer"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, bool]:
+    """Принудительное завершение активной сессии пользователя (кик)."""
+    target_user = db.query(User).filter(User.id == session_id).first()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Сессия #{session_id} не найдена",
+        )
+    target_user.is_active = False
+    target_user.logged_out_at = datetime.now(UTC)
+    db.commit()
+    return {"ok": True}

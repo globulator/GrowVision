@@ -38,6 +38,7 @@ class HardwareManager:
         relay_active_high: bool = True,
         v4l_by_id_dir: Path | None = None,
         sys_dir: Path | None = None,
+        mock_overlay_aruco: bool = True,
     ):
         self.mode = mode.lower()
         if self.mode not in ("rpi", "mock"):
@@ -48,6 +49,7 @@ class HardwareManager:
         self.relay_active_high = relay_active_high
         self.v4l_by_id_dir = v4l_by_id_dir or Path("/dev/v4l/by-id")
         self.sys_dir = sys_dir or Path("/sys")
+        self.mock_overlay_aruco = mock_overlay_aruco
 
         self.lock = threading.Lock()
         self._gpio_devices: dict[int, Any] = {}
@@ -198,6 +200,7 @@ class HardwareManager:
             frame = generate_synthetic_frame(
                 frame_index=idx,
                 camera_id=camera_hardware_id,
+                overlay_aruco=self.mock_overlay_aruco,
             )
             self._mock_frame_counter += 1
             return frame

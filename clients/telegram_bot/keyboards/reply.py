@@ -47,9 +47,10 @@ def get_developer_reply_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="⚙️ Система"),
             ],
             [
+                KeyboardButton(text="👥 Сессии"),
                 KeyboardButton(text="👤 Профиль / Выход"),
-                KeyboardButton(text="ℹ️ Справка"),
             ],
+            [KeyboardButton(text="ℹ️ Справка")],
         ],
         resize_keyboard=True,
     )

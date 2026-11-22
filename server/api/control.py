@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
-from server.api.deps import format_utc_z, get_db, require_role
+from server.api.deps import format_utc_z, get_current_user, get_db, require_role
 from server.core.area import calculate_area_display
 from server.core.state import app_state
 from server.core.system_status import (
@@ -233,6 +233,26 @@ async def control_snap(
         resp["debug_info"] = debug_info
 
     return resp
+
+
+@router.get("/captures/{capture_id}", response_model=dict[str, Any])
+def get_capture_info(
+    capture_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> dict[str, Any]:
+    """Возвращает информацию о снимке (для переключения слоев исходник/разметка)."""
+    cap = db.query(Capture).filter(Capture.id == capture_id).first()
+    if not cap:
+        raise HTTPException(status_code=404, detail="Снимок не найден")
+    return {
+        "id": cap.id,
+        "installation_id": cap.installation_id,
+        "camera_id": cap.camera_id,
+        "captured_at": format_utc_z(cap.captured_at),
+        "raw_url": f"/{cap.raw_image_path}",
+        "annotated_url": f"/{cap.annotated_image_path}",
+    }
 
 
 @router.post("/light/main", response_model=dict[str, Any])

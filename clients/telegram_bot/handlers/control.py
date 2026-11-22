@@ -11,7 +11,10 @@ from aiogram.types import (
 )
 
 from clients.telegram_bot.api_client import GrowVisionApiClient
-from clients.telegram_bot.keyboards.inline import get_control_panel_keyboard
+from clients.telegram_bot.keyboards.inline import (
+    get_control_panel_keyboard,
+    get_snap_layer_keyboard,
+)
 from clients.telegram_bot.keyboards.paginator import build_paginator_keyboard
 from clients.telegram_bot.utils.errors import ApiError, format_api_error
 from clients.telegram_bot.utils.formatters import (
@@ -22,6 +25,9 @@ from clients.telegram_bot.utils.formatters import (
 logger = logging.getLogger(__name__)
 
 router = Router(name="control")
+
+# Локальное состояние реле: target -> {"light": bool, "flash": bool}
+_relay_states: dict[str, dict[str, bool]] = {}
 
 
 # ================== Свет и реле (Developer) ==================
@@ -120,7 +126,12 @@ async def handle_control_direct_from_card(
         inst = await api_client.get_installation(user_id, int(inst_id))
         inst_name = f"«{inst.get('name')}»"
 
-    kb = get_control_panel_keyboard(target=inst_id)
+    st = _relay_states.get(inst_id, {})
+    kb = get_control_panel_keyboard(
+        target=inst_id,
+        light_state=st.get("light", False),
+        flash_state=st.get("flash", False),
+    )
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
             await callback.message.edit_text(
@@ -148,7 +159,12 @@ async def handle_control_target_selected(
             inst = await api_client.get_installation(user_id, int(target))
             target_title = f"«{inst.get('name')}»"
 
-    kb = get_control_panel_keyboard(target=target)
+    st = _relay_states.get(target, {})
+    kb = get_control_panel_keyboard(
+        target=target,
+        light_state=st.get("light", False),
+        flash_state=st.get("flash", False),
+    )
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
             await callback.message.edit_text(
@@ -185,6 +201,7 @@ async def handle_control_light_action(
 
     try:
         resp = await api_client.control_light_main(user_id, target, state_bool)
+        _relay_states.setdefault(target, {})["light"] = state_bool
         res_msg = resp.get("result_message", "Успешно")
         debug_info = resp.get("debug_info")
         debug_log = (
@@ -204,7 +221,12 @@ async def handle_control_light_action(
             else ""
         )
 
-        kb = get_control_panel_keyboard(target=target)
+        st = _relay_states.get(target, {})
+        kb = get_control_panel_keyboard(
+            target=target,
+            light_state=state_bool,
+            flash_state=st.get("flash", False),
+        )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
                 f"💡 <b>Результат:</b> {res_msg}{debug_str}",
@@ -212,7 +234,12 @@ async def handle_control_light_action(
             )
     except ApiError as exc:
         err = format_api_error(exc, is_control=True)
-        kb = get_control_panel_keyboard(target=target)
+        st = _relay_states.get(target, {})
+        kb = get_control_panel_keyboard(
+            target=target,
+            light_state=st.get("light", False),
+            flash_state=st.get("flash", False),
+        )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
                 f"❌ Ошибка управления светом:\n{err}",
@@ -246,6 +273,7 @@ async def handle_control_flash_action(
 
     try:
         resp = await api_client.control_light_flash(user_id, target, state_bool)
+        _relay_states.setdefault(target, {})["flash"] = state_bool
         res_msg = resp.get("result_message", "Успешно")
         debug_info = resp.get("debug_info")
         debug_log = (
@@ -264,7 +292,12 @@ async def handle_control_flash_action(
             else ""
         )
 
-        kb = get_control_panel_keyboard(target=target)
+        st = _relay_states.get(target, {})
+        kb = get_control_panel_keyboard(
+            target=target,
+            light_state=st.get("light", False),
+            flash_state=state_bool,
+        )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
                 f"⚡ <b>Результат:</b> {res_msg}{debug_str}",
@@ -272,7 +305,12 @@ async def handle_control_flash_action(
             )
     except ApiError as exc:
         err = format_api_error(exc, is_control=True)
-        kb = get_control_panel_keyboard(target=target)
+        st = _relay_states.get(target, {})
+        kb = get_control_panel_keyboard(
+            target=target,
+            light_state=st.get("light", False),
+            flash_state=st.get("flash", False),
+        )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
                 f"❌ Ошибка управления вспышкой:\n{err}",
@@ -526,29 +564,25 @@ async def _execute_snap(
             raw_url = cap.get("raw_url", "")
             raw_bytes = await api_client.download_file(user_id, raw_url)
 
-            if role == "biologist":
-                # Биолог получает только raw-снимок без разметки нейросетью
+            if role == "developer":
+                # Разработчик получает фото с inline-кнопкой переключения «Исходник / Разметка»
+                cap_id = cap.get("capture_id") or cap.get("id") or cap_inst_id or 1
+                snap_kb = get_snap_layer_keyboard(cap_id, current_layer="raw")
+                await callback.bot.send_photo(
+                    chat_id=target_chat,
+                    photo=BufferedInputFile(raw_bytes, filename=f"raw_{idx}.jpg"),
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=snap_kb,
+                )
+            else:
+                # Биолог получает только raw-снимок без разметки и без кнопок переключения
                 await callback.bot.send_photo(
                     chat_id=target_chat,
                     photo=BufferedInputFile(raw_bytes, filename=f"raw_{idx}.jpg"),
                     caption=caption,
                     parse_mode="HTML",
                 )
-            else:
-                # Разработчик получает альбом из двух кадров (raw + annotated)
-                ann_url = cap.get("annotated_url", "")
-                ann_bytes = await api_client.download_file(user_id, ann_url)
-                media = [
-                    InputMediaPhoto(
-                        media=BufferedInputFile(raw_bytes, filename=f"raw_{idx}.jpg"),
-                        caption=caption,
-                        parse_mode="HTML",
-                    ),
-                    InputMediaPhoto(
-                        media=BufferedInputFile(ann_bytes, filename=f"ann_{idx}.jpg"),
-                    ),
-                ]
-                await callback.bot.send_media_group(chat_id=target_chat, media=media)
 
     except ApiError as exc:
         err = format_api_error(exc, is_control=True)
@@ -562,3 +596,39 @@ async def _execute_snap(
             await status_msg.edit_text(f"❌ Не удалось выполнить снимок:\n{err}")
         elif callback.message and isinstance(callback.message, Message):
             await callback.message.answer(f"❌ Не удалось выполнить снимок:\n{err}")
+
+
+@router.callback_query(F.data.startswith("snap:layer:"))
+async def handle_toggle_snap_layer(
+    callback: CallbackQuery,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Переключение между сырым кадром и разметкой на сообщении со снимком (Developer)."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    if len(parts) < 4:
+        return
+    cap_id = int(parts[2])
+    target_layer = parts[3]  # "raw" или "ann"
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    try:
+        cap_info = await api_client.get_capture(user_id, cap_id)
+        url_field = "annotated_url" if target_layer == "ann" else "raw_url"
+        img_url = cap_info.get(url_field) or cap_info.get("raw_url", "")
+        img_bytes = await api_client.download_file(user_id, img_url)
+
+        snap_kb = get_snap_layer_keyboard(cap_id, current_layer=target_layer)
+        if callback.message and isinstance(callback.message, Message):
+            caption = callback.message.caption or ""
+            media = InputMediaPhoto(
+                media=BufferedInputFile(
+                    img_bytes, filename=f"snap_{target_layer}_{cap_id}.jpg"
+                ),
+                caption=caption,
+                parse_mode="HTML",
+            )
+            await callback.message.edit_media(media=media, reply_markup=snap_kb)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Ошибка переключения слоя снимка: {exc}")
+        await callback.answer(f"Не удалось переключить слой: {exc}", show_alert=True)

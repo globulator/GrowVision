@@ -115,6 +115,7 @@ def get_current_user_optional(
         .filter(
             User.client_type == x_client_type,
             User.external_id == x_external_id,
+            User.is_active.is_(True),
         )
         .first()
     )
@@ -159,6 +160,7 @@ def get_current_user(
         .filter(
             User.client_type == x_client_type,
             User.external_id == x_external_id,
+            User.is_active.is_(True),
         )
         .first()
     )

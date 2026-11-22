@@ -43,6 +43,7 @@ class EdgeOrchestrator:
             relay_active_high=config.relay_active_high,
             v4l_by_id_dir=config.v4l_by_id_dir,
             sys_dir=config.sys_dir,
+            mock_overlay_aruco=config.mock_overlay_aruco,
         )
         self.vision = vision or VisionPipeline(
             model_path=config.model_path,
@@ -367,12 +368,14 @@ class EdgeOrchestrator:
             v4l_by_id_dir=self.config.v4l_by_id_dir,
             sys_dir=self.config.sys_dir,
         )
+        hw_ids = [c.hardware_id for c in scanned]
         self.client.send_command_result(
             cmd.id,
             CommandResult(
                 status="done",
                 result_message=f"Обнаружено камер: {len(scanned)}",
                 scanned_cameras=scanned,
+                debug_log_line=f"[CAM] scan_cameras -> found {len(scanned)}: {hw_ids}",
             ),
         )
 
@@ -426,13 +429,18 @@ class EdgeOrchestrator:
                         frame_index=frame_idx,
                     )
 
+                    now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
                     # 2. Компьютерное зрение
                     ann_bytes, aruco_area, measurements = self.vision.process_capture(
-                        raw_bytes
+                        raw_bytes,
+                        inst_name=getattr(inst, "name", None),
+                        culture_name=getattr(inst, "culture_name", None),
+                        camera_name=cam_hw_id,
+                        captured_at=now_str,
+                        aruco_size_mm=getattr(inst, "aruco_size_mm", None),
                     )
 
                     # 3. Метаданные
-                    now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
                     meta = CaptureMeta(
                         installation_id=inst.id,
                         camera_hardware_id=cam_hw_id,
@@ -527,11 +535,18 @@ class EdgeOrchestrator:
                             capture_delay_sec=inst_delay,
                             frame_index=frame_idx,
                         )
+                        now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
                         ann_bytes, aruco_area, measurements = (
-                            self.vision.process_capture(raw_bytes)
+                            self.vision.process_capture(
+                                raw_bytes,
+                                inst_name=getattr(inst, "name", None),
+                                culture_name=getattr(inst, "culture_name", None),
+                                camera_name=cam_hw_id,
+                                captured_at=now_str,
+                                aruco_size_mm=getattr(inst, "aruco_size_mm", None),
+                            )
                         )
 
-                        now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
                         meta = CaptureMeta(
                             installation_id=inst.id,
                             camera_hardware_id=cam_hw_id,

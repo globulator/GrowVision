@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import random
 import sys
 import time
 from typing import Any
@@ -393,20 +394,22 @@ class FakeTelegramServer:
 
 
 async def _login_dev(fake_tg: FakeTelegramServer, user_id: int, dev_pass: str) -> None:
-    """Двухэтапная авторизация разработчика в боте."""
+    """Авторизация разработчика в боте по паролю/коду с поддержкой первого входа."""
     cnt = fake_tg.get_total_responses_count()
     fake_tg.enqueue_user_message(user_id, "/login")
     await fake_tg.wait_for_new_bot_response(cnt)
 
-    # Шаг 1: ввод логина
-    cnt = fake_tg.get_total_responses_count()
-    fake_tg.enqueue_user_message(user_id, "DevUser")
-    await fake_tg.wait_for_new_bot_response(cnt)
-
-    # Шаг 2: ввод пароля
+    # Ввод пароля
     cnt = fake_tg.get_total_responses_count()
     fake_tg.enqueue_user_message(user_id, dev_pass)
     resp = await fake_tg.wait_for_new_bot_response(cnt)
+
+    # Если первый вход, бот запросит имя
+    if "Имя и Фамилию" in resp["text"]:
+        cnt = fake_tg.get_total_responses_count()
+        fake_tg.enqueue_user_message(user_id, "DevUser")
+        resp = await fake_tg.wait_for_new_bot_response(cnt)
+
     assert "успешно вошли" in resp["text"]
 
 
@@ -466,7 +469,7 @@ async def run_scenario(
     # Запускаем polling в фоновом таске
     polling_task = asyncio.create_task(dp.start_polling(bot, handle_as_tasks=False))
 
-    user_id = 10001
+    user_id = random.randint(100000, 999999)
     result: dict[str, Any] = {"ok": False}
 
     try:
@@ -653,13 +656,12 @@ async def run_scenario(
             await fake_tg.wait_for_new_bot_response(cnt)
 
             cnt = fake_tg.get_total_responses_count()
-            fake_tg.enqueue_user_message(user_id, "A<B&C")
-            resp_login = await fake_tg.wait_for_new_bot_response(cnt)
-            assert "A&lt;B&amp;C" in resp_login["text"]
-            assert "Шаг 2 из 2" in resp_login["text"]
+            fake_tg.enqueue_user_message(user_id, dev_pass)
+            resp_prompt = await fake_tg.wait_for_new_bot_response(cnt)
+            assert "Имя и Фамилию" in resp_prompt["text"]
 
             cnt = fake_tg.get_total_responses_count()
-            fake_tg.enqueue_user_message(user_id, dev_pass)
+            fake_tg.enqueue_user_message(user_id, "A<B&C")
             resp_auth = await fake_tg.wait_for_new_bot_response(cnt)
             assert "Вы успешно вошли как" in resp_auth["text"]
             assert "A&lt;B&amp;C" in resp_auth["text"]

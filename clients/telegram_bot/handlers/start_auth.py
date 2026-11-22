@@ -15,6 +15,7 @@ from clients.telegram_bot.keyboards.reply import (
 )
 from clients.telegram_bot.states import AuthStates
 from clients.telegram_bot.utils.errors import ApiError, format_api_error
+from clients.telegram_bot.utils.formatters import format_tg_user_link
 
 logger = logging.getLogger(__name__)
 
@@ -39,22 +40,22 @@ async def handle_start(
 
     if me:
         role = me.get("role", "guest")
-        raw_username = me.get("username", "Пользователь")
-        username = html.escape(str(raw_username))
+        raw_username = me.get("login") or me.get("username") or "Пользователь"
+        user_link = format_tg_user_link(raw_username, user_id)
         if role == "developer":
             text = (
-                f"👋 Здравствуйте, <b>{username}</b>!\n\n"
+                f"👋 Здравствуйте, <b>{user_link}</b>!\n\n"
                 f"Ваша роль: <b>Разработчик</b>. Доступно полное управление оборудованием, "
                 f"камерами, установками и системными параметрами."
             )
         elif role == "biologist":
             text = (
-                f"👋 Здравствуйте, <b>{username}</b>!\n\n"
+                f"👋 Здравствуйте, <b>{user_link}</b>!\n\n"
                 f"Ваша роль: <b>Биолог</b>. Доступно управление съёмкой, скачивание "
                 f"видео-таймлапсов и настройка параметров растений."
             )
         else:
-            text = f"👋 Здравствуйте, <b>{username}</b>!"
+            text = f"👋 Здравствуйте, <b>{user_link}</b>!"
     else:
         role = "guest"
         text = (
@@ -175,7 +176,7 @@ async def handle_cancel_callback(
         )
 
 
-# ================== Авторизация (двухэтапная) ==================
+# ================== Авторизация ==================
 
 
 @router.message(Command("login"))
@@ -184,11 +185,12 @@ async def start_login(
     message: Message,
     state: FSMContext,
 ) -> None:
-    """Начало двухэтапной авторизации: запрос логина."""
-    await state.set_state(AuthStates.waiting_login)
+    """Начало авторизации: немедленный запрос пароля или одноразового кода."""
+    await state.set_state(AuthStates.waiting_password)
     await message.answer(
         "🔑 <b>Авторизация в GrowVision</b>\n\n"
-        "Шаг 1 из 2. Введите ваш логин (имя и фамилию, например: <code>Андрей Бармин</code>):",
+        "Введите постоянный пароль разработчика или одноразовый код биолога:\n"
+        "<i>(Сообщение с паролем/кодом будет сразу автоматически удалено из чата для безопасности)</i>",
         reply_markup=get_cancel_inline_keyboard("auth:cancel"),
     )
 
@@ -198,7 +200,7 @@ async def process_login_username(
     message: Message,
     state: FSMContext,
 ) -> None:
-    """Шаг 1: получение логина и переход к вводу пароля."""
+    """Шаг совместимости: получение логина и переход к вводу пароля."""
     username = (message.text or "").strip()
     if not username:
         await message.answer(
@@ -211,7 +213,7 @@ async def process_login_username(
     await state.set_state(AuthStates.waiting_password)
     await message.answer(
         f"Логин: <b>{html.escape(username)}</b>\n\n"
-        "Шаг 2 из 2. Введите пароль доступа:\n"
+        "Введите пароль доступа или код доступа:\n"
         "<i>(Сообщение с паролем будет сразу автоматически удалено из чата для безопасности)</i>",
         reply_markup=get_cancel_inline_keyboard("auth:cancel"),
     )
@@ -223,7 +225,7 @@ async def process_login_password(
     state: FSMContext,
     api_client: GrowVisionApiClient,
 ) -> None:
-    """Шаг 2: получение пароля, удаление сообщения из чата и вызов API логина."""
+    """Получение пароля/кода, удаление сообщения из чата и вызов API логина."""
     password = (message.text or "").strip()
 
     # Сразу пытаемся удалить сообщение пользователя с паролем
@@ -231,40 +233,55 @@ async def process_login_password(
         await message.delete()
 
     data = await state.get_data()
-    username = data.get("username", "")
+    username = data.get("username")
     user_id = message.from_user.id if message.from_user else 0
 
     if not password:
         await message.answer(
-            "Пароль не может быть пустым. Введите пароль доступа:",
+            "Пароль или код не может быть пустым. Введите пароль доступа или одноразовый код:",
             reply_markup=get_cancel_inline_keyboard("auth:cancel"),
         )
         return
 
     try:
         resp = await api_client.login(
-            user_id=user_id, username=username, password=password
+            user_id=user_id, password=password, login=username
         )
+        # Если сервер сообщает, что это первый вход нового пользователя и нужен логин
+        if isinstance(resp, dict) and resp.get("status") == "needs_login":
+            await state.update_data(
+                password=password, role=resp.get("role", "biologist")
+            )
+            await state.set_state(AuthStates.waiting_full_name)
+            await message.answer(
+                "👋 <b>Добро пожаловать в команду GrowVision!</b>\n\n"
+                "Код доступа подтверждён. Для завершения входа введите ваши <b>Имя и Фамилию</b> "
+                "(например: <code>Андрей Бармин</code>):",
+                reply_markup=get_cancel_inline_keyboard("auth:cancel"),
+            )
+            return
+
         await state.clear()
         role = resp.get("role", "guest")
+        resolved_login = resp.get("login") or username or "Пользователь"
         role_title = (
             "Биолог"
             if role == "biologist"
             else ("Разработчик" if role == "developer" else role)
         )
+        user_link = format_tg_user_link(resolved_login, user_id)
 
         await message.answer(
-            f"✅ Вы успешно вошли как <b>{html.escape(username)}</b> (роль: <b>{role_title}</b>)!",
+            f"✅ Вы успешно вошли как <b>{user_link}</b> (роль: <b>{role_title}</b>)!",
             reply_markup=get_menu_by_role(role),
         )
     except ApiError as exc:
         if exc.status_code == 401:
             await message.answer(
-                "❌ <b>Неверный пароль.</b>\n"
+                "❌ <b>Неверный пароль или недействительный код доступа.</b>\n"
                 "Попробуйте ввести пароль ещё раз или нажмите [ ❌ Отмена ]:",
                 reply_markup=get_cancel_inline_keyboard("auth:cancel"),
             )
-            # Остаемся в состоянии waiting_password
             return
         await state.clear()
         err_msg = format_api_error(exc)
@@ -277,6 +294,52 @@ async def process_login_password(
         err_msg = format_api_error(exc)
         await message.answer(
             f"Не удалось войти:\n{err_msg}",
+            reply_markup=get_guest_reply_keyboard(),
+        )
+
+
+@router.message(AuthStates.waiting_full_name)
+async def process_login_full_name(
+    message: Message,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Шаг завершения авторизации для нового пользователя: получение имени и фамилии."""
+    full_name = (message.text or "").strip()
+    if not full_name:
+        await message.answer(
+            "Имя и фамилия не могут быть пустыми. Введите имя и фамилию (например: <code>Андрей Бармин</code>):",
+            reply_markup=get_cancel_inline_keyboard("auth:cancel"),
+        )
+        return
+
+    data = await state.get_data()
+    password = data.get("password", "")
+    user_id = message.from_user.id if message.from_user else 0
+
+    try:
+        resp = await api_client.login(
+            user_id=user_id, password=password, login=full_name
+        )
+        await state.clear()
+        role = resp.get("role", "guest")
+        resolved_login = resp.get("login") or full_name
+        role_title = (
+            "Биолог"
+            if role == "biologist"
+            else ("Разработчик" if role == "developer" else role)
+        )
+        user_link = format_tg_user_link(resolved_login, user_id)
+
+        await message.answer(
+            f"✅ Вы успешно вошли как <b>{user_link}</b> (роль: <b>{role_title}</b>)!",
+            reply_markup=get_menu_by_role(role),
+        )
+    except Exception as exc:  # noqa: BLE001
+        await state.clear()
+        err_msg = format_api_error(exc)
+        await message.answer(
+            f"Не удалось завершить вход:\n{err_msg}",
             reply_markup=get_guest_reply_keyboard(),
         )
 
@@ -330,6 +393,8 @@ async def handle_profile(
     else:
         last_str = "—"
 
+    user_link = format_tg_user_link(login_val, user_id)
+
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
     profile_kb = InlineKeyboardMarkup(
@@ -344,7 +409,7 @@ async def handle_profile(
 
     text = (
         "👤 <b>Профиль пользователя</b>\n\n"
-        f"<b>Логин:</b> {html.escape(str(login_val))}\n"
+        f"<b>Логин:</b> {user_link}\n"
         f"<b>Роль:</b> {role_title}\n"
         f"<b>Время входа:</b> {auth_str}\n"
         f"<b>Последняя активность:</b> {last_str}"
