@@ -7,24 +7,27 @@
 - Текущий этап: 7.3
 - Название этапа: Авторизация по одноразовому коду, управление сессиями, доработки CV-разметки, UX-полировка и фиксы раунда 5
 - Режим: FULL
-- Статус: TESTING
+- Статус: STAGE_PASS
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт тестирование QA)
+- Ждём от пользователя: ничего (идёт финализация документации Scribe)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| qa | full-stack | stage-7/auth-and-polish | docs/tasks/stage-7-auth-and-polish-qa.md | — |
+| scribe | docs | main | — | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-7/auth-and-polish создана от main (1816926)
 - be80fa8 docs(repo): prepare stage 7.3 task and update state to building
 - 8e72a62 docs(repo): prepare stage 7.3 qa task card
 - 6383ff5 feat(stage-7.3): implement auth by one-time code, session management, cv annotations, and polish
+- d6a0385 docs(repo): prepare stage 7.3 qa task and update state to testing
+- c9efc8c docs(qa): update qa_log with stage 7.3 verification
+- f4fc628 chore(repo): merge stage-7/auth-and-polish into main
 
 ## Последний вердикт QA
-- Вердикт: PASS (по этапу 7.2, раунд 4)
+- Вердикт: PASS (по этапу 7.3, раунд 5)
 - Открытые дефекты (ID): —
 - Отложенные (DEFERRED, ID): —
 
@@ -41,10 +44,6 @@
 - Этап 7.2: Комплексные исправления раунда 4 (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.2.md)
 
 ## История (последние 15 событий)
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-4-builder.md
-- 2026-11-22: Статус изменён на BUILDING (режим FULL), задача передана Builder-у
-- 2026-11-22: Builder реализовал комплексные исправления раунда 4 (268 тестов passed), статус READY_FOR_QA
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-4-qa.md, статус изменён на TESTING, задача передана QA
 - 2026-11-22: QA проверил этап 7.2 (раунд 4), вердикт PASS (268 тестов, 0 дефектов)
 - 2026-11-22: Ветка stage-7/bot-fixes-4 слита в main (версия 0.3.1 сохранена без изменений)
 - 2026-11-22: Статус этапа 7.2 изменён на STAGE_PASS, задача передана Scribe
@@ -56,3 +55,6 @@
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-7-auth-and-polish-builder.md, статус BUILDING, задача передана Builder-у
 - 2026-11-22: Builder реализовал этап 7.3 (279 тестов passed), статус READY_FOR_QA
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-7-auth-and-polish-qa.md, статус изменён на TESTING, задача передана QA
+- 2026-11-22: QA проверил этап 7.3, вердикт PASS (279 тестов, 0 дефектов)
+- 2026-11-22: Ветка stage-7/auth-and-polish слита в main (версия 0.3.1 сохранена без изменений)
+- 2026-11-22: Статус этапа 7.3 изменён на STAGE_PASS, задача передана Scribe
