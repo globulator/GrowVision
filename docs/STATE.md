@@ -4,18 +4,18 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 7.2 (исправления раунд 4)
+- Текущий этап: 7.2 (исправления раунд 4) — завершён
 - Название этапа: Комплексные исправления Telegram-бота, сервера, CLI и Edge-агента (камеры установки, debug-блок, валидация пинов, архив, удаление с кадрами, capture_delay_sec, блокировки, рост растений)
 - Режим: FULL
-- Статус: STAGE_PASS
+- Статус: DONE
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт финализация документации Scribe)
+- Ждём от пользователя: приёмки этапа 7.2 и команды на запуск этапа 8 (Web SPA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| Scribe | docs | main | — | — |
+| — | — | — | — | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-7/bot-fixes-4 создана от main (a22691b)
@@ -24,6 +24,8 @@
 - c4a0cf3 docs(repo): prepare stage 7.2 qa task and update state to testing
 - 36fb360 docs(qa): update qa_log with stage 7.2 round 4 verification
 - 62636e8 chore(repo): merge stage-7/bot-fixes-4 into main
+- 6e34b33 docs(repo): update state to stage pass for stage 7.2
+- 1816926 docs(repo): update stage 7 report with round 4 fixes
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 7.2, раунд 4)
@@ -39,13 +41,9 @@
 - Этап 5: CLI-клиент + доработки fixes (принят QA, слит в main, версия 0.2.0, отчёт docs/stage_reports/stage-5.md)
 - Этап 6: Edge-агент для Raspberry Pi 5 + доработки fixes + fixes-2 (принят QA, слит в main, версия 0.3.0, отчёт docs/stage_reports/stage-6.md)
 - Этап 6.1: Тестовые инструменты агента (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-6.1.md)
-- Этап 7: Telegram-бот + fixes + fixes-2 + fixes-3 (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.md)
+- Этап 7: Telegram-бот + fixes + fixes-2 + fixes-3 + fixes-4 (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.md, docs/stage_reports/stage-7.2.md)
 
 ## История (последние 15 событий)
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-3-builder.md
-- 2026-11-22: Статус изменён на BUILDING (режим LIGHT), задача передана Builder-у
-- 2026-11-22: Builder реализовал исправления раунда 3 (44 unit, 7 e2e, защита логов), статус READY_FOR_QA
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-3-qa.md, статус изменён на TESTING, задача передана QA
 - 2026-11-22: QA проверил исправления бота раунда 3, вердикт PASS (251 тест, 0 дефектов)
 - 2026-11-22: Ветка stage-7/bot-fixes-3 слита в main (версия 0.3.1 сохранена без изменений)
 - 2026-11-22: Исправления бота (раунд 3) окончательно закрыты (DONE)
@@ -58,29 +56,6 @@
 - 2026-11-22: QA проверил этап 7.2 (раунд 4), вердикт PASS (268 тестов, 0 дефектов)
 - 2026-11-22: Ветка stage-7/bot-fixes-4 слита в main (версия 0.3.1 сохранена без изменений)
 - 2026-11-22: Статус этапа 7.2 изменён на STAGE_PASS, задача передана Scribe
-- 2026-11-22: Пользователь принял этап 6.1 и дал команду на запуск «исправления бота, раунд 2» в режиме FULL
-- 2026-11-22: Создана ветка stage-7/bot-fixes-2 от main
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-2-builder.md
-- 2026-11-22: Статус изменён на BUILDING, задача передана Builder-у
-- 2026-11-22: Builder реализовал исправления раунда 2 (38 unit-тестов, 5 e2e-тестов), статус READY_FOR_QA
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-2-qa.md, статус изменён на TESTING, задача передана QA
-- 2026-11-22: QA проверил исправления бота раунда 2, вердикт PASS (243 теста, 0 дефектов)
-- 2026-11-22: Ветка stage-7/bot-fixes-2 слита в main (версия 0.3.1 сохранена без изменений)
-- 2026-11-22: Статус этапа 7 (раунд 2) изменён на STAGE_PASS, задача передана Scribe
-- 2026-11-22: Scribe обновил docs/stage_reports/stage-7.md и README.md
-- 2026-11-22: Исправления бота (раунд 2) окончательно закрыты (DONE)
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-2-builder.md
-- 2026-11-22: Статус изменён на BUILDING, задача передана Builder-у
-- 2026-11-22: Builder реализовал исправления раунда 2 (38 unit-тестов, 5 e2e-тестов), статус READY_FOR_QA
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-2-qa.md, статус изменён на TESTING, задача передана QA
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-2-builder.md
-- 2026-11-22: Статус изменён на BUILDING, задача передана Builder-у
-- 2026-11-22: Этап 6.1 переведён в статус BUILDING, задача передана Builder-у
-- 2026-11-22: Builder реализовал TEST_CAPTURE_INTERVAL_SEC, simulator seed, mock-генератор и тесты, статус READY_FOR_QA
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-6-test-tools-qa.md, статус изменён на TESTING, задача передана QA
-- 2026-11-22: QA проверил этап 6.1, вердикт PASS (230 тестов, 0 дефектов)
-- 2026-11-22: Ветка stage-6/test-tools слита в main (версия 0.3.1 сохранена без изменений)
-- 2026-11-22: Статус этапа 6.1 изменён на STAGE_PASS, задача передана Scribe
-- 2026-11-22: Этап 6.1 переведён в статус BUILDING, задача передана Builder-у
-- 2026-11-22: Builder реализовал TEST_CAPTURE_INTERVAL_SEC, simulator seed, mock-генератор и тесты, статус READY_FOR_QA
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-6-test-tools-qa.md, статус изменён на TESTING, задача передана QA
+- 2026-11-22: Scribe создал docs/stage_reports/stage-7.2.md, дополнил docs/stage_reports/stage-7.md и README.md
+- 2026-11-22: Коммит документации 1816926 docs(repo): update stage 7 report with round 4 fixes
+- 2026-11-22: Этап 7.2 (исправления раунд 4) окончательно закрыт (DONE)
