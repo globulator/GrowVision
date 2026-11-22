@@ -165,7 +165,7 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint(
-            "client_type IN ('telegram', 'cli')",
+            "client_type IN ('telegram', 'cli', 'web')",
             name="ck_users_client_type",
         ),
         CheckConstraint(

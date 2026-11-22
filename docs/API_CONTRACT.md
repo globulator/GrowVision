@@ -20,21 +20,23 @@
 
 ### 1.1. Авторизация
 
-| Заголовок | Кто | Значение |
+| Заголовок / Cookie | Кто | Значение |
 |---|---|---|
 | `X-Edge-Key` | RPi | Секрет `EDGE_API_KEY` из `.env`. Неверный или отсутствует → 401. |
 | `X-Client-Key` | CLI, бот | Общий секрет клиентов `CLIENT_API_KEY` из `server/.env`. Неверный → 401; отсутствует → 401 (кроме публичных эндпоинтов, где заголовок необязателен). |
 | `X-Client-Type` | CLI, бот | `telegram` или `cli`. |
 | `X-External-Id` | CLI, бот | `telegram_id` или идентификатор профиля CLI. |
+| Cookie `gv_session` | Web SPA | Подписанная HttpOnly-cookie (`SameSite=Lax`) для браузерного веб-клиента. Не требует передачи `X-Client-Key` из браузерного JS. |
 
-**Защищённые эндпоинты** (все клиентские, кроме `/api/auth/login` и публичных ниже): сервер находит сессию в `users` по паре `(client_type, external_id)`, обновляет `last_active_at` и проверяет роль:
+**Защищённые эндпоинты** (все клиентские, кроме `/api/auth/login`, `/api/auth/web/login`, `/api/auth/web/me` и публичных ниже): сервер находит сессию в `users` по паре `(client_type, external_id)` или по валидной сессионной куке `gv_session`, обновляет `last_active_at` и проверяет роль:
 
-- нет сессии → 401;
+- нет сессии или сессия завершена → 401;
 - роли не хватает → 403.
 
 **Публичные эндпоинты** (`GET /api/version`, `GET /api/installations`, `GET /api/installations/{id}`, `GET /api/timelapse/{installation_id}/frames`) доступны Гостю:
 
-- без заголовков (Web-плеер) → роль Гость;
+- без заголовков и без куки (неавторизованный Web) → роль Гость;
+- с валидной кукой `gv_session` → ответ строится по роли пользователя (`biologist` или `developer`), `last_active_at` обновляется;
 - с верным `X-Client-Key`, но без сессии в `users` для `(client_type, external_id)` (неавторизованный пользователь бота или CLI) → роль Гость;
 - с верным `X-Client-Key` и существующей сессией → ответ строится по роли пользователя, `last_active_at` обновляется.
 
@@ -352,6 +354,35 @@ pending --claim--> running --result--> done | error
 }
 ```
 Если сессия не найдена или `is_active == False` → `401`.
+
+#### Веб-авторизация (Web SPA — Cookie-сессии)
+
+- `POST /api/auth/web/login`:
+  Вход в систему из браузера по паролю разработчика или одноразовому коду биолога. **Не требует заголовка `X-Client-Key`**.
+  Тело запроса:
+  ```json
+  {
+    "password": "secret_or_code",
+    "login": "Иван Иванов",
+    "client_id": "web_custom_id"
+  }
+  ```
+  Правила:
+  - При первом входе без `login`: возвращается `{"status": "needs_login", "role": role, "client_id": "..."}`, одноразовый код **не сжигается**.
+  - При успешном завершении: устанавливается защищённая `HttpOnly`-cookie `gv_session` (`SameSite=Lax`, `Path=/`), ответ:
+    ```json
+    {"role": "biologist", "login": "Иван Иванов", "client_id": "web_..."}
+    ```
+  - При повторном входе с тем же `client_id`: сохранённый `user.login` подтягивается автоматически.
+
+- `POST /api/auth/web/logout`:
+  Выход из системы. Очищает сессионную куку `gv_session` (`delete_cookie`) и переводит запись пользователя в `is_active = False`.
+  Ответ `200`: `{"ok": true}`.
+
+- `GET /api/auth/web/me`:
+  Проверка статуса текущей веб-сессии по куке `gv_session`. Не требует ключей и не возвращает 401 для гостей.
+  - Если активна: `{"role": "biologist", "login": "...", "authorized_at": "...", "last_active_at": "..."}`.
+  - Если нет куки или сессия завершена: `{"role": "guest", "login": null}`.
 
 #### Эндпоинты управления кодами приглашений (только Developer)
 
