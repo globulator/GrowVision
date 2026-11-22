@@ -7,23 +7,27 @@
 - Текущий этап: 7.4
 - Название этапа: Общие GPIO-пины с программной синхронизацией и переименование пользователей
 - Режим: FULL
-- Статус: TESTING
+- Статус: STAGE_PASS
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт тестирование QA)
+- Ждём от пользователя: ничего (идёт финализация документации Scribe)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| qa | full-stack | stage-7/shared-pins-and-rename | docs/tasks/stage-7-shared-pins-and-rename-qa.md | — |
+| scribe | docs | main | — | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-7/shared-pins-and-rename создана от main (7ed7501)
 - f69b2fe docs(repo): prepare stage 7.4 task and update state to building
 - edce6b3 feat(repo): implement stage 7.4 shared gpio pins, relay sync, and user rename
+- 343065c docs(repo): update state to testing and include v2 roadmap
+- 3736475 docs(qa): update qa_log with stage 7.4 verification
+- a4a9cf4 chore(repo): merge stage-7/shared-pins-and-rename into main
+- 5410dd4 chore(repo): bump version to 0.3.3
 
 ## Последний вердикт QA
-- Вердикт: PASS (по этапу 7.3, раунд 5)
+- Вердикт: PASS (по этапу 7.4)
 - Открытые дефекты (ID): —
 - Отложенные (DEFERRED, ID): —
 
@@ -41,8 +45,6 @@
 - Этап 7.3: Авторизация по коду, управление сессиями, CV-разметка, UX-полировка и фиксы раунда 5 (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.3.md)
 
 ## История (последние 15 событий)
-- 2026-11-22: Запущен этап 7.3 (авторизация по коду, сессии, CV, UX-полировка, фиксы) в режиме FULL
-- 2026-11-22: Создана ветка stage-7/auth-and-polish от main
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-7-auth-and-polish-builder.md, статус BUILDING, задача передана Builder-у
 - 2026-11-22: Builder реализовал этап 7.3 (279 тестов passed), статус READY_FOR_QA
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-7-auth-and-polish-qa.md, статус изменён на TESTING, задача передана QA
@@ -56,3 +58,5 @@
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-7-shared-pins-and-rename-builder.md, статус BUILDING, задача передана Builder-у
 - 2026-11-23: Builder реализовал этап 7.4 (290 тестов passed), статус READY_FOR_QA
 - 2026-11-23: Статус изменён на TESTING, задача передана QA
+- 2026-11-23: QA проверил этап 7.4, вердикт PASS (290 тестов, 0 дефектов)
+- 2026-11-23: Ветка stage-7/shared-pins-and-rename слита в main, поднята версия 0.3.3 (тег v0.3.3), статус STAGE_PASS
