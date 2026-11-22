@@ -7,15 +7,15 @@
 - Текущий этап: 7 (Telegram-бот, исправления раунд 2)
 - Название этапа: Telegram-бот (исправления раунд 2: профиль, карточки, user_id, set_my_commands, bug notes, прокси, мастер создания)
 - Режим: FULL
-- Статус: STAGE_PASS
+- Статус: DONE
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт финализация документации Scribe)
+- Ждём от пользователя: приёмка исправлений бота (раунд 2) и дальнейшие указания (запуск этапа 8 Web SPA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| Scribe | docs | main | — | — |
+| — | — | — | — | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-7/bot-fixes-2 создана от main (9633ae7)
@@ -23,6 +23,8 @@
 - aa1c044 feat(bot): implement round 2 bot fixes, bug log tools, and e2e tests
 - ee56290 docs(repo): prepare stage 7 fixes round 2 qa task and update state to testing
 - 4ddaa5d chore(repo): merge stage-7/bot-fixes-2 into main
+- 6c70bdb docs(repo): update state to stage pass for stage 7 fixes round 2
+- e2e17dd docs(repo): update stage 7 report with round 2 fixes
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 7, раунд 2)
@@ -38,11 +40,9 @@
 - Этап 5: CLI-клиент + доработки fixes (принят QA, слит в main, версия 0.2.0, отчёт docs/stage_reports/stage-5.md)
 - Этап 6: Edge-агент для Raspberry Pi 5 + доработки fixes + fixes-2 (принят QA, слит в main, версия 0.3.0, отчёт docs/stage_reports/stage-6.md)
 - Этап 6.1: Тестовые инструменты агента (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-6.1.md)
-- Этап 7: Telegram-бот (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.md)
+- Этап 7: Telegram-бот + fixes + fixes-2 (принят QA, слит в main, версия 0.3.1, отчёт docs/stage_reports/stage-7.md)
 
 ## История (последние 15 событий)
-- 2026-11-22: Builder реализовал TEST_CAPTURE_INTERVAL_SEC, simulator seed, mock-генератор и тесты, статус READY_FOR_QA
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-6-test-tools-qa.md, статус изменён на TESTING, задача передана QA
 - 2026-11-22: QA проверил этап 6.1, вердикт PASS (230 тестов, 0 дефектов)
 - 2026-11-22: Ветка stage-6/test-tools слита в main (версия 0.3.1 сохранена без изменений)
 - 2026-11-22: Scribe создал docs/DEPLOYMENT_SERVER.md, docs/stage_reports/stage-6.1.md и обновил README.md
@@ -56,6 +56,8 @@
 - 2026-11-22: QA проверил исправления бота раунда 2, вердикт PASS (243 теста, 0 дефектов)
 - 2026-11-22: Ветка stage-7/bot-fixes-2 слита в main (версия 0.3.1 сохранена без изменений)
 - 2026-11-22: Статус этапа 7 (раунд 2) изменён на STAGE_PASS, задача передана Scribe
+- 2026-11-22: Scribe обновил docs/stage_reports/stage-7.md и README.md
+- 2026-11-22: Исправления бота (раунд 2) окончательно закрыты (DONE)
 - 2026-11-22: Подготовлена карточка docs/tasks/stage-7-bot-fixes-2-builder.md
 - 2026-11-22: Статус изменён на BUILDING, задача передана Builder-у
 - 2026-11-22: Builder реализовал исправления раунда 2 (38 unit-тестов, 5 e2e-тестов), статус READY_FOR_QA
