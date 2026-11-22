@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GrowVision — Система мониторинга гидропоники</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Шапка страницы -->
+    <header class="app-header">
+      <div class="header-brand">
+        <span class="brand-logo">🌱</span>
+        <div class="brand-info">
+          <h1 class="brand-title">GrowVision</h1>
+          <span class="brand-desc">Автоматизированная гидропоника</span>
+        </div>
+      </div>
+
+      <div class="header-user-menu">
+        <div class="user-profile">
+          <span id="header-user-badge" class="badge badge-secondary">Гость</span>
+          <span id="header-user-login" class="user-name"></span>
+          <button type="button" class="btn btn-icon btn-xs hidden" id="header-btn-rename-me" title="Изменить имя">✏️</button>
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" id="header-btn-login">🔑 Войти</button>
+        <button type="button" class="btn btn-secondary btn-sm hidden" id="header-btn-logout">🚪 Выйти</button>
+      </div>
+    </header>
+
+    <!-- Навигационная панель табов -->
+    <nav class="app-nav">
+      <div class="nav-tabs-container">
+        <button type="button" class="nav-tab active" data-tab="units" id="nav-tab-units">🌿 Установки</button>
+        <button type="button" class="nav-tab" data-tab="player" id="nav-tab-player">🎬 Плеер таймлапса</button>
+        <button type="button" class="nav-tab hidden" data-tab="relays" id="nav-tab-relays">💡 Свет и реле</button>
+        <button type="button" class="nav-tab hidden" data-tab="cameras" id="nav-tab-cameras">📷 Камеры</button>
+        <button type="button" class="nav-tab hidden" data-tab="sessions" id="nav-tab-sessions">👥 Сессии</button>
+        <button type="button" class="nav-tab hidden" data-tab="system" id="nav-tab-system">⚙️ Система</button>
+        <button type="button" class="nav-tab hidden" data-tab="terminal" id="nav-tab-terminal">💻 Терминал</button>
+      </div>
+    </nav>
+
+    <!-- Основная рабочая область SPA -->
+    <main class="app-main">
+      <section id="tab-units" class="tab-content"></section>
+      <section id="tab-player" class="tab-content hidden"></section>
+      <section id="tab-relays" class="tab-content hidden"></section>
+      <section id="tab-cameras" class="tab-content hidden"></section>
+      <section id="tab-sessions" class="tab-content hidden"></section>
+      <section id="tab-system" class="tab-content hidden"></section>
+      <section id="tab-terminal" class="tab-content hidden"></section>
+    </main>
+
+    <!-- Подвал страницы -->
+    <footer class="app-footer">
+      <span id="footer-version" class="footer-version"></span>
+      <span class="footer-copyright">GrowVision © 2026. Автономная фитомониторинговая платформа</span>
+    </footer>
+  </div>
+
+  <!-- Модальное окно авторизации -->
+  <div id="modal-login" class="modal-backdrop hidden">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3 class="modal-title">Вход в GrowVision</h3>
+        <button type="button" class="btn-close" id="login-modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="login-alert-box" class="alert alert-error hidden"></div>
+        <div class="form-group">
+          <label for="login-password-input">Пароль разработчика или одноразовый код биолога:</label>
+          <input type="password" id="login-password-input" class="form-input" placeholder="Введите пароль или код..." />
+        </div>
+        <div class="form-group hidden" id="login-name-row">
+          <label for="login-name-input">Ваше Имя и Фамилия (для первого входа):</label>
+          <input type="text" id="login-name-input" class="form-input" placeholder="Например: Иван Бармин" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" id="login-btn-submit">Войти</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно создания / редактирования установки -->
+  <div id="modal-unit-edit" class="modal-backdrop hidden">
+    <div class="modal-window modal-window-md">
+      <div class="modal-header">
+        <h3 class="modal-title" id="unit-edit-modal-title">Установка</h3>
+        <button type="button" class="btn-close" id="unit-edit-modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="unit-edit-alert" class="alert alert-error hidden"></div>
+        <div id="unit-edit-warn" class="alert alert-warning hidden"></div>
+
+        <div class="form-group">
+          <label for="unit-edit-name">Название установки:</label>
+          <input type="text" id="unit-edit-name" class="form-input" placeholder="Например: Стеллаж 1" />
+        </div>
+        <div class="form-group">
+          <label for="unit-edit-culture">Выращиваемая культура:</label>
+          <input type="text" id="unit-edit-culture" class="form-input" placeholder="Например: Томат Черри" />
+        </div>
+
+        <div id="unit-edit-pins-wrap" class="unit-pins-fieldset">
+          <div class="form-row">
+            <div class="form-group col">
+              <label for="unit-edit-light-pin">GPIO пин света (0..53):</label>
+              <input type="number" id="unit-edit-light-pin" class="form-input" min="0" max="53" />
+            </div>
+            <div class="form-group col">
+              <label for="unit-edit-flash-pin">GPIO пин вспышки (0..53):</label>
+              <input type="number" id="unit-edit-flash-pin" class="form-input" min="0" max="53" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group col">
+              <label for="unit-edit-aruco">Размер маркера ArUco (мм):</label>
+              <input type="number" id="unit-edit-aruco" class="form-input" min="1" step="0.5" placeholder="Опционально" />
+            </div>
+            <div class="form-group col">
+              <label for="unit-edit-delay">Задержка съёмки (сек):</label>
+              <input type="number" id="unit-edit-delay" class="form-input" min="0" max="30" step="0.5" placeholder="Опционально" />
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" id="unit-edit-btn-save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно ручного снимка -->
+  <div id="modal-snap" class="modal-backdrop hidden">
+    <div class="modal-window modal-window-lg">
+      <div class="modal-header">
+        <h3 class="modal-title" id="snap-modal-title">Ручной снимок</h3>
+        <button type="button" class="btn-close" id="snap-modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="snap-loader" class="loading-spinner">Выполняется съёмка на Raspberry Pi...</div>
+        <div id="snap-results" class="snap-results-grid hidden"></div>
+        <div id="snap-debug-box" class="alert alert-info hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно экспорта MP4 видео -->
+  <div id="modal-video" class="modal-backdrop hidden">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3 class="modal-title" id="video-modal-title">Экспорт таймлапс-видео</h3>
+        <button type="button" class="btn-close" id="video-modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="video-alert-box" class="alert alert-error hidden"></div>
+        <div class="form-group">
+          <label for="video-cam-select">Камера для видео:</label>
+          <select id="video-cam-select" class="form-select"></select>
+        </div>
+        <div class="form-group">
+          <label for="video-duration-input">Целевая длительность видео (сек):</label>
+          <input type="number" id="video-duration-input" class="form-input" min="1" max="60" step="0.5" value="5.0" />
+        </div>
+        <div class="form-group">
+          <label for="video-step-input">Шаг кадра (step):</label>
+          <input type="number" id="video-step-input" class="form-input" min="1" max="100" value="1" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" id="video-btn-submit">Собрать и скачать MP4</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Контейнер всплывающих тост-уведомлений -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Главный скрипт -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

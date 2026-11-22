@@ -602,11 +602,21 @@ def test_qa_users_edge_commands_and_settings(qa_isolated_db):
     session.add(user)
     session.commit()
 
-    # Недопустимый client_type
-    bad_client = User(
+    # Допустимый client_type="web" (Этап 8)
+    web_client = User(
         client_type="web",
         external_id="web_1",
         login="QA Web",
+        role="developer",
+    )
+    session.add(web_client)
+    session.commit()
+
+    # Недопустимый client_type (например, desktop)
+    bad_client = User(
+        client_type="desktop",
+        external_id="desktop_1",
+        login="QA Desktop",
         role="developer",
     )
     session.add(bad_client)

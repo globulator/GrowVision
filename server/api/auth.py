@@ -2,17 +2,19 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
 from sqlalchemy.orm import Session
 
 from server.api.deps import (
+    create_session_cookie,
     format_utc_z,
     get_current_user,
     get_db,
     require_role,
     verify_client_key,
+    verify_session_cookie,
 )
 from server.config import get_settings
 from server.core.rate_limit import login_limiter
@@ -26,7 +28,7 @@ class LoginRequest(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    client_type: Literal["telegram", "cli"]
+    client_type: Literal["telegram", "cli", "web"]
     external_id: str
     password: str
     login: str | None = None
@@ -45,6 +47,34 @@ class LoginResponse(BaseModel):
     role: str
     login: str | None = None
     status: str | None = None
+
+
+class WebLoginRequest(BaseModel):
+    """Тело запроса POST /api/auth/web/login."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    password: str
+    login: str | None = None
+    client_id: str | None = None
+
+
+class WebLoginResponse(BaseModel):
+    """Ответ на веб-вход."""
+
+    role: str | None = None
+    login: str | None = None
+    status: str | None = None
+    client_id: str | None = None
+
+
+class WebMeResponse(BaseModel):
+    """Ответ на GET /api/auth/web/me."""
+
+    role: str
+    login: str | None = None
+    authorized_at: str | None = None
+    last_active_at: str | None = None
 
 
 class MeResponse(BaseModel):
@@ -289,6 +319,176 @@ def update_me(
         authorized_at=format_utc_z(current_user.authorized_at) or "",
         last_active_at=format_utc_z(current_user.last_active_at) or "",
     )
+
+
+# ================== Веб-авторизация (Web SPA) ==================
+
+
+@router.post(
+    "/web/login",
+    response_model=WebLoginResponse,
+    response_model_exclude_none=True,
+)
+def auth_web_login(
+    body: WebLoginRequest,
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+) -> Any:
+    """POST /api/auth/web/login.
+
+    Веб-вход по паролю или одноразовому коду с установкой HttpOnly-cookie (SameSite=Lax).
+    Не требует заголовка X-Client-Key.
+    """
+    client_id = (
+        body.client_id.strip() if (body.client_id and body.client_id.strip()) else None
+    )
+    allowed, retry_after = login_limiter.is_allowed("web", client_id or "browser")
+    if not allowed:
+        response.headers["Retry-After"] = str(retry_after)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Превышен лимит попыток входа. Попробуйте позже.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    settings = get_settings()
+    pwd_bytes = body.password.strip().encode("utf-8")
+    now = datetime.now(UTC)
+
+    role: str | None = None
+    matched_invite: InviteCode | None = None
+
+    if settings.developer_password and secrets.compare_digest(
+        pwd_bytes, settings.developer_password.encode("utf-8")
+    ):
+        role = "developer"
+    else:
+        invite = (
+            db.query(InviteCode)
+            .filter(
+                InviteCode.code == body.password.strip().upper(),
+                InviteCode.used_at.is_(None),
+                InviteCode.is_revoked.is_(False),
+                InviteCode.expires_at > now,
+            )
+            .first()
+        )
+        if invite:
+            role = invite.role
+            matched_invite = invite
+        elif settings.biologist_password and secrets.compare_digest(
+            pwd_bytes, settings.biologist_password.encode("utf-8")
+        ):
+            role = "biologist"
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Неверный пароль или одноразовый код",
+            )
+
+    if not client_id:
+        client_id = f"web_{secrets.token_hex(12)}"
+
+    user = (
+        db.query(User)
+        .filter(
+            User.client_type == "web",
+            User.external_id == client_id,
+        )
+        .first()
+    )
+
+    resolved_login = body.login.strip() if (body.login and body.login.strip()) else None
+
+    if not user:
+        if not resolved_login:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "needs_login",
+                    "role": role,
+                    "client_id": client_id,
+                },
+            )
+        user = User(
+            client_type="web",
+            external_id=client_id,
+            login=resolved_login,
+            role=role,
+            is_active=True,
+            authorized_at=now,
+            last_active_at=now,
+            logged_out_at=None,
+        )
+        db.add(user)
+        db.flush()
+    else:
+        if not resolved_login:
+            resolved_login = user.login
+        user.login = resolved_login
+        user.role = role
+        user.is_active = True
+        user.authorized_at = now
+        user.last_active_at = now
+        user.logged_out_at = None
+
+    if matched_invite:
+        matched_invite.used_at = now
+        matched_invite.used_by_user_id = user.id
+
+    db.commit()
+
+    cookie_val = create_session_cookie(user)
+    response.set_cookie(
+        key="gv_session",
+        value=cookie_val,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+    return WebLoginResponse(role=role, login=resolved_login, client_id=client_id)
+
+
+@router.post("/web/logout")
+def auth_web_logout(
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+    gv_session: Annotated[str | None, Cookie(alias="gv_session")] = None,
+) -> dict[str, bool]:
+    """POST /api/auth/web/logout.
+
+    Выход из системы для веб-клиента (очистка сессии и HttpOnly-cookie).
+    """
+    response.delete_cookie(key="gv_session", path="/")
+    if gv_session:
+        user = verify_session_cookie(gv_session, db)
+        if user:
+            user.is_active = False
+            user.logged_out_at = datetime.now(UTC)
+            db.commit()
+    return {"ok": True}
+
+
+@router.get("/web/me", response_model=WebMeResponse)
+def auth_web_me(
+    db: Annotated[Session, Depends(get_db)],
+    gv_session: Annotated[str | None, Cookie(alias="gv_session")] = None,
+) -> WebMeResponse:
+    """GET /api/auth/web/me.
+
+    Информация о текущем веб-пользователе или статус Гость.
+    """
+    if gv_session:
+        user = verify_session_cookie(gv_session, db)
+        if user:
+            return WebMeResponse(
+                role=user.role,
+                login=user.login,
+                authorized_at=format_utc_z(user.authorized_at),
+                last_active_at=format_utc_z(user.last_active_at),
+            )
+    return WebMeResponse(role="guest", login=None)
 
 
 # ================== Управление приглашениями (Developer) ==================
