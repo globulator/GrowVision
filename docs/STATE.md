@@ -7,18 +7,20 @@
 - Текущий этап: 8
 - Название этапа: Полноценный Web SPA-клиент (роли, паритет с Telegram-ботом, плеер таймлапса, консоль разработчика)
 - Режим: FULL
-- Статус: BUILDING
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт реализация Builder-ом)
+- Ждём от пользователя: ничего (идёт тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| builder | full-stack | stage-8/web-spa | docs/tasks/stage-8-web-spa-builder.md | — |
+| qa | full-stack | stage-8/web-spa | docs/tasks/stage-8-web-spa-qa.md | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-8/web-spa создана от main (6b5e6e3)
+- fc38e7b docs(repo): prepare stage 8 task and update state to building
+- 726e851 feat(repo): implement stage 8 web spa client with cookie auth, timelapse player, and developer terminal
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 7.4)
@@ -40,9 +42,6 @@
 - Этап 7.4: Общие GPIO-пины с программной синхронизацией и переименование пользователей (принят QA, слит в main, версия 0.3.3, отчёт docs/stage_reports/stage-7.4.md)
 
 ## История (последние 15 событий)
-- 2026-11-22: Пользователь запустил этап 7.4 (общие GPIO-пины и переименование) в режиме FULL
-- 2026-11-22: Создана ветка stage-7/shared-pins-and-rename от main
-- 2026-11-22: Подготовлена карточка docs/tasks/stage-7-shared-pins-and-rename-builder.md, статус BUILDING, задача передана Builder-у
 - 2026-11-23: Builder реализовал этап 7.4 (290 тестов passed), статус READY_FOR_QA
 - 2026-11-23: Статус изменён на TESTING, задача передана QA
 - 2026-11-23: QA проверил этап 7.4, вердикт PASS (290 тестов, 0 дефектов)
@@ -53,3 +52,5 @@
 - 2026-11-23: Пользователь запустил этап 8 (полноценный Web SPA-клиент) в режиме FULL
 - 2026-11-23: Создана ветка stage-8/web-spa от main
 - 2026-11-23: Подготовлена карточка docs/tasks/stage-8-web-spa-builder.md, статус BUILDING, задача передана Builder-у
+- 2026-11-23: Builder реализовал этап 8 (294 теста passed), статус READY_FOR_QA
+- 2026-11-23: Подготовлена карточка docs/tasks/stage-8-web-spa-qa.md, статус изменён на TESTING, задача передана QA
