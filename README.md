@@ -43,7 +43,7 @@ cp server/.env.example server/.env
 server/.venv/bin/python -m server.main
 ```
 
-- Веб-плеер таймлапса доступен по адресу: `http://127.0.0.1:8000/`
+- Веб-интерфейс (Web SPA) с плеером таймлапса и консолью доступен по адресу: `http://127.0.0.1:8000/`
 - Документация OpenAPI (Swagger UI) доступна по адресу: `http://127.0.0.1:8000/docs`
 
 #### 3. Запуск тестов сервера и E2E
@@ -190,3 +190,4 @@ server/.venv/bin/ruff format --check .
 - [docs/stage_reports/stage-7.2.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-7.2.md) — отчёт по этапу 7.2 (исправления раунд 4)
 - [docs/stage_reports/stage-7.3.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-7.3.md) — отчёт по этапу 7.3
 - [docs/stage_reports/stage-7.4.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-7.4.md) — отчёт по этапу 7.4
+- [docs/stage_reports/stage-8.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-8.md) — отчёт по этапу 8
