@@ -136,7 +136,14 @@ HARDWARE_MODE=mock edge_agent/.venv/bin/python -m edge_agent.main
 
 Для развертывания на реальной плате Raspberry Pi 5 см. руководство [docs/DEPLOYMENT_RPI.md](file:///home/mcperchik/study/GrowVision/docs/DEPLOYMENT_RPI.md), схему подключения [docs/HARDWARE_WIRING.md](file:///home/mcperchik/study/GrowVision/docs/HARDWARE_WIRING.md) и задачу проверки [docs/user_tasks.md](file:///home/mcperchik/study/GrowVision/docs/user_tasks.md) (T-001).
 
-#### 3. Запуск тестов Edge-агента
+#### 3. Посев тестовых кадров (симулятор)
+
+Для мгновенного наполнения истории установки синтетическими или реальными снимками без ожидания плановой съемки:
+```bash
+edge_agent/.venv/bin/python -m edge_agent.simulator seed --installation 1 --frames 12
+```
+
+#### 4. Запуск тестов Edge-агента
 
 ```bash
 edge_agent/.venv/bin/pytest edge_agent/tests -q
@@ -155,6 +162,7 @@ server/.venv/bin/ruff format --check .
 
 - [docs/PROJECT.md](file:///home/mcperchik/study/GrowVision/docs/PROJECT.md) — паспорт проекта и правила разработки
 - [docs/USER_GUIDE.md](file:///home/mcperchik/study/GrowVision/docs/USER_GUIDE.md) — руководство пользователя по работе с CLI и Telegram-ботом
+- [docs/DEPLOYMENT_SERVER.md](file:///home/mcperchik/study/GrowVision/docs/DEPLOYMENT_SERVER.md) — развертывание сервера и Telegram-бота (systemd)
 - [docs/DEPLOYMENT_RPI.md](file:///home/mcperchik/study/GrowVision/docs/DEPLOYMENT_RPI.md) — развертывание Edge-агента на Raspberry Pi 5
 - [docs/HARDWARE_WIRING.md](file:///home/mcperchik/study/GrowVision/docs/HARDWARE_WIRING.md) — схема аппаратного подключения GPIO и камер
 - [docs/REPO_AND_VERSIONING.md](file:///home/mcperchik/study/GrowVision/docs/REPO_AND_VERSIONING.md) — структура монорепозитория и версионирование
@@ -170,4 +178,5 @@ server/.venv/bin/ruff format --check .
 - [docs/stage_reports/stage-4.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-4.md) — отчёт по этапу 4
 - [docs/stage_reports/stage-5.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-5.md) — отчёт по этапу 5
 - [docs/stage_reports/stage-6.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-6.md) — отчёт по этапу 6
+- [docs/stage_reports/stage-6.1.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-6.1.md) — отчёт по этапу 6.1
 - [docs/stage_reports/stage-7.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-7.md) — отчёт по этапу 7
