@@ -1,9 +1,11 @@
+import shutil
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 from sqlalchemy.orm import Session
 
+from server.api import edge as edge_api
 from server.api.deps import (
     ClientUser,
     format_utc_z,
@@ -27,6 +29,7 @@ class InstallationCreate(BaseModel):
     light_gpio_pin: int = Field(..., strict=True, ge=0, le=53)
     flash_gpio_pin: int = Field(..., strict=True, ge=0, le=53)
     aruco_size_mm: float | None = Field(default=None, gt=0)
+    capture_delay_sec: float | None = Field(default=None, ge=0.0, le=30.0)
 
     @field_validator("name", "culture_name")
     @classmethod
@@ -46,6 +49,7 @@ class InstallationPatch(BaseModel):
     light_gpio_pin: int | None = Field(default=None, strict=True, ge=0, le=53)
     flash_gpio_pin: int | None = Field(default=None, strict=True, ge=0, le=53)
     aruco_size_mm: float | None = Field(default=None, gt=0)
+    capture_delay_sec: float | None = Field(default=None, ge=0.0, le=30.0)
 
     @field_validator("name", "culture_name", "light_gpio_pin", "flash_gpio_pin")
     @classmethod
@@ -117,6 +121,7 @@ def serialize_installation(
             "aruco_size_mm": inst.aruco_size_mm,
             "created_at": format_utc_z(inst.created_at),
             "cameras": cameras_list,
+            "capture_delay_sec": inst.capture_delay_sec,
         }
     )
 
@@ -239,6 +244,7 @@ def create_installation(
         light_gpio_pin=body.light_gpio_pin,
         flash_gpio_pin=body.flash_gpio_pin,
         aruco_size_mm=body.aruco_size_mm,
+        capture_delay_sec=body.capture_delay_sec,
         is_archived=False,
     )
     db.add(inst)
@@ -266,10 +272,14 @@ def patch_installation(
             detail="Установка не найдена",
         )
 
-    # Проверка прав: Biologist может менять только name и culture_name
+    # Проверка прав: Biologist может менять name, culture_name и capture_delay_sec
     update_data = body.model_dump(exclude_unset=True)
     if current_user.role == "biologist":
-        disallowed_fields = set(update_data.keys()) - {"name", "culture_name"}
+        disallowed_fields = set(update_data.keys()) - {
+            "name",
+            "culture_name",
+            "capture_delay_sec",
+        }
         if disallowed_fields:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -299,6 +309,9 @@ def patch_installation(
 
     if "aruco_size_mm" in update_data:
         inst.aruco_size_mm = update_data["aruco_size_mm"]
+
+    if "capture_delay_sec" in update_data:
+        inst.capture_delay_sec = update_data["capture_delay_sec"]
 
     db.commit()
     db.refresh(inst)
@@ -341,7 +354,8 @@ def delete_installation(
 ) -> Response:
     """4.2. DELETE /api/installations/{id} (Developer).
 
-    Удаление установки без снимков (при наличии снимков -> 409).
+    Удаление установки без снимков (при наличии снимков -> 409, если не в архиве;
+    если в архиве -> отвязка камер, каскадное удаление кадров и файлов).
     """
     inst = db.query(Installation).filter(Installation.id == installation_id).first()
     if not inst:
@@ -354,10 +368,25 @@ def delete_installation(
         db.query(Capture).filter(Capture.installation_id == installation_id).count()
     )
     if captures_count > 0:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="У установки есть снимки, используйте архивацию",
+        if not inst.is_archived:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="У установки есть снимки, используйте архивацию",
+            )
+        # Для архивной установки: отвязываем камеры, удаляем кадры из БД и файлы с диска
+        for cam in inst.cameras:
+            cam.installation_id = None
+
+        db.query(Capture).filter(Capture.installation_id == installation_id).delete(
+            synchronize_session="fetch"
         )
+
+        media_inst_dir = edge_api.get_media_dir() / str(installation_id)
+        if media_inst_dir.exists() and media_inst_dir.is_dir():
+            shutil.rmtree(media_inst_dir, ignore_errors=True)
+    else:
+        for cam in inst.cameras:
+            cam.installation_id = None
 
     db.delete(inst)
     db.commit()

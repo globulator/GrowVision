@@ -39,7 +39,8 @@ async def handle_start(
 
     if me:
         role = me.get("role", "guest")
-        username = me.get("username", "Пользователь")
+        raw_username = me.get("username", "Пользователь")
+        username = html.escape(str(raw_username))
         if role == "developer":
             text = (
                 f"👋 Здравствуйте, <b>{username}</b>!\n\n"
@@ -79,8 +80,10 @@ async def handle_help(
     version_str = ""
     try:
         ver_info = await api_client.get_version()
-        if isinstance(ver_info, dict) and "version" in ver_info:
-            version_str = f"\n\nВерсия системы: <code>v{ver_info['version']}</code>"
+        if isinstance(ver_info, dict):
+            v = ver_info.get("server_version") or ver_info.get("version")
+            if v and v != "неизвестно":
+                version_str = f"\n\nВерсия системы: <code>v{v}</code>"
     except Exception as exc:  # noqa: BLE001
         logger.debug(f"Не удалось получить версию для справки: {exc}")
 
@@ -111,12 +114,20 @@ async def handle_version(
     """Обработчик команды /version: вывод версии системы."""
     try:
         ver_info = await api_client.get_version()
-        v = (
-            ver_info.get("version", "неизвестно")
-            if isinstance(ver_info, dict)
-            else ver_info
-        )
-        await message.answer(f"🌱 Версия системы GrowVision: <code>v{v}</code>")
+        if isinstance(ver_info, dict):
+            v = (
+                ver_info.get("server_version")
+                or ver_info.get("version")
+                or "неизвестно"
+            )
+        else:
+            v = ver_info or "неизвестно"
+        if v == "неизвестно":
+            await message.answer(
+                "🌱 Версия системы GrowVision: <code>неизвестно</code>"
+            )
+        else:
+            await message.answer(f"🌱 Версия системы GrowVision: <code>v{v}</code>")
     except Exception as exc:  # noqa: BLE001
         err = format_api_error(exc)
         await message.answer(f"Не удалось получить версию системы:\n{err}")
@@ -177,7 +188,7 @@ async def start_login(
     await state.set_state(AuthStates.waiting_login)
     await message.answer(
         "🔑 <b>Авторизация в GrowVision</b>\n\n"
-        "Шаг 1 из 2. Введите ваш логин (имя и фамилию, например: <code>Иван Петров</code>):",
+        "Шаг 1 из 2. Введите ваш логин (имя и фамилию, например: <code>Андрей Бармин</code>):",
         reply_markup=get_cancel_inline_keyboard("auth:cancel"),
     )
 

@@ -15,12 +15,14 @@ from clients.telegram_bot.api_client import GrowVisionApiClient
 from clients.telegram_bot.config import BotConfig
 from clients.telegram_bot.keyboards.inline import (
     get_cancel_inline_keyboard,
+    get_capture_delay_keyboard,
     get_confirm_inline_keyboard,
     get_edit_fields_keyboard,
     get_installation_card_keyboard,
 )
 from clients.telegram_bot.keyboards.paginator import build_paginator_keyboard
 from clients.telegram_bot.states import (
+    CaptureDelayStates,
     InstallationCreateStates,
     InstallationEditStates,
 )
@@ -49,6 +51,8 @@ async def render_installations_list(
     installations = await api_client.get_installations(
         user_id, include_archived=show_archived
     )
+    if show_archived:
+        installations = [i for i in installations if i.get("is_archived") is True]
 
     title = (
         "📦 <b>Архивные установки</b>"
@@ -291,9 +295,9 @@ async def process_create_crop(message: Message, state: FSMContext) -> None:
 @router.message(InstallationCreateStates.waiting_light_pin)
 async def process_create_light_pin(message: Message, state: FSMContext) -> None:
     raw_pin = (message.text or "").strip()
-    if not raw_pin.isdigit() or int(raw_pin) <= 0:
+    if not raw_pin.isdigit() or not (0 <= int(raw_pin) <= 53):
         await message.answer(
-            "Пин света должен быть положительным целым числом (например, 17). Повторите ввод:",
+            "Пин света должен быть целым числом в диапазоне от 0 до 53 (например, 17). Повторите ввод:",
             reply_markup=get_cancel_inline_keyboard("inst:list"),
         )
         return
@@ -302,7 +306,7 @@ async def process_create_light_pin(message: Message, state: FSMContext) -> None:
     await state.set_state(InstallationCreateStates.waiting_flash_pin)
     await message.answer(
         f"Пин света: <b>GPIO {light_pin}</b>\n\n"
-        "Шаг 4 из 5. Введите GPIO-пин вспышки на Raspberry Pi (целое число, например: <code>27</code>):",
+        "Шаг 4 из 5. Введите GPIO-пин вспышки на Raspberry Pi (целое число от 0 до 53, например: <code>27</code>):",
         reply_markup=get_cancel_inline_keyboard("inst:list"),
     )
 
@@ -310,9 +314,9 @@ async def process_create_light_pin(message: Message, state: FSMContext) -> None:
 @router.message(InstallationCreateStates.waiting_flash_pin)
 async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
     raw_pin = (message.text or "").strip()
-    if not raw_pin.isdigit() or int(raw_pin) <= 0:
+    if not raw_pin.isdigit() or not (0 <= int(raw_pin) <= 53):
         await message.answer(
-            "Пин вспышки должен быть положительным целым числом (например, 27). Повторите ввод:",
+            "Пин вспышки должен быть целым числом в диапазоне от 0 до 53 (например, 27). Повторите ввод:",
             reply_markup=get_cancel_inline_keyboard("inst:list"),
         )
         return
@@ -558,13 +562,25 @@ async def process_edit_value(
                 raise ValueError("Культура не может быть пустой")
             patch_payload["culture_name"] = val_text
         elif field == "light_pin":
-            if not val_text.isdigit() or int(val_text) <= 0:
-                raise ValueError("Пин света должен быть положительным числом")
+            if not val_text.isdigit() or not (0 <= int(val_text) <= 53):
+                raise ValueError("Пин света должен быть целым числом от 0 до 53")
             patch_payload["light_gpio_pin"] = int(val_text)
         elif field == "flash_pin":
-            if not val_text.isdigit() or int(val_text) <= 0:
-                raise ValueError("Пин вспышки должен быть положительным числом")
+            if not val_text.isdigit() or not (0 <= int(val_text) <= 53):
+                raise ValueError("Пин вспышки должен быть целым числом от 0 до 53")
             patch_payload["flash_gpio_pin"] = int(val_text)
+        elif field == "delay":
+            if val_text.lower() in ("default", "none", "общая", "сброс"):
+                patch_payload["capture_delay_sec"] = None
+            else:
+                v = float(
+                    val_text.replace(",", ".").replace("с", "").replace("s", "").strip()
+                )
+                if not (0.0 <= v <= 30.0):
+                    raise ValueError(
+                        "Задержка съёмки должна быть в диапазоне 0.0..30.0 с"
+                    )
+                patch_payload["capture_delay_sec"] = v
         elif field == "aruco":
             v = float(val_text.replace(",", "."))
             if v <= 0:
@@ -731,3 +747,326 @@ async def handle_confirm_action(
                     f"❌ Не удалось удалить установку:\n{err}",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
                 )
+
+
+# ================== Камеры установки (Критерий 1) ==================
+
+
+@router.callback_query(F.data.startswith("inst:cameras:"))
+async def handle_installation_cameras(
+    callback: CallbackQuery,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Вывод списка привязанных к установке камер с их статусом (Критерий 1)."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    inst_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    try:
+        inst = await api_client.get_installation(user_id, inst_id)
+        inst_name = inst.get("name", f"Установка #{inst_id}")
+        cameras = inst.get("cameras", [])
+
+        lines = [f"📷 <b>Камеры установки «{html.escape(str(inst_name))}»</b>\n"]
+        buttons: list[list[InlineKeyboardButton]] = []
+
+        if not cameras:
+            lines.append("К этой установке пока не привязано ни одной камеры.")
+            lines.append("Вы можете привязать свободные камеры через раздел «Камеры».")
+        else:
+            lines.append(f"Всего привязано камер: <b>{len(cameras)}</b>\n")
+            for c in cameras:
+                cname = c.get("auto_name") or c.get("name") or f"Камера #{c.get('id')}"
+                hw_id = c.get("hardware_id", "")
+                online = c.get("is_online", True)
+                status_str = "🟢 онлайн" if online else "🔴 оффлайн"
+                cid = c.get("id")
+                hw_part = (
+                    f" | Hardware: <code>{html.escape(str(hw_id))}</code>"
+                    if hw_id
+                    else ""
+                )
+                lines.append(
+                    f"• <b>{html.escape(str(cname))}</b> — {status_str}\n"
+                    f"  ID: <code>{cid}</code>{hw_part}"
+                )
+                buttons.append(
+                    [
+                        InlineKeyboardButton(
+                            text=f"⚙️ Камера #{cid} ({status_str})",
+                            callback_data=f"cam:view:{cid}",
+                        )
+                    ]
+                )
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text="📷 Все камеры системы",
+                    callback_data="cam:list",
+                )
+            ]
+        )
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text="⬅️ К карточке установки",
+                    callback_data=f"inst:view:{inst_id}",
+                )
+            ]
+        )
+
+        full_text = "\n".join(lines)
+        if callback.message and isinstance(callback.message, Message):
+            with contextlib.suppress(Exception):
+                await callback.message.edit_text(
+                    full_text,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+                )
+    except Exception as exc:  # noqa: BLE001
+        err = format_api_error(exc)
+        if callback.message and isinstance(callback.message, Message):
+            await callback.message.edit_text(
+                f"Не удалось получить список камер установки:\n{err}",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="⬅️ К карточке установки",
+                                callback_data=f"inst:view:{inst_id}",
+                            )
+                        ]
+                    ]
+                ),
+            )
+
+
+# ================== Задержка съёмки (Критерий 11) ==================
+
+
+@router.callback_query(F.data.startswith("inst:delay:"))
+@router.callback_query(F.data.startswith("edit:fld:delay:"))
+async def handle_installation_delay_prompt(
+    callback: CallbackQuery,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Экран настройки задержки съёмки для конкретной установки."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    inst_id = int(parts[-1])
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    try:
+        inst = await api_client.get_installation(user_id, inst_id)
+        inst_name = inst.get("name", f"Установка #{inst_id}")
+        cur_delay = inst.get("capture_delay_sec")
+        delay_display = (
+            f"{cur_delay} с" if cur_delay is not None else "общая (по умолчанию)"
+        )
+
+        await state.set_state(CaptureDelayStates.waiting_delay)
+        await state.update_data(target=str(inst_id), is_installation=True)
+
+        text = (
+            f"⏱ <b>Задержка перед съёмкой установки «{html.escape(str(inst_name))}»</b>\n\n"
+            f"Текущее значение: <b>{delay_display}</b>\n\n"
+            "Выберите пресет кнопкой ниже или введите значение числом от 0.0 до 30.0 с:"
+        )
+        kb = get_capture_delay_keyboard(target=str(inst_id), is_installation=True)
+
+        if callback.message and isinstance(callback.message, Message):
+            with contextlib.suppress(Exception):
+                await callback.message.edit_text(text, reply_markup=kb)
+    except Exception as exc:  # noqa: BLE001
+        err = format_api_error(exc)
+        if callback.message and isinstance(callback.message, Message):
+            await callback.message.edit_text(
+                f"Ошибка получения данных установки:\n{err}"
+            )
+
+
+@router.callback_query(F.data.startswith("ctrl:delay:"))
+async def handle_control_global_delay_prompt(
+    callback: CallbackQuery,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Экран настройки задержки съёмки из меню управления (общая задержка)."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    target = parts[2]
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    # Если target - это ID установки, настраиваем установку
+    if target.isdigit():
+        inst_id = int(target)
+        inst = await api_client.get_installation(user_id, inst_id)
+        inst_name = inst.get("name", f"Установка #{inst_id}")
+        cur_delay = inst.get("capture_delay_sec")
+        delay_display = (
+            f"{cur_delay} с" if cur_delay is not None else "общая (по умолчанию)"
+        )
+
+        await state.set_state(CaptureDelayStates.waiting_delay)
+        await state.update_data(target=str(inst_id), is_installation=True)
+
+        text = (
+            f"⏱ <b>Задержка перед съёмкой установки «{html.escape(str(inst_name))}»</b>\n\n"
+            f"Текущее значение: <b>{delay_display}</b>\n\n"
+            "Выберите пресет кнопкой ниже или введите значение числом от 0.0 до 30.0 с:"
+        )
+        kb = get_capture_delay_keyboard(target=str(inst_id), is_installation=True)
+    else:
+        # Глобальная настройка
+        sys_status = await api_client.get_system_status(user_id)
+        cur_delay = sys_status.get("settings", {}).get("capture_delay_sec", 1.5)
+
+        await state.set_state(CaptureDelayStates.waiting_delay)
+        await state.update_data(target="global", is_installation=False)
+
+        text = (
+            "⏱ <b>Глобальная задержка перед съёмкой (свет/вспышка)</b>\n\n"
+            f"Текущее значение: <b>{cur_delay} с</b>\n\n"
+            "Выберите пресет кнопкой ниже или введите значение числом от 0.0 до 30.0 с:"
+        )
+        kb = get_capture_delay_keyboard(target="global", is_installation=False)
+
+    if callback.message and isinstance(callback.message, Message):
+        with contextlib.suppress(Exception):
+            await callback.message.edit_text(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("set_delay:"))
+async def handle_set_delay_preset(
+    callback: CallbackQuery,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+    config: BotConfig,
+) -> None:
+    """Обработка выбора пресета задержки съёмки."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    target = parts[1]
+    val_str = parts[2]
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    await state.clear()
+
+    try:
+        if target.isdigit():
+            inst_id = int(target)
+            if val_str == "default":
+                patch_payload = {"capture_delay_sec": None}
+                res_text = "Задержка съёмки сброшена на общую системную настройку."
+            else:
+                delay_sec = float(val_str)
+                patch_payload = {"capture_delay_sec": delay_sec}
+                res_text = f"Задержка съёмки успешно установлена: <b>{delay_sec} с</b>."
+
+            updated = await api_client.update_installation(
+                user_id, inst_id, patch_payload
+            )
+            me = await api_client.get_me(user_id)
+            role = me.get("role", "guest") if me else "guest"
+            card_text = format_installation_card(
+                updated, role=role, web_public_url=config.web_public_url
+            )
+            kb = get_installation_card_keyboard(
+                inst_id, role=role, is_archived=updated.get("is_archived", False)
+            )
+            if callback.message and isinstance(callback.message, Message):
+                await callback.message.edit_text(
+                    f"✅ {res_text}\n\n{card_text}", reply_markup=kb
+                )
+        else:
+            delay_sec = float(val_str)
+            await api_client.update_system_settings(
+                user_id, capture_delay_sec=delay_sec
+            )
+            from clients.telegram_bot.keyboards.inline import get_control_panel_keyboard
+
+            kb = get_control_panel_keyboard(target="all")
+            if callback.message and isinstance(callback.message, Message):
+                await callback.message.edit_text(
+                    f"✅ Глобальная задержка съёмки установлена на <b>{delay_sec} с</b>.",
+                    reply_markup=kb,
+                )
+    except Exception as exc:  # noqa: BLE001
+        err = format_api_error(exc)
+        if callback.message and isinstance(callback.message, Message):
+            await callback.message.answer(f"❌ Ошибка установки задержки:\n{err}")
+
+
+@router.message(CaptureDelayStates.waiting_delay)
+async def process_capture_delay_input(
+    message: Message,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+    config: BotConfig,
+) -> None:
+    """Обработка ввода задержки съёмки сообщением (0.0..30.0 с без сброса FSM)."""
+    raw_text = (message.text or "").strip()
+    data = await state.get_data()
+    target = data.get("target", "global")
+    is_inst = data.get("is_installation", False)
+    user_id = message.from_user.id if message.from_user else 0
+
+    # Парсим значение
+    val_clean = raw_text.replace(",", ".").replace("с", "").replace("s", "").strip()
+    try:
+        val_sec = float(val_clean)
+        if not (0.0 <= val_sec <= 30.0):
+            raise ValueError("Число вне диапазона")
+    except ValueError:
+        kb = get_capture_delay_keyboard(target=target, is_installation=is_inst)
+        await message.answer(
+            "❌ Значение задержки должно быть числом от 0.0 до 30.0 с (например, <code>1.5</code>).\n"
+            "Повторите ввод:",
+            reply_markup=kb,
+        )
+        return
+
+    await state.clear()
+
+    try:
+        if is_inst and target.isdigit():
+            inst_id = int(target)
+            patch_payload = {"capture_delay_sec": val_sec}
+            updated = await api_client.update_installation(
+                user_id, inst_id, patch_payload
+            )
+            me = await api_client.get_me(user_id)
+            role = me.get("role", "guest") if me else "guest"
+            card_text = format_installation_card(
+                updated, role=role, web_public_url=config.web_public_url
+            )
+            kb = get_installation_card_keyboard(
+                inst_id, role=role, is_archived=updated.get("is_archived", False)
+            )
+            await message.answer(
+                f"✅ Задержка съёмки успешно установлена: <b>{val_sec} с</b>.\n\n{card_text}",
+                reply_markup=kb,
+            )
+        else:
+            await api_client.update_system_settings(user_id, capture_delay_sec=val_sec)
+            from clients.telegram_bot.keyboards.inline import get_control_panel_keyboard
+
+            kb = get_control_panel_keyboard(target="all")
+            await message.answer(
+                f"✅ Глобальная задержка съёмки установлена на <b>{val_sec} с</b>.",
+                reply_markup=kb,
+            )
+    except Exception as exc:  # noqa: BLE001
+        err = format_api_error(exc)
+        await message.answer(f"❌ Ошибка установки задержки:\n{err}")
+
+
+# ================== Заглушки пагинации и служебных кнопок (Критерий 1) ==================
+
+
+@router.callback_query(F.data.in_({"pag:noop", "frm:noop"}))
+async def handle_noop_callbacks(callback: CallbackQuery) -> None:
+    """Явный ответ на клики по служебным кнопкам без действия (Критерий 1)."""
+    await callback.answer()

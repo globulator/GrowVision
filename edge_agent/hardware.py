@@ -188,13 +188,15 @@ class HardwareManager:
         self,
         camera_hardware_id: str,
         warmup_frames: int = 5,
+        frame_index: int | None = None,
     ) -> bytes:
         """Захватывает сырой кадр с указанной камеры (с прогревом)."""
         if self.mode == "mock":
             from edge_agent.synthetic import generate_synthetic_frame
 
+            idx = frame_index if frame_index is not None else self._mock_frame_counter
             frame = generate_synthetic_frame(
-                frame_index=self._mock_frame_counter,
+                frame_index=idx,
                 camera_id=camera_hardware_id,
             )
             self._mock_frame_counter += 1
@@ -249,12 +251,14 @@ class HardwareManager:
         flash_pin: int,
         warmup_frames: int = 5,
         switch_delay_ms: int = 200,
+        capture_delay_sec: float = 0.0,
+        frame_index: int | None = None,
     ) -> bytes:
         """Последовательность съемки кадра со вспышкой:
 
         1. Выключение основного света (light=0).
         2. Включение вспышки (flash=1).
-        3. Задержка стабилизации света (switch_delay_ms).
+        3. Задержка стабилизации света (switch_delay_ms) плюс capture_delay_sec.
         4. Захват кадра с прогревом (warmup_frames).
         5. Гарантированный возврат в исходное состояние (light=1, flash=0) в finally.
         """
@@ -262,10 +266,17 @@ class HardwareManager:
             self.set_light(light_pin, False)
             self.set_flash(flash_pin, True)
 
-            if switch_delay_ms > 0:
-                time.sleep(switch_delay_ms / 1000.0)
+            total_delay = (switch_delay_ms / 1000.0) + max(
+                0.0, float(capture_delay_sec)
+            )
+            if total_delay > 0:
+                time.sleep(total_delay)
 
-            return self.capture_frame(camera_hardware_id, warmup_frames=warmup_frames)
+            return self.capture_frame(
+                camera_hardware_id,
+                warmup_frames=warmup_frames,
+                frame_index=frame_index,
+            )
         finally:
             self.set_flash(flash_pin, False)
             self.set_light(light_pin, True)

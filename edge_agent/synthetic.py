@@ -26,6 +26,20 @@ def _camera_offset(camera_id: int | str) -> tuple[int, int]:
     return dx, dy
 
 
+def compute_plant_radius(frame_index: int, max_radius: int) -> int:
+    """Вычисляет ступенчатый радиус розетки растения в зависимости от номера кадра."""
+    i = max(0, int(frame_index))
+    if i < 10:
+        r = 24 + i * 4
+    elif i < 20:
+        r = 64 + (i - 10) * 3
+    elif i < 35:
+        r = 94 + (i - 20) * 2
+    else:
+        r = 124 + (i - 35) * 1
+    return min(r, max_radius)
+
+
 def generate_synthetic_frame(
     frame_index: int = 0,
     camera_id: int | str = 0,
@@ -77,7 +91,9 @@ def generate_synthetic_frame(
         cx = max(100, min(width - 100, (width // 2) + dx))
         cy = max(100, min(height - 100, (height // 2) + 20 + dy))
 
-        base_radius = 32 + frame_index * 4
+        max_radius = min(width, height) // 2 - 30
+        base_radius = compute_plant_radius(frame_index, max_radius)
+        angle_offset = (frame_index * 7) % 360
         # Отрисовка лепестков растения под разными углами
         leaf_color = (36, 185, 42)  # Яркий зеленый в BGR
         angles = [0, 60, 120, 180, 240, 300]
@@ -86,7 +102,7 @@ def generate_synthetic_frame(
                 frame,
                 (cx, cy),
                 (base_radius, max(12, int(base_radius * 0.62))),
-                angle,
+                (angle + angle_offset) % 360,
                 0,
                 360,
                 leaf_color,

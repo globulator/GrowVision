@@ -1,9 +1,9 @@
 # Отчёт о реализации: Этап 7 — Telegram-бот
 
 - **Статус**: READY_FOR_QA
-- **Ветка**: `stage-7/bot`
+- **Ветка**: `stage-7/bot-fixes-4`
 - **Компонент**: `telegram_bot`
-- **Карточка**: `docs/tasks/stage-7-bot.md`
+- **Карточка**: `docs/tasks/stage-7-bot-fixes-4-builder.md`
 - **Спецификация**: `docs/BOT_SPEC.md`
 - **Контракт API**: `docs/API_CONTRACT.md`
 
@@ -97,7 +97,62 @@
 
 ---
 
-## 5. Доработки и исправления: Раунд 3 (Ветка `stage-7/bot-fixes-3`)
+## 6. Доработки и исправления: Раунд 4 (Ветка `stage-7/bot-fixes-4`)
+
+### 6.1. Выполненные задачи
+1. **Кнопка «📷 Камеры установки» и управление камерами (`handlers/installations.py`, `keyboards/inline.py`):**
+   - В карточке установки добавлена кнопка `inst:cameras:{id}`.
+   - Обработчик отображает актуальный список привязанных камер с индикацией статуса (🟢 для `is_online=True`, 🔴 для `is_online=False`), кнопками быстрого перехода к камерам и возврата к карточке `inst:view:{id}`.
+   - Зарегистрированы заглушки `frm:close`, `frm:noop`, `pag:noop` (`await callback.answer()`).
+2. **Галерея плановых кадров и ролевой доступ (`handlers/timelapse.py`, `api_client.py`):**
+   - Роут сервера `/api/timelapse/{id}/frames` возвращает `{"installation_id": ..., "frames": [...]}`: поддержан безопасный парсинг `res.get("frames", [])` с fallback на список.
+   - Для роли `guest` отображается только последний плановый кадр с подписью о доступности полной галереи биологам/разработчикам и кнопкой закрытия `frm:close`.
+   - Для ролей `biologist` и `developer` доступна полная галерея с пагинацией и переключением слоёв оригинал/нейросеть.
+3. **Блок 🐞 DEBUG (`utils/formatters.py`, `handlers/control.py`, `handlers/cameras.py`):**
+   - Извлечение строки лога `debug_info.get("log_line")` из `resp["debug_info"]["log_line"]` с выводом строк «Команда:» и «Лог:».
+   - Экранирование пользовательских и отладочных строк через `html.escape`.
+4. **Валидация GPIO в мастере и редактировании (`handlers/installations.py`):**
+   - На шагах `waiting_light_pin` и `waiting_flash_pin`, а также в `process_edit_value` проверяется диапазон `0 <= pin <= 53`.
+   - При невалидном вводе выводится предупреждение, FSM-состояние не сбрасывается.
+5. **Фильтрация архива установок (`handlers/installations.py`):**
+   - При отображении архива (`show_archived=True`) фильтруются только элементы с `inst.get("is_archived") is True`.
+6. **Роли при ручном снимке (`handlers/control.py`):**
+   - Для роли `biologist` отправляется только сырой снимок (raw) через `send_photo`.
+   - Для роли `developer` отправляется медиагруппа (сырой кадр + разметка нейросетью).
+7. **Команда `/version` и экранирование приветствия (`handlers/start_auth.py`):**
+   - Извлечение `server_version` или `version` из `GET /api/version` (без `vнеизвестно`).
+   - Заменен пример логина «Иван Петров» на «Андрей Бармин» в строке подсказки.
+   - Экранирован `username` в приветствии.
+8. **Зависимости и обработка невалидного токена (`main.py`, `requirements.txt`):**
+   - В `requirements.txt` добавлен `aiohttp-socks>=0.8.0`.
+   - В `wait_for_telegram_connection` перехватывается `TelegramUnauthorizedError`: пишется критический лог и процесс немедленно завершается (`sys.exit(1)`), предотвращая зацикливание при битом токене.
+9. **Удаление архивной установки с кадрами (`server/api/installations.py`):**
+   - Для архивной установки (`inst.is_archived is True`) разрешено удаление при любом количестве кадров (камеры отвязываются, записи `Capture` в БД и файлы медиа `server/media/<id>` удаляются).
+   - Для неархивной установки при наличии кадров сохраняется возврат `409 Conflict`.
+10. **Сканирование камер (`server/api/cameras.py`):**
+    - В результаты сканирования возвращаются только реально обнаруженные камеры в момент опроса. Отключенные камеры помечаются `is_online = False` и остаются в базе данных (видны в карточке установки со статусом оффлайн).
+11. **Паритет настройки `capture_delay_sec` (Server ↔ Edge ↔ Bot ↔ CLI):**
+    - **Сервер:** системная настройка в `system_settings` (default 1.5 с, диапазон 0.0..30.0 с, эндпоинты `GET/PATCH /api/system/settings`, `GET /api/system/status`), колонка `Installation.capture_delay_sec` в БД, передача параметров в heartbeat и claim command edge-агента.
+    - **Edge-агент:** учет задержки `capture_delay_sec` перед снимком в `hardware.py` и `orchestrator.py`.
+    - **Telegram-бот:** кнопка «⏱ Задержка съёмки» в меню «💡 Свет и реле» и меню установки с пресетами (`0.5 с`, `1.5 с`, `3.0 с`, `5.0 с`; для установки — «🔄 Использовать общую») и вводом `0.0..30.0` без сброса FSM.
+    - **CLI:** команды `system delay <seconds>`, `unit delay <target> [seconds] [--default]`, опции `--delay` и `--clear-delay` в `unit add` и `unit edit`, отображение в `system status` и `_render_unit_card`.
+12. **Edge-агент (мьютекс, раздельные кадры, формула роста):**
+    - В `orchestrator.py` команды используют `hardware.acquire_lock(blocking=True, timeout=10.0)`.
+    - `frame_index` ведется раздельно для каждой пары `(installation_id, camera_id)` начиная с 0.
+    - В `synthetic.py` реализована ступенчатая формула `compute_plant_radius(frame_index, max_radius)` и поворот `angle_offset = (frame_index * 7) % 360`.
+
+### 6.2. Итоговые результаты проверок
+- **Unit-тесты Telegram-бота**: `51 passed in 0.56s` (+7 тестов в `test_bot_fixes_round4.py`).
+- **CLI-клиент**: `45 passed in 0.56s` (+3 теста задержки съёмки).
+- **Edge-агент**: `49 passed in 11.04s`.
+- **Server & E2E**: `123 passed in 69.90s`.
+- **Всего в проекте**: **268 passed** (все тесты зеленые).
+- **Линтер и форматирование**:
+  - `server/.venv/bin/ruff check .` — **All checks passed!**
+  - `server/.venv/bin/ruff format --check .` — **193 files already formatted.**
+- **Изоляция и чистота**:
+  - `server/media/` содержит только `.gitkeep`.
+  - `VERSION` не изменялась: `0.3.1`.
 
 ### 5.1. Выполненные задачи
 1. **Шаг ArUco в мастере создания установки (`handlers/installations.py`):**

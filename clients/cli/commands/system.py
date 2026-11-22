@@ -22,11 +22,13 @@ def system_info() -> None:
   [green]system info[/green]              - Показать эту справку
   [green]system status[/green]            - Сводка по серверу и телеметрия Raspberry Pi
   [green]system schedule <hours>[/green]   - Изменить интервал плановой автосъёмки (в часах)
+  [green]system delay <seconds>[/green]    - Настроить глобальную задержку съёмки (0.0..30.0 с)
   [green]system debug <on|off>[/green]     - Включить или выключить режим отладки
 
 [bold]Примеры:[/bold]
   system status
   system schedule 2
+  system delay 1.5
   system debug on
 """
     console.print(info_text)
@@ -58,11 +60,13 @@ def system_status() -> None:
         else "[dim]выключен[/dim]"
     )
 
+    capture_delay = settings.get("capture_delay_sec", 1.5)
     server_lines = [
         f"[bold]Версия сервера:[/bold] {srv_ver}",
         f"[bold]Статус RPi:[/bold] {conn_str}",
         f"[bold]Последний сигнал RPi:[/bold] {hb_at}",
         f"[bold]Интервал автосъёмки:[/bold] {interval} ч",
+        f"[bold]Задержка съёмки:[/bold] {capture_delay} с",
         f"[bold]Режим отладки:[/bold] {debug_mode}",
     ]
     console.print(
@@ -203,6 +207,35 @@ def system_schedule(
         warning = resp.get("warning")
         if warning:
             console.print(f"[yellow]Предупреждение: {warning}[/yellow]")
+
+
+@system_app.command(name="delay")
+def system_delay(
+    seconds: float = typer.Argument(
+        ..., help="Задержка стабилизации света перед съёмкой в секундах (0.0 .. 30.0)"
+    ),
+) -> None:
+    """Изменение глобальной задержки съёмки (Developer)."""
+    if seconds < 0.0 or seconds > 30.0:
+        err_console.print(
+            "Ошибка (system delay): Задержка съёмки должна быть числом от 0.0 до 30.0 секунд.\n",
+            style="bold red",
+        )
+        raise typer.Exit(code=1)
+
+    val = round(seconds, 2)
+    client = APIClient()
+    resp = client.request(
+        method="PATCH",
+        url="/api/system/settings",
+        context="system delay",
+        json_data={"capture_delay_sec": val},
+    )
+
+    if isinstance(resp, dict):
+        console.print(
+            f"[green]Глобальная задержка съёмки успешно изменена на {val} с.[/green]"
+        )
 
 
 @system_app.command(name="debug")

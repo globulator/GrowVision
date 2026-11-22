@@ -63,6 +63,7 @@ class HeartbeatActiveInstallation(BaseModel):
     light_gpio_pin: int
     flash_gpio_pin: int
     camera_hardware_ids: list[str] = Field(default_factory=list)
+    capture_delay_sec: float | None = None
 
 
 class HeartbeatResponse(BaseModel):
@@ -75,6 +76,7 @@ class HeartbeatResponse(BaseModel):
     active_installations: list[HeartbeatActiveInstallation] = Field(
         default_factory=list
     )
+    capture_delay_sec: float = 1.5
 
 
 class CommandInstallation(BaseModel):
@@ -86,6 +88,7 @@ class CommandInstallation(BaseModel):
     light_gpio_pin: int
     flash_gpio_pin: int
     camera_hardware_ids: list[str] = Field(default_factory=list)
+    capture_delay_sec: float | None = None
 
 
 class CommandItem(BaseModel):

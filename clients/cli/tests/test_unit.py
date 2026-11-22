@@ -228,3 +228,83 @@ def test_unit_archive_and_delete(cli_runner, temp_session_file, mock_client_fact
     res_del = cli_runner.invoke(app, ["unit", "delete", "1", "-y"])
     assert res_del.exit_code == 0
     assert "Установка #1 успешно удалена" in res_del.stdout
+
+
+def test_unit_delay_and_options(cli_runner, temp_session_file, mock_client_factory):
+    """Настройка задержки съёмки через unit add, unit edit и unit delay."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/installations" and request.method == "POST":
+            data = json.loads(request.content.decode())
+            assert data["capture_delay_sec"] == 2.0
+            return httpx.Response(
+                201,
+                json={
+                    "id": 10,
+                    "name": "Новый Бокс",
+                    "culture_name": "Шпинат",
+                    "capture_delay_sec": 2.0,
+                    "is_archived": False,
+                },
+            )
+        if request.url.path == "/api/installations/1" and request.method == "PATCH":
+            data = json.loads(request.content.decode())
+            return httpx.Response(
+                200,
+                json={
+                    "id": 1,
+                    "name": "Бокс-1",
+                    "culture_name": "Рукола",
+                    "capture_delay_sec": data.get("capture_delay_sec"),
+                    "is_archived": False,
+                },
+            )
+        return httpx.Response(404)
+
+    mock_client_factory(handler)
+
+    # 1. unit add с --delay
+    res_add = cli_runner.invoke(
+        app,
+        [
+            "unit",
+            "add",
+            "--name",
+            "Новый Бокс",
+            "--culture",
+            "Шпинат",
+            "--light-pin",
+            "17",
+            "--flash-pin",
+            "27",
+            "--delay",
+            "2.0",
+        ],
+    )
+    assert res_add.exit_code == 0
+    assert "2.0 с" in res_add.stdout
+
+    # 2. unit edit с --delay
+    res_edit = cli_runner.invoke(app, ["unit", "edit", "1", "--delay", "3.5"])
+    assert res_edit.exit_code == 0
+    assert "3.5 с" in res_edit.stdout
+
+    # 3. unit edit с --clear-delay
+    res_edit_clear = cli_runner.invoke(app, ["unit", "edit", "1", "--clear-delay"])
+    assert res_edit_clear.exit_code == 0
+    assert "по умолчанию (общая)" in res_edit_clear.stdout
+
+    # 4. unit delay <target> <seconds>
+    res_delay = cli_runner.invoke(app, ["unit", "delay", "1", "4.5"])
+    assert res_delay.exit_code == 0
+    assert "Задержка съёмки для установки #1 установлена: 4.5 с" in res_delay.stdout
+
+    # 5. unit delay <target> --default
+    res_delay_def = cli_runner.invoke(app, ["unit", "delay", "1", "--default"])
+    assert res_delay_def.exit_code == 0
+    assert "общая системная" in res_delay_def.stdout
+
+    # 6. unit delay валидация
+    res_delay_bad = cli_runner.invoke(app, ["unit", "delay", "1", "35.0"])
+    assert res_delay_bad.exit_code == 1
+    assert "от 0.0 до 30.0" in res_delay_bad.output

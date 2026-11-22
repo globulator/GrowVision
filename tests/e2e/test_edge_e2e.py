@@ -529,8 +529,11 @@ cfg = EdgeConfig(edge_api_key="test-key", hardware_mode="mock")
 client = DummyClient()
 orch = EdgeOrchestrator(config=cfg, client=client)
 
-# Симулируем работу плановой автосъемки
+# Симулируем работу плановой автосъемки (захваченный аппаратный мьютекс)
 orch.is_scheduled_capture_running.set()
+orch.hardware.acquire_lock(blocking=True)
+orig_acq = orch.hardware.acquire_lock
+orch.hardware.acquire_lock = lambda blocking=True, timeout=10.0: orig_acq(blocking=True, timeout=0.05)
 
 cmd = CommandItem(id=10, command_type="SNAP", is_global=False)
 orch.handle_command(cmd)

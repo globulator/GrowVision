@@ -100,6 +100,24 @@ async def handle_open_frames_gallery(
         inst = await api_client.get_installation(user_id, inst_id)
         inst_name = inst.get("name", f"Установка #{inst_id}")
 
+        me = await api_client.get_me(user_id)
+        role = me.get("role", "guest") if me else "guest"
+
+        if role == "guest":
+            # Гость видит только последний плановый кадр без листания всей галереи (Критерий 2)
+            await _show_frame_in_gallery(
+                callback=callback,
+                state=state,
+                api_client=api_client,
+                inst_id=inst_id,
+                inst_name=inst_name,
+                frames=[frames[-1]],
+                frame_idx=0,
+                layer="r",
+                is_guest=True,
+            )
+            return
+
         # Проверяем наличие параллельной съёмки на несколько камер
         if _has_concurrent_cameras(frames):
             # Предлагаем пользователю выбрать камеру
@@ -130,7 +148,7 @@ async def handle_open_frames_gallery(
             )
             if callback.message and isinstance(callback.message, Message):
                 await callback.message.edit_text(
-                    f"🌱 Установка «<b>{inst_name}</b>» снималась одновременно на несколько камер.\n"
+                    f"🌱 Установка «<b>{html.escape(str(inst_name))}</b>» снималась одновременно на несколько камер.\n"
                     "Выберите камеру для просмотра таймлапса ракурса:",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
                 )
@@ -146,6 +164,7 @@ async def handle_open_frames_gallery(
             frames=frames,
             frame_idx=len(frames) - 1,  # Открываем самый свежий кадр
             layer="r",
+            is_guest=False,
         )
 
     except ApiError as exc:
@@ -216,6 +235,7 @@ async def handle_gallery_camera_selected(
         frames=filtered_frames,
         frame_idx=len(filtered_frames) - 1,
         layer="r",
+        is_guest=False,
     )
 
 
@@ -228,6 +248,7 @@ async def _show_frame_in_gallery(
     frames: list[dict],
     frame_idx: int,
     layer: str = "r",
+    is_guest: bool = False,
 ) -> None:
     """Отображает кадр в галерее с навигационной клавиатурой."""
     user_id = callback.from_user.id if callback.from_user else 0
@@ -246,6 +267,7 @@ async def _show_frame_in_gallery(
         inst_name=inst_name,
         current_idx=current_idx,
         current_layer=layer,
+        is_guest=is_guest,
     )
 
     cam_id = target_frame.get("camera_id", "cam")
@@ -260,20 +282,40 @@ async def _show_frame_in_gallery(
         area_text = "площадь не определена"
 
     layer_title = "Оригинал" if layer == "r" else "Разметка нейросети"
-    caption = (
-        f"🌱 <b>Установка:</b> {html.escape(str(inst_name))}\n"
-        f"📷 <b>Камера:</b> #{html.escape(str(cam_id))}\n"
-        f"🕒 <b>Время съёмки:</b> {cap_time} UTC\n"
-        f"📐 <b>Площадь:</b> {area_text}\n"
-        f"🖼 <b>Слой:</b> {layer_title}\n"
-        f"Кадр {current_idx + 1} из {total_frames}"
-    )
+    if is_guest:
+        caption = (
+            f"🌱 <b>Установка:</b> {html.escape(str(inst_name))}\n"
+            f"📷 <b>Камера:</b> #{html.escape(str(cam_id))}\n"
+            f"🕒 <b>Время съёмки:</b> {cap_time} UTC\n"
+            f"📐 <b>Площадь:</b> {area_text}\n"
+            f"🖼 <b>Слой:</b> {layer_title}\n"
+            "<i>(Последний плановый кадр. Полная галерея доступна биологам и разработчикам)</i>"
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Закрыть",
+                        callback_data="frm:close",
+                    )
+                ]
+            ]
+        )
+    else:
+        caption = (
+            f"🌱 <b>Установка:</b> {html.escape(str(inst_name))}\n"
+            f"📷 <b>Камера:</b> #{html.escape(str(cam_id))}\n"
+            f"🕒 <b>Время съёмки:</b> {cap_time} UTC\n"
+            f"📐 <b>Площадь:</b> {area_text}\n"
+            f"🖼 <b>Слой:</b> {layer_title}\n"
+            f"Кадр {current_idx + 1} из {total_frames}"
+        )
+        kb = build_frames_gallery_keyboard(current_idx, total_frames, layer=layer)
 
     url_field = "raw_url" if layer == "r" else "annotated_url"
     img_url = target_frame.get(url_field, target_frame.get("raw_url", ""))
 
     img_bytes = await api_client.download_file(user_id, img_url)
-    kb = build_frames_gallery_keyboard(current_idx, total_frames, layer=layer)
 
     chat_id = callback.message.chat.id if callback.message else user_id
 
@@ -468,8 +510,9 @@ async def handle_video_installation_selected(
             )
 
             if callback.message and isinstance(callback.message, Message):
+                inst_title = html.escape(str(inst.get("name", "")))
                 await callback.message.edit_text(
-                    f"К установке «<b>{inst.get('name')}</b>» привязано несколько камер.\n"
+                    f"К установке «<b>{inst_title}</b>» привязано несколько камер.\n"
                     "Выберите камеру для сборки таймлапса:",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
                 )

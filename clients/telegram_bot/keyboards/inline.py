@@ -65,6 +65,14 @@ def get_installation_card_keyboard(
                     ),
                 ]
             )
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text="⏱ Задержка съёмки",
+                        callback_data=f"inst:delay:{inst_id}",
+                    )
+                ]
+            )
 
         if role == "biologist":
             buttons.append(
@@ -162,11 +170,42 @@ def get_control_panel_keyboard(
                 InlineKeyboardButton(
                     text="🧪 Тест реле (3 сек)",
                     callback_data=f"ctrl:relay:{target}",
-                )
+                ),
+                InlineKeyboardButton(
+                    text="⏱ Задержка съёмки",
+                    callback_data=f"ctrl:delay:{target}",
+                ),
             ],
             [InlineKeyboardButton(text="⬅️ К выбору цели", callback_data="ctrl:menu")],
         ]
     )
+
+
+def get_capture_delay_keyboard(
+    target: str,
+    is_installation: bool = False,
+) -> InlineKeyboardMarkup:
+    """Клавиатура пресетов задержки съёмки (Критерий 11)."""
+    buttons = [
+        [
+            InlineKeyboardButton(text="0.5 с", callback_data=f"set_delay:{target}:0.5"),
+            InlineKeyboardButton(text="1.5 с", callback_data=f"set_delay:{target}:1.5"),
+            InlineKeyboardButton(text="3.0 с", callback_data=f"set_delay:{target}:3.0"),
+            InlineKeyboardButton(text="5.0 с", callback_data=f"set_delay:{target}:5.0"),
+        ]
+    ]
+    if is_installation:
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text="🔄 Использовать общую",
+                    callback_data=f"set_delay:{target}:default",
+                )
+            ]
+        )
+    back_target = f"inst:view:{target}" if is_installation else "ctrl:menu"
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_target)])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def get_edit_fields_keyboard(

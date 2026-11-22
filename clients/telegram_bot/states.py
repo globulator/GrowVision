@@ -49,3 +49,10 @@ class SystemSettingsStates(StatesGroup):
     """FSM-состояния изменения системных настроек."""
 
     waiting_interval = State()
+    waiting_delay = State()
+
+
+class CaptureDelayStates(StatesGroup):
+    """FSM-состояния настройки задержки съёмки."""
+
+    waiting_delay = State()

@@ -56,8 +56,10 @@ class EdgeOrchestrator:
         # Динамические настройки, получаемые от сервера
         self.capture_interval_hours = config.capture_interval_hours
         self.debug_mode = config.debug_mode
+        self.global_capture_delay_sec: float = 1.5
         self.active_installations: list[HeartbeatActiveInstallation] = []
         self._initialized_installations: set[tuple[int, int, int]] = set()
+        self._frame_indices: dict[tuple[int, str], int] = {}
 
         self._heartbeat_thread: threading.Thread | None = None
         self._command_thread: threading.Thread | None = None
@@ -190,9 +192,12 @@ class EdgeOrchestrator:
             self.capture_interval_hours = resp.capture_interval_hours
             self.debug_mode = resp.debug_mode
             self.active_installations = resp.active_installations
+            if getattr(resp, "capture_delay_sec", None) is not None:
+                self.global_capture_delay_sec = float(resp.capture_delay_sec)
             logger.debug(
                 f"Конфигурация обновлена: интервал={self.capture_interval_hours}ч, "
-                f"установок={len(self.active_installations)}"
+                f"установок={len(self.active_installations)}, "
+                f"задержка_съёмки={self.global_capture_delay_sec}с"
             )
 
             # Переводим реле активных установок в нормальное состояние (свет ВКЛ)
@@ -201,6 +206,12 @@ class EdgeOrchestrator:
             # Если в очереди есть неотправленные пакеты, запускаем асинхронный сброс
             if queue_count > 0:
                 self.trigger_async_flush()
+
+    def _get_and_inc_frame_index(self, inst_id: int, camera_hw_id: str) -> int:
+        """Возвращает текущий frame_index для пары (installation_id, camera_id) и инкрементирует его."""
+        idx = self._frame_indices.get((inst_id, camera_hw_id), 0)
+        self._frame_indices[(inst_id, camera_hw_id)] = idx + 1
+        return idx
 
     def _heartbeat_loop(self) -> None:
         """Периодический цикл отправки Heartbeat."""
@@ -230,22 +241,8 @@ class EdgeOrchestrator:
         """Обрабатывает одну полученную команду."""
         logger.info(f"Получена команда #{cmd.id}: {cmd.command_type}")
 
-        # Проверка приоритета плановой автосъемки
-        if self.is_scheduled_capture_running.is_set():
-            logger.warning(
-                f"Оборудование занято плановой съемкой. Отклонение команды #{cmd.id}"
-            )
-            self.client.send_command_result(
-                cmd.id,
-                CommandResult(
-                    status="error",
-                    result_message="Камера недоступна, попробуйте позже",
-                ),
-            )
-            return
-
-        # Попытка захватить аппаратный мьютекс
-        acquired = self.hardware.acquire_lock(blocking=False)
+        # Захват аппаратного мьютекса (с ожиданием до 10.0 с на случай плановой съёмки)
+        acquired = self.hardware.acquire_lock(blocking=True, timeout=10.0)
         if not acquired:
             logger.warning(f"Аппаратный мьютекс занят. Отклонение команды #{cmd.id}")
             self.client.send_command_result(
@@ -408,10 +405,16 @@ class EdgeOrchestrator:
                 continue
 
             inst_captured_count = 0
+            inst_delay = (
+                inst.capture_delay_sec
+                if getattr(inst, "capture_delay_sec", None) is not None
+                else self.global_capture_delay_sec
+            )
 
             # Снимаем ВСЕ привязанные камеры данной установки
             for cam_hw_id in cam_ids:
                 try:
+                    frame_idx = self._get_and_inc_frame_index(inst.id, cam_hw_id)
                     # 1. Захват кадра с последовательностью переключения реле (light=0, flash=1, delay, capture, light=1, flash=0)
                     raw_bytes = self.hardware.capture_frame_with_sequence(
                         camera_hardware_id=cam_hw_id,
@@ -419,6 +422,8 @@ class EdgeOrchestrator:
                         flash_pin=inst.flash_gpio_pin,
                         warmup_frames=self.config.camera_warmup_frames,
                         switch_delay_ms=self.config.relay_switch_delay_ms,
+                        capture_delay_sec=inst_delay,
+                        frame_index=frame_idx,
                     )
 
                     # 2. Компьютерное зрение
@@ -505,14 +510,22 @@ class EdgeOrchestrator:
 
         try:
             for inst in self.active_installations:
+                inst_delay = (
+                    inst.capture_delay_sec
+                    if getattr(inst, "capture_delay_sec", None) is not None
+                    else self.global_capture_delay_sec
+                )
                 for cam_hw_id in inst.camera_hardware_ids:
                     try:
+                        frame_idx = self._get_and_inc_frame_index(inst.id, cam_hw_id)
                         raw_bytes = self.hardware.capture_frame_with_sequence(
                             camera_hardware_id=cam_hw_id,
                             light_pin=inst.light_gpio_pin,
                             flash_pin=inst.flash_gpio_pin,
                             warmup_frames=self.config.camera_warmup_frames,
                             switch_delay_ms=self.config.relay_switch_delay_ms,
+                            capture_delay_sec=inst_delay,
+                            frame_index=frame_idx,
                         )
                         ann_bytes, aruco_area, measurements = (
                             self.vision.process_capture(raw_bytes)

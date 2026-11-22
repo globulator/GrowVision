@@ -186,11 +186,18 @@ async def handle_control_light_action(
     try:
         resp = await api_client.control_light_main(user_id, target, state_bool)
         res_msg = resp.get("result_message", "Успешно")
-        debug_log = resp.get("debug_log_line")
+        debug_info = resp.get("debug_info")
+        debug_log = (
+            debug_info.get("log_line")
+            if isinstance(debug_info, dict)
+            else resp.get("debug_log_line")
+        )
 
         # Проверяем debug_mode
         sys_status = await api_client.get_system_status(user_id)
-        debug_on = sys_status.get("settings", {}).get("debug_mode", False)
+        debug_on = sys_status.get("settings", {}).get("debug_mode", False) or bool(
+            debug_info
+        )
         debug_str = (
             format_debug_block("POST /api/control/light/main", debug_log)
             if debug_on
@@ -240,10 +247,17 @@ async def handle_control_flash_action(
     try:
         resp = await api_client.control_light_flash(user_id, target, state_bool)
         res_msg = resp.get("result_message", "Успешно")
-        debug_log = resp.get("debug_log_line")
+        debug_info = resp.get("debug_info")
+        debug_log = (
+            debug_info.get("log_line")
+            if isinstance(debug_info, dict)
+            else resp.get("debug_log_line")
+        )
 
         sys_status = await api_client.get_system_status(user_id)
-        debug_on = sys_status.get("settings", {}).get("debug_mode", False)
+        debug_on = sys_status.get("settings", {}).get("debug_mode", False) or bool(
+            debug_info
+        )
         debug_str = (
             format_debug_block("POST /api/control/light/flash", debug_log)
             if debug_on
@@ -286,10 +300,17 @@ async def handle_control_relay_test(
     try:
         resp = await api_client.control_relay_test(user_id, target)
         res_msg = resp.get("result_message", "Тест реле завершен")
-        debug_log = resp.get("debug_log_line")
+        debug_info = resp.get("debug_info")
+        debug_log = (
+            debug_info.get("log_line")
+            if isinstance(debug_info, dict)
+            else resp.get("debug_log_line")
+        )
 
         sys_status = await api_client.get_system_status(user_id)
-        debug_on = sys_status.get("settings", {}).get("debug_mode", False)
+        debug_on = sys_status.get("settings", {}).get("debug_mode", False) or bool(
+            debug_info
+        )
         debug_str = (
             format_debug_block("POST /api/control/relay-test", debug_log)
             if debug_on
@@ -414,7 +435,12 @@ async def _execute_snap(
         status_result = resp.get("status", "done")
         result_message = resp.get("result_message", "")
         captures = resp.get("captures", [])
-        debug_log = resp.get("debug_log_line")
+        debug_info = resp.get("debug_info")
+        debug_log = (
+            debug_info.get("log_line")
+            if isinstance(debug_info, dict)
+            else resp.get("debug_log_line")
+        )
 
         if status_result == "error":
             # При ошибке съёмки выводим result_message
@@ -442,7 +468,9 @@ async def _execute_snap(
         if role == "developer":
             with contextlib.suppress(Exception):
                 sys_status = await api_client.get_system_status(user_id)
-                if sys_status.get("settings", {}).get("debug_mode", False):
+                if sys_status.get("settings", {}).get("debug_mode", False) or bool(
+                    debug_info
+                ):
                     debug_str = format_debug_block("POST /api/control/snap", debug_log)
 
         # Маппинг камер
@@ -494,24 +522,33 @@ async def _execute_snap(
 
             caption = "\n".join(caption_lines)
 
-            # Скачиваем сырой и аннотированный кадры
+            # Скачиваем сырой кадр
             raw_url = cap.get("raw_url", "")
-            ann_url = cap.get("annotated_url", "")
-
             raw_bytes = await api_client.download_file(user_id, raw_url)
-            ann_bytes = await api_client.download_file(user_id, ann_url)
 
-            media = [
-                InputMediaPhoto(
-                    media=BufferedInputFile(raw_bytes, filename=f"raw_{idx}.jpg"),
+            if role == "biologist":
+                # Биолог получает только raw-снимок без разметки нейросетью
+                await callback.bot.send_photo(
+                    chat_id=target_chat,
+                    photo=BufferedInputFile(raw_bytes, filename=f"raw_{idx}.jpg"),
                     caption=caption,
                     parse_mode="HTML",
-                ),
-                InputMediaPhoto(
-                    media=BufferedInputFile(ann_bytes, filename=f"ann_{idx}.jpg"),
-                ),
-            ]
-            await callback.bot.send_media_group(chat_id=target_chat, media=media)
+                )
+            else:
+                # Разработчик получает альбом из двух кадров (raw + annotated)
+                ann_url = cap.get("annotated_url", "")
+                ann_bytes = await api_client.download_file(user_id, ann_url)
+                media = [
+                    InputMediaPhoto(
+                        media=BufferedInputFile(raw_bytes, filename=f"raw_{idx}.jpg"),
+                        caption=caption,
+                        parse_mode="HTML",
+                    ),
+                    InputMediaPhoto(
+                        media=BufferedInputFile(ann_bytes, filename=f"ann_{idx}.jpg"),
+                    ),
+                ]
+                await callback.bot.send_media_group(chat_id=target_chat, media=media)
 
     except ApiError as exc:
         err = format_api_error(exc, is_control=True)
