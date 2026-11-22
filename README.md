@@ -103,11 +103,18 @@ cp clients/telegram_bot/.env.example clients/telegram_bot/.env
 - `TELEGRAM_BOT_TOKEN` — токен бота от `@BotFather`
 - `SERVER_URL` — адрес сервера (по умолчанию `http://127.0.0.1:8000`)
 - `CLIENT_API_KEY` — ключ клиента (должен совпадать с `server/.env`)
+- `TELEGRAM_PROXY` — опциональный HTTP/SOCKS5 прокси для Telegram API
+- `BOT_DEBUG_LOG` — включение структурированного JSONL-журнала событий (true/false)
 
 #### 2. Запуск Telegram-бота
 
 ```bash
 clients/telegram_bot/.venv/bin/python -m clients.telegram_bot.main
+```
+
+Для оперативного сбора баг-репортов пользователи могут отправить боту сообщение с `*` (например, `*ошибка в карточке`), а просмотреть журнал дефектов можно через встроенную утилиту:
+```bash
+clients/telegram_bot/.venv/bin/python -m clients.telegram_bot.tools.bug_log list
 ```
 
 #### 3. Запуск тестов бота
