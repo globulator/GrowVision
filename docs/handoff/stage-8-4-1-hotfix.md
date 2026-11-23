@@ -11,7 +11,8 @@
 ### 2.1. Web SPA: SyntaxError и согласованность ES-модулей
 - В `clients/web/js/rpi_setup.js` исправлен некорректный импорт: `import { showError, showToast } from './dialogs.js'` вместо несуществующего `showErrorDialog`. Вызовы `showErrorDialog(...)` заменены на `showError(...)`.
 - В `clients/web/js/dialogs.js` добавлен алиас `export { showError as showErrorDialog }` для обратной совместимости.
-- Все локальные `import` и `export` во всех 9 модулях `clients/web/js/*.js` согласованы и валидированы автоматическим тестом.
+- Устранён дефект [BUG-003] (дублирование `export { showError as showErrorDialog };` в `dialogs.js`), исключён SyntaxError по ECMAScript §16.2.3.1.
+- Все локальные `import` и `export` во всех 9 модулях `clients/web/js/*.js` строго уникальны, согласованы и валидированы автоматическим тестом.
 
 ### 2.2. Web SPA: Уточнение текстов и Favicon
 - На шаге 2 регистрации в `clients/web/index.html` добавлено чёткое разделение: срок действия кода (10 минут) и таймер повторной отправки (60 секунд).

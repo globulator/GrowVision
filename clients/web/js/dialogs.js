@@ -29,9 +29,6 @@ export function showError(message, title = 'Внимание') {
   });
 }
 
-// Алиас для обратной совместимости
-export { showError as showErrorDialog };
-
 export function closeErrorModal() {
   const modal = document.getElementById('modal-error');
   if (modal) {
