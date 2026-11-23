@@ -191,3 +191,4 @@ server/.venv/bin/ruff format --check .
 - [docs/stage_reports/stage-7.3.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-7.3.md) — отчёт по этапу 7.3
 - [docs/stage_reports/stage-7.4.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-7.4.md) — отчёт по этапу 7.4
 - [docs/stage_reports/stage-8.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-8.md) — отчёт по этапу 8
+- [docs/stage_reports/stage-8.1.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-8.1.md) — отчёт по этапу 8.1
