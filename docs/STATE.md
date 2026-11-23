@@ -7,18 +7,19 @@
 - Текущий этап: 8.6
 - Название этапа: Интеграция квадратного 1:1 SVG-логотипа GrowVision в шапку Web SPA и favicon
 - Режим: FAST
-- Статус: BUILDING
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт разработка Builder)
+- Ждём от пользователя: ничего (идёт тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| builder | web | stage-8/brand-logo | docs/tasks/stage-8-6-brand-logo-builder.md | — |
+| qa | web | stage-8/brand-logo | docs/tasks/stage-8-6-brand-logo-qa.md | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-8/brand-logo создана от main (edd8560)
+- 7a79d1c feat(stage-8.6): integrate 1:1 brand logo into web spa header and favicon
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 8.5)
@@ -48,7 +49,6 @@
 - Этап 8.6: Интеграция фирменного SVG-логотипа GrowVision в шапку Web SPA и favicon (принят QA, слит в main, версия 0.6.1, отчёт docs/stage_reports/stage-8.6.md)
 
 ## История (последние 15 событий)
-- 2026-11-23: Ветка stage-8/ux-and-mock-isolation слита в main, поднята версия 0.6.0 (тег v0.6.0)
 - 2026-11-23: Scribe создал docs/stage_reports/stage-8.5.md, обновил README.md и docs/stage_reports/stage-8.md
 - 2026-11-23: Этап 8.5 окончательно закрыт (DONE)
 - 2026-11-24: Пользователь запустил этап 8.6 (интеграция фирменного SVG-логотипа в Web SPA и favicon)
@@ -61,4 +61,5 @@
 - 2026-11-24: Этап 8.6 закрыт (DONE)
 - 2026-11-24: Пользователь обновил ассеты логотипа до 1:1 (коммит edd8560) и перезапустил этап 8.6
 - 2026-11-24: Ветка stage-8/brand-logo пересоздана от main (edd8560)
-- 2026-11-24: Подготовлена карточка docs/tasks/stage-8-6-brand-logo-builder.md, статус BUILDING, задача передана Builder-у
+- 2026-11-24: Builder реализовал этап 8.6 (коммит 7a79d1c), статус READY_FOR_QA
+- 2026-11-24: Подготовлена карточка docs/tasks/stage-8-6-brand-logo-qa.md, статус TESTING, задача передана QA
