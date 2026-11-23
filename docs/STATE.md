@@ -7,18 +7,19 @@
 - Текущий этап: 8.6
 - Название этапа: Интеграция фирменного SVG-логотипа GrowVision в шапку Web SPA и favicon
 - Режим: FAST
-- Статус: BUILDING
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт разработка Builder)
+- Ждём от пользователя: ничего (идёт тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| builder | web | stage-8/brand-logo | docs/tasks/stage-8-6-brand-logo-builder.md | — |
+| qa | web | stage-8/brand-logo | docs/tasks/stage-8-6-brand-logo-qa.md | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-8/brand-logo создана от main (5a5b558)
+- c2d1ed6 feat(stage-8.6): integrate brand svg logo into web spa header and favicon
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 8.5)
@@ -47,7 +48,6 @@
 - Этап 8.5: UX-полировка, единый вход без пароля, 30 FPS в боте, SVG-заглушки и изоляция mock-БД (принят QA, слит в main, версия 0.6.0, отчёт docs/stage_reports/stage-8.5.md)
 
 ## История (последние 15 событий)
-- 2026-11-23: QA проверил этап 8.4.1 в режиме VERIFY, вердикт PASS (BUG-003 закрыт, 312 тестов passed)
 - 2026-11-23: Ветка fix/stage-8-web-and-bot слита в main, поднята версия 0.5.2 (тег v0.5.2)
 - 2026-11-23: Scribe создал docs/stage_reports/stage-8.4.1.md, обновил README.md и docs/stage_reports/stage-8.md
 - 2026-11-23: Этап 8.4.1 окончательно закрыт (DONE)
@@ -61,4 +61,5 @@
 - 2026-11-23: Этап 8.5 окончательно закрыт (DONE)
 - 2026-11-24: Пользователь запустил этап 8.6 (интеграция фирменного SVG-логотипа в Web SPA и favicon)
 - 2026-11-24: Создана ветка stage-8/brand-logo от main
-- 2026-11-24: Подготовлена карточка docs/tasks/stage-8-6-brand-logo-builder.md, статус BUILDING, задача передана Builder-у
+- 2026-11-24: Builder реализовал этап 8.6 (коммит c2d1ed6), статус READY_FOR_QA
+- 2026-11-24: Подготовлена карточка docs/tasks/stage-8-6-brand-logo-qa.md, статус TESTING, задача передана QA
