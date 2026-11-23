@@ -24,7 +24,7 @@ export class UnitsManager {
       <div class="section-header">
         <div class="section-title-wrap">
           <h2 class="section-title">🌿 Гидропонные установки</h2>
-          <label class="checkbox-label archive-toggle">
+          <label class="checkbox-label archive-toggle hidden" id="units-archive-toggle-wrap">
             <input type="checkbox" id="units-show-archived" />
             <span>Показать архивные</span>
           </label>
@@ -67,12 +67,25 @@ export class UnitsManager {
   }
 
   render() {
+    const isDev = this.userRole === 'developer';
+    const isBio = this.userRole === 'biologist';
+    const isGuest = this.userRole === 'guest';
+
     const createBtn = this.container.querySelector('#units-btn-create');
     if (createBtn) {
-      if (this.userRole === 'developer') {
+      if (isDev) {
         createBtn.classList.remove('hidden');
       } else {
         createBtn.classList.add('hidden');
+      }
+    }
+
+    const archiveToggle = this.container.querySelector('#units-archive-toggle-wrap');
+    if (archiveToggle) {
+      if (isDev) {
+        archiveToggle.classList.remove('hidden');
+      } else {
+        archiveToggle.classList.add('hidden');
       }
     }
 
@@ -88,12 +101,8 @@ export class UnitsManager {
       const card = document.createElement('div');
       card.className = `unit-card ${u.is_archived ? 'unit-card-archived' : ''}`;
 
-      const isDev = this.userRole === 'developer';
-      const isBio = this.userRole === 'biologist';
-      const isGuest = this.userRole === 'guest';
-
-      const lightState = u.light_state ? '● ВКЛ' : '○ ВЫКЛ';
-      const flashState = u.flash_state ? '● ВКЛ' : '○ ВЫКЛ';
+      const lightState = u.light_state ? 'ВКЛ' : 'ВЫКЛ';
+      const flashState = u.flash_state ? 'ВКЛ' : 'ВЫКЛ';
 
       card.innerHTML = `
         <div class="unit-card-header">
@@ -102,6 +111,18 @@ export class UnitsManager {
             <span class="unit-culture">${escapeHtml(u.culture_name)}</span>
           </div>
           ${u.is_archived ? '<span class="badge badge-warning">Архив</span>' : '<span class="badge badge-success">Активна</span>'}
+        </div>
+
+        <!-- Превью последнего кадра -->
+        <div class="unit-preview-wrap">
+          ${
+            u.last_frame_raw_url
+              ? `<img src="${escapeHtml(u.last_frame_raw_url)}" alt="${escapeHtml(u.name)}" class="unit-preview-img" loading="lazy" />`
+              : `<div class="unit-preview-placeholder">
+                  <svg class="icon-leaf" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 20A7 7 0 0 1 4 13C4 8.5 8 3 20 4c1 12-4.5 16-9 16Z"/><path d="M4 20l7-7"/></svg>
+                  <span>Нет снимков</span>
+                </div>`
+          }
         </div>
 
         <div class="unit-card-body">
@@ -122,19 +143,34 @@ export class UnitsManager {
               ? `
             <div class="unit-param-row unit-pins-row">
               <span class="unit-param-label">GPIO Свет:</span>
-              <span class="unit-param-value">Пин ${u.light_gpio_pin} (${lightState})</span>
+              <span class="unit-param-value">Пин ${u.light_gpio_pin}</span>
             </div>
             <div class="unit-param-row unit-pins-row">
               <span class="unit-param-label">GPIO Вспышка:</span>
-              <span class="unit-param-value">Пин ${u.flash_gpio_pin} (${flashState})</span>
+              <span class="unit-param-value">Пин ${u.flash_gpio_pin}</span>
             </div>
           `
               : ''
           }
         </div>
 
+        ${
+          isDev && !u.is_archived
+            ? `
+          <div class="unit-relays-panel">
+            <button type="button" class="btn btn-xs ${u.light_state ? 'btn-success' : 'btn-secondary'} btn-unit-light" title="Тумблер света">
+              💡 Свет: ${lightState}
+            </button>
+            <button type="button" class="btn btn-xs ${u.flash_state ? 'btn-success' : 'btn-secondary'} btn-unit-flash" title="Тумблер вспышки">
+              ⚡ Вспышка: ${flashState}
+            </button>
+          </div>
+        `
+            : ''
+        }
+
         <div class="unit-card-actions">
-          <button type="button" class="btn btn-primary btn-sm btn-action-timelapse">🎬 Таймлапс</button>
+          <button type="button" class="btn btn-primary btn-sm btn-action-gallery">🖼 Галерея</button>
           ${!isGuest ? '<button type="button" class="btn btn-secondary btn-sm btn-action-snap">📸 Снимок</button>' : ''}
           ${!isGuest ? '<button type="button" class="btn btn-secondary btn-sm btn-action-edit">✏️ Редактировать</button>' : ''}
           ${
@@ -156,9 +192,38 @@ export class UnitsManager {
       `;
 
       // Привязка событий
-      card.querySelector('.btn-action-timelapse').addEventListener('click', () => {
+      card.querySelector('.btn-action-gallery').addEventListener('click', () => {
         this.onSelectInstallation(u);
       });
+
+      // Тумблеры света и вспышки (Developer)
+      const lightBtn = card.querySelector('.btn-unit-light');
+      if (lightBtn) {
+        lightBtn.addEventListener('click', async () => {
+          const nextState = !u.light_state;
+          try {
+            await api.setLight(u.id, nextState);
+            window.showToast?.(`Свет для «${u.name}» ${nextState ? 'включен' : 'выключен'}`, 'success');
+            await this.loadUnits();
+          } catch (err) {
+            alert('Ошибка переключения света: ' + err.message);
+          }
+        });
+      }
+
+      const flashBtn = card.querySelector('.btn-unit-flash');
+      if (flashBtn) {
+        flashBtn.addEventListener('click', async () => {
+          const nextState = !u.flash_state;
+          try {
+            await api.setFlash(u.id, nextState);
+            window.showToast?.(`Вспышка для «${u.name}» ${nextState ? 'включена' : 'выключена'}`, 'success');
+            await this.loadUnits();
+          } catch (err) {
+            alert('Ошибка переключения вспышки: ' + err.message);
+          }
+        });
+      }
 
       const snapBtn = card.querySelector('.btn-action-snap');
       if (snapBtn) {

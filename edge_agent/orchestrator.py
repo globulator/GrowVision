@@ -135,7 +135,8 @@ class EdgeOrchestrator:
         try:
             for inst in new_insts:
                 self.hardware.set_light(inst.light_gpio_pin, True)
-                self.hardware.set_flash(inst.flash_gpio_pin, False)
+                if inst.flash_gpio_pin != inst.light_gpio_pin:
+                    self.hardware.set_flash(inst.flash_gpio_pin, False)
                 self._initialized_installations.add(
                     (inst.id, inst.light_gpio_pin, inst.flash_gpio_pin)
                 )

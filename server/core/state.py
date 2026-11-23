@@ -20,10 +20,10 @@ class InMemoryState:
         with self._lock:
             self._pin_states[pin] = state
 
-    def get_pin_state(self, pin: int) -> bool:
-        """Возвращает текущее состояние реле для GPIO-пина (по умолчанию False)."""
+    def get_pin_state(self, pin: int, default: bool = False) -> bool:
+        """Возвращает текущее состояние реле для GPIO-пина."""
         with self._lock:
-            return self._pin_states.get(pin, False)
+            return self._pin_states.get(pin, default)
 
     def get_all_pin_states(self) -> dict[int, bool]:
         """Возвращает снимок состояний всех известных GPIO-пинов."""

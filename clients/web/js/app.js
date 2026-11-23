@@ -37,10 +37,11 @@ class App {
       onSelectInstallation: (inst) => this.openPlayerForInstallation(inst),
     });
 
-    this.player = new TimelapsePlayer(document.getElementById('tab-player'), {
+    this.player = new TimelapsePlayer(document.getElementById('modal-gallery'), {
       userRole: this.currentUser.role,
-      onBack: () => this.switchTab('units'),
+      onBack: () => {},
     });
+    window.showGalleryModal = (inst) => this.player.open(inst);
 
     this.relaysMgr = new RelaysManager(document.getElementById('tab-relays'), {
       userRole: this.currentUser.role,
@@ -145,9 +146,9 @@ class App {
     this.terminalMgr?.setRole(role);
 
     // Если текущая вкладка стала недоступна — возврат к units
-    if (role === 'guest' && !['units', 'player'].includes(this.activeTab)) {
+    if (role === 'guest' && this.activeTab !== 'units') {
       this.switchTab('units');
-    } else if (role === 'biologist' && !['units', 'player', 'relays'].includes(this.activeTab)) {
+    } else if (role === 'biologist' && !['units', 'relays'].includes(this.activeTab)) {
       this.switchTab('units');
     }
   }
@@ -195,8 +196,7 @@ class App {
   }
 
   openPlayerForInstallation(installation) {
-    this.switchTab('player');
-    this.player.loadInstallation(installation);
+    this.player.open(installation);
   }
 
   setupHeaderActions() {
@@ -381,12 +381,6 @@ class App {
             alertBox.classList.remove('hidden');
             return;
           }
-          if (lPin === fPin) {
-            alertBox.textContent = 'Пин света и вспышки не могут совпадать внутри одной установки.';
-            alertBox.classList.remove('hidden');
-            return;
-          }
-
           payload.light_gpio_pin = lPin;
           payload.flash_gpio_pin = fPin;
 

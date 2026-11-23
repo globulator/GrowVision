@@ -162,3 +162,10 @@ def test_upload_capture_timeout_60s():
     code, body = client.upload_capture(meta, b"fake-raw", b"fake-ann")
     assert code == 201
     assert body["capture_id"] == 55
+
+
+def test_edge_client_trust_env_false():
+    """Проверка, что EdgeAPIClient создает httpx.Client с trust_env=False."""
+    client = EdgeAPIClient("http://test", "secret-key")
+    with client._create_client() as h_client:
+        assert h_client.trust_env is False

@@ -45,6 +45,8 @@ class TimelapseStates(StatesGroup):
     browsing_frames = State()
     selecting_camera_for_video = State()
     waiting_duration = State()
+    waiting_fps = State()
+    confirming_build = State()
 
 
 class SystemSettingsStates(StatesGroup):

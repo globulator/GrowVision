@@ -103,6 +103,8 @@ def build_frames_gallery_keyboard(
     current_index: int,
     total_frames: int,
     layer: str = "r",  # 'r' = raw, 'a' = annotated
+    inst_id: int | None = None,
+    can_build_video: bool = True,
 ) -> InlineKeyboardMarkup:
     """Клавиатура для листания плановых кадров таймлапса по 1 кадру.
 
@@ -161,6 +163,17 @@ def build_frames_gallery_keyboard(
             )
         ]
     )
+
+    if can_build_video:
+        cb_val = f"inst:video:{inst_id}" if inst_id is not None else "frm:timelapse"
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text="🎬 Сформировать таймлапс",
+                    callback_data=cb_val,
+                )
+            ]
+        )
 
     # Кнопка возврата к установке
     keyboard.append(

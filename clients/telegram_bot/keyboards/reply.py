@@ -21,10 +21,9 @@ def get_biologist_reply_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="📸 Сделать снимок"),
             ],
             [
-                KeyboardButton(text="🎬 Таймлапс (видео)"),
                 KeyboardButton(text="👤 Профиль / Выход"),
+                KeyboardButton(text="ℹ️ Справка"),
             ],
-            [KeyboardButton(text="ℹ️ Справка")],
         ],
         resize_keyboard=True,
     )
@@ -43,14 +42,13 @@ def get_developer_reply_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="📸 Сделать снимок"),
             ],
             [
-                KeyboardButton(text="🎬 Таймлапс (видео)"),
+                KeyboardButton(text="👥 Сессии"),
                 KeyboardButton(text="⚙️ Система"),
             ],
             [
-                KeyboardButton(text="👥 Сессии"),
                 KeyboardButton(text="👤 Профиль / Выход"),
+                KeyboardButton(text="ℹ️ Справка"),
             ],
-            [KeyboardButton(text="ℹ️ Справка")],
         ],
         resize_keyboard=True,
     )

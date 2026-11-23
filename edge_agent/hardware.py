@@ -257,19 +257,25 @@ class HardwareManager:
         capture_delay_sec: float = 0.0,
         frame_index: int | None = None,
     ) -> bytes:
-        """Последовательность съемки кадра со вспышкой:
+        """Последовательность съемки кадра со вспышкой/светом:
 
-        1. Выключение основного света (light=0).
-        2. Включение вспышки (flash=1).
-        3. Задержка стабилизации света (switch_delay_ms) плюс capture_delay_sec.
-        4. Захват кадра с прогревом (warmup_frames).
-        5. Гарантированный возврат в исходное состояние (light=1, flash=0) в finally.
+        - Если light_pin == flash_pin: свет не выключается при съемке.
+        - Если пины разные:
+          1. Выключение основного света (light=0).
+          2. Включение вспышки (flash=1).
+          3. Задержка стабилизации света (switch_delay_ms) плюс capture_delay_sec.
+          4. Захват кадра с прогревом (warmup_frames).
+          5. Гарантированный возврат в исходное состояние (light=1, flash=0) в finally.
         """
+        same_pins = light_pin == flash_pin
         try:
-            self.set_light(light_pin, False)
-            self.set_flash(flash_pin, True)
+            if not same_pins:
+                self.set_light(light_pin, False)
+                self.set_flash(flash_pin, True)
+            else:
+                self.set_light(light_pin, True)
 
-            total_delay = (switch_delay_ms / 1000.0) + max(
+            total_delay = ((switch_delay_ms / 1000.0) if not same_pins else 0.0) + max(
                 0.0, float(capture_delay_sec)
             )
             if total_delay > 0:
@@ -281,7 +287,8 @@ class HardwareManager:
                 frame_index=frame_index,
             )
         finally:
-            self.set_flash(flash_pin, False)
+            if not same_pins:
+                self.set_flash(flash_pin, False)
             self.set_light(light_pin, True)
 
     def cleanup(self) -> None:

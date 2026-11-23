@@ -33,7 +33,6 @@
     <nav class="app-nav">
       <div class="nav-tabs-container">
         <button type="button" class="nav-tab active" data-tab="units" id="nav-tab-units">🌿 Установки</button>
-        <button type="button" class="nav-tab" data-tab="player" id="nav-tab-player">🎬 Плеер таймлапса</button>
         <button type="button" class="nav-tab hidden" data-tab="relays" id="nav-tab-relays">💡 Свет и реле</button>
         <button type="button" class="nav-tab hidden" data-tab="cameras" id="nav-tab-cameras">📷 Камеры</button>
         <button type="button" class="nav-tab hidden" data-tab="sessions" id="nav-tab-sessions">👥 Сессии</button>
@@ -45,7 +44,6 @@
     <!-- Основная рабочая область SPA -->
     <main class="app-main">
       <section id="tab-units" class="tab-content"></section>
-      <section id="tab-player" class="tab-content hidden"></section>
       <section id="tab-relays" class="tab-content hidden"></section>
       <section id="tab-cameras" class="tab-content hidden"></section>
       <section id="tab-sessions" class="tab-content hidden"></section>
@@ -144,6 +142,106 @@
         <div id="snap-loader" class="loading-spinner">Выполняется съёмка на Raspberry Pi...</div>
         <div id="snap-results" class="snap-results-grid hidden"></div>
         <div id="snap-debug-box" class="alert alert-info hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно объединенной Галереи и Таймлапса -->
+  <div id="modal-gallery" class="modal-backdrop hidden">
+    <div class="modal-window modal-window-gallery">
+      <div class="modal-header">
+        <div class="gallery-modal-title-wrap">
+          <h3 class="modal-title" id="gallery-modal-title">Галерея и таймлапс</h3>
+          <span id="gallery-modal-culture" class="badge badge-info"></span>
+        </div>
+        <div class="gallery-header-controls">
+          <div id="gallery-camera-select-wrap" class="hidden">
+            <label for="gallery-camera-select" class="form-label-inline">Камера:</label>
+            <select id="gallery-camera-select" class="form-select form-select-sm"></select>
+          </div>
+          <button type="button" class="btn-close" id="gallery-modal-close" title="Закрыть">✕</button>
+        </div>
+      </div>
+
+      <div class="modal-body gallery-modal-body">
+        <div id="gallery-alert-box" class="alert alert-error hidden"></div>
+
+        <!-- Анимация плавной загрузки с индикатором X из N -->
+        <div id="gallery-loader-wrap" class="gallery-loader-wrap hidden">
+          <div class="loading-spinner"></div>
+          <div id="gallery-loader-text" class="gallery-loader-text">Загрузка кадров...</div>
+          <div class="progress-bar-bg">
+            <div id="gallery-progress-bar" class="progress-bar-fill" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <div id="gallery-empty-state" class="gallery-empty-message hidden">
+          Плановых кадров пока нет. Они появятся после первой автосъёмки.
+        </div>
+
+        <!-- Область отображения кадра и переключателя слоя -->
+        <div id="gallery-viewport-container" class="gallery-viewport-container">
+          <div class="gallery-viewport">
+            <img id="gallery-image" src="" alt="Кадр таймлапса" class="gallery-img hidden" />
+            <div id="gallery-img-skeleton" class="skeleton-shimmer hidden"></div>
+          </div>
+          <div class="gallery-layer-selector">
+            <button type="button" class="btn btn-sm layer-btn active" id="gallery-layer-raw" data-layer="raw">🖼 Оригинал</button>
+            <button type="button" class="btn btn-sm layer-btn" id="gallery-layer-ann" data-layer="annotated">🧠 Разметка нейросети</button>
+          </div>
+        </div>
+
+        <!-- Панель управления плеером кадров -->
+        <div id="gallery-player-controls" class="gallery-controls-card">
+          <div class="gallery-timeline-row">
+            <input type="range" id="gallery-timeline" class="player-timeline" min="0" max="0" value="0" />
+            <div class="gallery-timeline-meta">
+              <span id="gallery-frame-counter">Кадр 0 из 0</span>
+              <span id="gallery-meta-time" class="meta-val">—</span>
+              <span id="gallery-meta-area" class="meta-val meta-area">—</span>
+            </div>
+          </div>
+
+          <div class="gallery-playback-toolbar">
+            <div class="gallery-playback-buttons">
+              <button type="button" class="btn btn-secondary btn-sm" id="gallery-btn-prev" title="Предыдущий кадр">⏮</button>
+              <button type="button" class="btn btn-primary btn-sm" id="gallery-btn-play" title="Воспроизведение">▶ Воспроизвести</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="gallery-btn-next" title="Следующий кадр">⏭</button>
+            </div>
+
+            <div class="gallery-speed-wrap">
+              <span class="speed-label">Скорость:</span>
+              <button type="button" class="btn btn-xs speed-btn active" data-speed="1">1x</button>
+              <button type="button" class="btn btn-xs speed-btn" data-speed="2">2x</button>
+              <button type="button" class="btn btn-xs speed-btn" data-speed="4">4x</button>
+              <label class="checkbox-label-inline">
+                <input type="checkbox" id="gallery-loop-toggle" />
+                <span>🔁 Цикл</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Панель формирования и экспорта видео MP4 (Biologist / Developer) -->
+        <div id="gallery-export-panel" class="gallery-export-panel hidden">
+          <div class="export-panel-title">🎬 Экспорт таймлапс-видео MP4</div>
+          <div class="form-row export-fields-row">
+            <div class="form-group col">
+              <label for="gallery-video-duration">Длительность (сек):</label>
+              <input type="number" id="gallery-video-duration" class="form-input form-input-sm" min="0.5" max="60" step="0.5" value="5.0" />
+            </div>
+            <div class="form-group col">
+              <label for="gallery-video-fps">Частота кадров (FPS ≥ 1):</label>
+              <input type="number" id="gallery-video-fps" class="form-input form-input-sm" min="1" max="60" step="1" value="4" />
+            </div>
+            <div class="form-group col-btn">
+              <button type="button" class="btn btn-success btn-sm" id="gallery-btn-download-mp4">
+                📥 Скачать MP4
+              </button>
+            </div>
+          </div>
+          <div id="gallery-export-status" class="export-status-text hidden"></div>
+        </div>
       </div>
     </div>
   </div>

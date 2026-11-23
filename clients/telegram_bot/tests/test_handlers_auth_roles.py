@@ -67,7 +67,7 @@ async def test_start_command_biologist(bot_config: BotConfig, mock_bot):
     assert "Биолог" in text
     button_texts = [b.text for row in reply_markup.keyboard for b in row]
     assert "📸 Сделать снимок" in button_texts
-    assert "🎬 Таймлапс (видео)" in button_texts
+    assert "🎬 Таймлапс (видео)" not in button_texts
     assert "💡 Свет и реле" not in button_texts
 
 

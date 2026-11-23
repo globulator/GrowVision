@@ -291,9 +291,17 @@ async def test_timelapse_duration_preset_flow(
     kb = mock_bot.edit_message_text.call_args[1]["reply_markup"]
     assert "Рекомендованная (3 сек)" in kb.inline_keyboard[0][0].text
 
-    # 2. Выбор пресета 10 сек (vid_dur:5:10:10)
+    # 2. Выбор пресета 10 сек (vid_dur:5:10:10) -> переход к настройке FPS
     cb_preset = create_test_callback_query("vid_dur:5:10:10")
     await dp.feed_update(mock_bot, Update(update_id=31, callback_query=cb_preset))
+
+    # 3. Выбор частоты кадров (например, 2 FPS) -> экран сводки
+    cb_fps = create_test_callback_query("vid_fps:5:10:10.0:2")
+    await dp.feed_update(mock_bot, Update(update_id=32, callback_query=cb_fps))
+
+    # 4. Подтверждение сборки видео на экране сводки
+    cb_confirm = create_test_callback_query("vid_confirm:5:10:10.0:2")
+    await dp.feed_update(mock_bot, Update(update_id=33, callback_query=cb_confirm))
 
     assert len(video_requests) == 1
     assert video_requests[0]["duration_sec"] == 10.0

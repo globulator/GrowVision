@@ -64,10 +64,10 @@ class InstallationPatch(BaseModel):
         return v
 
 
-def get_installation_last_area_display(
+def get_installation_last_capture_info(
     inst_id: int, aruco_size_mm: float | None, db: Session
-) -> str | None:
-    """Вычисляет last_area_display по последнему плановому кадру."""
+) -> tuple[str | None, str | None]:
+    """Вычисляет last_area_display и last_frame_raw_url по последнему плановому кадру."""
     last_cap = (
         db.query(Capture)
         .filter(
@@ -78,16 +78,21 @@ def get_installation_last_area_display(
         .first()
     )
     if not last_cap:
-        return None
+        return None, None
+
+    last_raw_url = f"/{last_cap.raw_image_path}" if last_cap.raw_image_path else None
 
     meas = next(
         (m for m in last_cap.plant_measurements if m.plant_index == 0),
         None,
     )
     if not meas:
-        return None
+        return None, last_raw_url
 
-    return calculate_area_display(meas.area_px, last_cap.aruco_area_px, aruco_size_mm)
+    area_display = calculate_area_display(
+        meas.area_px, last_cap.aruco_area_px, aruco_size_mm
+    )
+    return area_display, last_raw_url
 
 
 def serialize_installation(
@@ -97,13 +102,16 @@ def serialize_installation(
     warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """Строит проекцию карточки установки в зависимости от роли клиента."""
-    area_display = get_installation_last_area_display(inst.id, inst.aruco_size_mm, db)
+    area_display, last_raw_url = get_installation_last_capture_info(
+        inst.id, inst.aruco_size_mm, db
+    )
     data: dict[str, Any] = {
         "id": inst.id,
         "name": inst.name,
         "culture_name": inst.culture_name,
         "is_archived": inst.is_archived,
         "last_area_display": area_display,
+        "last_frame_raw_url": last_raw_url,
         "warnings": warnings if warnings is not None else [],
     }
 
@@ -131,12 +139,18 @@ def serialize_installation(
     )
 
     if role == "developer":
+        light_st = app_state.get_pin_state(inst.light_gpio_pin, default=True)
+        if inst.flash_gpio_pin == inst.light_gpio_pin:
+            flash_st = light_st
+        else:
+            flash_st = app_state.get_pin_state(inst.flash_gpio_pin, default=False)
+
         data.update(
             {
                 "light_gpio_pin": inst.light_gpio_pin,
                 "flash_gpio_pin": inst.flash_gpio_pin,
-                "light_state": app_state.get_pin_state(inst.light_gpio_pin),
-                "flash_state": app_state.get_pin_state(inst.flash_gpio_pin),
+                "light_state": light_st,
+                "flash_state": flash_st,
             }
         )
 
@@ -150,18 +164,19 @@ def check_pin_conflicts_and_warnings(
     exclude_id: int | None = None,
 ) -> list[str]:
     """Проверяет пины внутри одной установки и собирает предупреждения о занятых пинах."""
+    warnings: list[str] = []
+
+    # Предупреждение о совпадении пинов света и вспышки
     if light_pin == flash_pin:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Пины света и вспышки не могут совпадать",
+        warnings.append(
+            f"⚠️ Пины света и вспышки совпадают (пин {light_pin}). "
+            "Управляется только свет, при съёмке он не выключается."
         )
 
     query = db.query(Installation).filter(Installation.is_archived.is_(False))
     if exclude_id is not None:
         query = query.filter(Installation.id != exclude_id)
     active_installations = query.all()
-
-    warnings: list[str] = []
 
     # Проверка занятости light_pin
     light_used_by = [
@@ -175,17 +190,18 @@ def check_pin_conflicts_and_warnings(
             f"⚠️ Пин {light_pin} уже занят ({names_str}). Реле будут общими."
         )
 
-    # Проверка занятости flash_pin
-    flash_used_by = [
-        inst.name
-        for inst in active_installations
-        if flash_pin in (inst.light_gpio_pin, inst.flash_gpio_pin)
-    ]
-    if flash_used_by:
-        names_str = ", ".join(f"«{name}»" for name in flash_used_by)
-        warnings.append(
-            f"⚠️ Пин {flash_pin} уже занят ({names_str}). Реле будут общими."
-        )
+    # Проверка занятости flash_pin (только если отличается от light_pin)
+    if flash_pin != light_pin:
+        flash_used_by = [
+            inst.name
+            for inst in active_installations
+            if flash_pin in (inst.light_gpio_pin, inst.flash_gpio_pin)
+        ]
+        if flash_used_by:
+            names_str = ", ".join(f"«{name}»" for name in flash_used_by)
+            warnings.append(
+                f"⚠️ Пин {flash_pin} уже занят ({names_str}). Реле будут общими."
+            )
 
     return warnings
 
@@ -217,7 +233,11 @@ def list_installations(
     """4.2. GET /api/installations.
 
     Список установок с проекцией по роли пользователя.
+    Для роли Гость всегда возвращаются только активные установки.
     """
+    if client_user.is_guest:
+        include_archived = False
+
     query = db.query(Installation)
     if not include_archived:
         query = query.filter(Installation.is_archived.is_(False))
@@ -279,6 +299,11 @@ def create_installation(
     db.add(inst)
     db.commit()
     db.refresh(inst)
+
+    # По умолчанию свет включен, вспышка выключена
+    app_state.set_pin_state(inst.light_gpio_pin, True)
+    if inst.flash_gpio_pin != inst.light_gpio_pin:
+        app_state.set_pin_state(inst.flash_gpio_pin, False)
 
     return serialize_installation(inst, current_user.role, db, warnings=warnings)
 
