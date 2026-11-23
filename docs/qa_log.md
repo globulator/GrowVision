@@ -6,6 +6,19 @@
 ---
 
 ## 2. Исправленные дефекты (верифицировано QA)
+- **[STAGE-8.2] [web, telegram_bot, server, edge_agent, cli] Фиксы Web SPA, разархивация, отказ от alert/confirm и эмодзи, фикс прокси и логирования (верифицировано QA)**
+  - **Коммиты:** `602e697` (реализация) (ветка `stage-8/web-bot-fixes`)
+  - **Ключевые проверенные критерии:**
+    1. Прокси: `trust_env=False` явно задан в `httpx.AsyncClient` (Telegram-бот) и `httpx.Client` (CLI); тесты с установленным `ALL_PROXY=socks://127.0.0.1:10808` успешно пройдены (`test_cli_client_trust_env_false`, `test_api_client_trust_env_false`).
+    2. Web SPA типизация `target`: в `clients/web/js/api.js` параметр нормализуется как `target === 'all' ? 'all' : Number(target)` (исключает 422 в Pydantic).
+    3. Разархивация установок: серверный эндпоинт `POST /api/installations/{id}/unarchive` (только Developer, 401 для анонимов, 403 для bio/guest; `is_archived=False`, свет по умолчанию ON, вспышка OFF, возврат warnings при пересечении пинов); кнопка «Восстановить» в Web SPA с подтверждением, показом warnings и подсказкой настроить камеру; кнопка `[ ♻️ Восстановить из архива ]` в карточке бота с подтверждением, выводом warnings и кнопками быстрого перехода к камерам и пинам.
+    4. Плеер Web SPA: 4 кнопки навигации (`|<`, `<`, `>`, `>|`) со стилизованными inline SVG; воспроизведение с последнего кадра без зацикливания запускается с 1-го кадра; время кадра отображается в локальном формате браузера (`toLocaleString('ru-RU') (местное время)`).
+    5. Отказ от alert/confirm/prompt: модуль `clients/web/js/dialogs.js` (`showToast`, `showConfirm`, `showPrompt`) с модалками `#modal-confirm` и `#modal-prompt`; в `clients/web/` 0 вызовов `alert`, `confirm`, `prompt`.
+    6. Отказ от эмодзи в Web SPA: 0 эмодзи во всех файлах `clients/web/` (все заменены на лаконичные inline SVG-иконки).
+    7. Edge-агент: устранено дублирование логов оркестратора (`shared/logger.py` `logger.propagate = False`, дочерний логгер без дублирующих handler'ов); метод `stop()` сделан идемпотентным (флаг `_stopped`); unit-тесты `test_orchestrator_stop_idempotent` и `test_orchestrator_logger_no_duplicate_handlers` пройдены.
+    8. Качество и тесты: быстродействие тестов (<3 с на тест, весь набор 303 тестов пройден за ~85 с, без sleep), чистый `git status`, линтер `ruff check .` и `ruff format --check .` чистые, версия в `VERSION` сохранена (`0.4.1`).
+  - **Результат тестирования:** 303 passed (Server & E2E 136, Edge 54, Bot 62, CLI 51), ruff clean, git status clean.
+
 - **[STAGE-8.1] [web, telegram_bot, edge_agent, server] Компактный UX, объединение галереи и таймлапса, совпадающие пины света/вспышки, свет по умолчанию ON, фикс системного прокси (верифицировано QA)**
   - **Коммиты:** `3ae8ee5` (реализация) (ветка `stage-8/ux-polish-and-fixes`)
   - **Ключевые проверенные критерии:**
