@@ -117,3 +117,10 @@ def test_relative_paths_resolved_from_repo_root(
     assert cfg.model_path == REPO_ROOT / "edge_agent" / "models" / "lettuce_seg_v1.onnx"
     assert cfg.offline_queue_dir.is_absolute()
     assert cfg.offline_queue_dir == REPO_ROOT / "edge_agent" / "offline_queue"
+
+
+def test_hardware_mode_auto(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Проверка автоопределения HARDWARE_MODE=auto (на ПК fallback в mock)."""
+    monkeypatch.delenv("HARDWARE_MODE", raising=False)
+    cfg = load_config(env_path=tmp_path / "empty.env")
+    assert cfg.hardware_mode in ("rpi", "mock")

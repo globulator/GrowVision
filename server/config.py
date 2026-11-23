@@ -22,6 +22,7 @@ class Settings(BaseModel):
     video_min_duration_sec: int = Field(default=2, ge=1, alias="VIDEO_MIN_DURATION_SEC")
     repo_url: str | None = Field(default=None, alias="REPO_URL")
     edge_server_url: str | None = Field(default=None, alias="EDGE_SERVER_URL")
+    mock_mode: bool = Field(default=False, alias="MOCK_MODE")
 
 
 def load_settings(env_path: Path | str | None = None) -> Settings:
@@ -44,7 +45,10 @@ def load_settings(env_path: Path | str | None = None) -> Settings:
         if alias and alias in os.environ:
             data[alias] = os.environ[alias]
 
-    return Settings.model_validate(data)
+    settings = Settings.model_validate(data)
+    if settings.mock_mode and settings.database_url == "sqlite:///./growvision.db":
+        settings.database_url = "sqlite:///./growvision_mock.db"
+    return settings
 
 
 @lru_cache(maxsize=1)

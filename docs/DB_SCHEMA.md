@@ -198,7 +198,6 @@ erDiagram
 | external_id | VARCHAR(100) | NOT NULL | `telegram_id` для бота и Web SPA или идентификатор профиля CLI (`cli_<uuid4>`). |
 | login | VARCHAR(100) | NOT NULL | Логин (имя), введённый пользователем (напр. «Андрей Бармин»). |
 | role | VARCHAR(20) | NOT NULL, CHECK (IN ('biologist', 'developer')) | Роль, определённая по паролю разработчика или инвайт-коду. |
-| password_hash | VARCHAR(255) | NULLABLE | Хэш личного пароля с солью (PBKDF2-HMAC-SHA256) для входа через Web SPA. |
 | is_active | BOOLEAN | NOT NULL, DEFAULT TRUE | Признак активной сессии. Только активные пользователи считаются авторизованными. |
 | authorized_at | DATETIME | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Время последней успешной авторизации (UTC). |
 | last_active_at | DATETIME | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Время последнего выполненного действия (UTC). |

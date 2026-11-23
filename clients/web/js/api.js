@@ -28,6 +28,12 @@ async function request(url, options = {}) {
   try {
     const response = await fetch(url, mergedOptions);
 
+    // Успешный сетевой ответ: скрываем плашку недоступности сервера
+    const offlineBanner = document.getElementById('server-offline-banner');
+    if (offlineBanner) {
+      offlineBanner.classList.add('hidden');
+    }
+
     if (response.status === 401) {
       // Игнорируем 401 для самого эндпоинта проверки сессии и логина
       if (!url.includes('/api/auth/web/me') && !url.includes('/api/auth/web/login')) {
@@ -58,8 +64,16 @@ async function request(url, options = {}) {
 
     return await response.json();
   } catch (err) {
-    if (err.name === 'TypeError' && err.message.includes('fetch')) {
-      const netError = new Error('Нет связи с сервером GrowVision. Проверьте сеть.');
+    if (
+      err.name === 'TypeError' ||
+      (typeof err.message === 'string' &&
+        (err.message.includes('fetch') || err.message.includes('NetworkError')))
+    ) {
+      const offlineBanner = document.getElementById('server-offline-banner');
+      if (offlineBanner) {
+        offlineBanner.classList.remove('hidden');
+      }
+      const netError = new Error('Сервер GrowVision недоступен. Проверьте сетевое соединение.');
       netError.status = 0;
       throw netError;
     }
@@ -97,10 +111,10 @@ export const api = {
     }),
 
   // Вход и выход
-  login: ({ telegram, password }) =>
+  login: ({ telegram, code, password }) =>
     request('/api/auth/web/login', {
       method: 'POST',
-      body: JSON.stringify({ telegram, password }),
+      body: JSON.stringify({ telegram, code: code || password }),
     }),
 
   logout: () =>
@@ -111,9 +125,9 @@ export const api = {
   // Установки
   getInstallations: () => request('/api/installations'),
 
-  // Кадры установки
+  // Кадры установки (исправлен 404 URL)
   getInstallationFrames: (instId, limit = 500) =>
-    request(`/api/installations/${Number(instId)}/frames?limit=${encodeURIComponent(limit)}`),
+    request(`/api/timelapse/${Number(instId)}/frames?limit=${encodeURIComponent(limit)}`),
 
   // Тестовый снимок (target строго Number(instId))
   snap: (instId) =>

@@ -191,24 +191,47 @@ def test_stage8_e2e_web_spa_flow(e2e_uvicorn_server):
         assert r_me_guest2.json()["authenticated"] is False
         assert r_me_guest2.json()["role"] == "guest"
 
-        # Повторный вход по @username и личному паролю
+        # Повторный вход биолога по @username и коду приглашения
+        headers_dev = {
+            "X-Client-Key": client_key,
+            "X-Client-Type": "cli",
+            "X-External-Id": "admin_cli_e2e",
+        }
+        with httpx.Client(base_url=base_url) as dev_client:
+            r_inv2 = dev_client.post(
+                "/api/auth/invites",
+                headers=headers_dev,
+                json={"role": "biologist"},
+            )
+            assert r_inv2.status_code == 200
+            invite_code_2 = r_inv2.json()["code"]
+
         r_relogin_un = web_client.post(
             "/api/auth/web/login",
             json={
                 "telegram": "@bio_anna_tg",
-                "password": "my_secure_password_123",
+                "code": invite_code_2,
             },
         )
         assert r_relogin_un.status_code == 200
         assert r_relogin_un.json()["role"] == "biologist"
 
-        # Повторный вход по числовому ID и личному паролю
+        # Повторный вход по числовому ID и коду приглашения
+        with httpx.Client(base_url=base_url) as dev_client:
+            r_inv3 = dev_client.post(
+                "/api/auth/invites",
+                headers=headers_dev,
+                json={"role": "biologist"},
+            )
+            assert r_inv3.status_code == 200
+            invite_code_3 = r_inv3.json()["code"]
+
         web_client.cookies.clear()
         r_relogin_id = web_client.post(
             "/api/auth/web/login",
             json={
                 "telegram": str(tg_user_id),
-                "password": "my_secure_password_123",
+                "code": invite_code_3,
             },
         )
         assert r_relogin_id.status_code == 200

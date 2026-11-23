@@ -106,30 +106,26 @@
 
       <form id="login-form" class="modal-body">
         <div class="form-group">
-          <label for="login-telegram">Telegram (@username или ID)</label>
+          <label for="login-telegram">Telegram (@username или числовой ID)</label>
           <input type="text" id="login-telegram" class="form-input" placeholder="@biologist или 12345678" required autocomplete="username">
         </div>
 
         <div class="form-group password-group">
-          <label for="login-password">Пароль</label>
+          <label for="login-password">Код доступа</label>
           <div class="password-wrapper">
-            <input type="password" id="login-password" class="form-input" placeholder="Ваш личный пароль" required autocomplete="current-password">
-            <button type="button" id="toggle-login-password" class="btn-icon btn-eye" title="Показать/скрыть пароль" aria-label="Показать/скрыть пароль">
+            <input type="password" id="login-password" class="form-input" placeholder="Инвайт-код биолога или пароль разработчика" required autocomplete="current-password">
+            <button type="button" id="toggle-login-password" class="btn-icon btn-eye" title="Показать/скрыть код" aria-label="Показать/скрыть код">
               <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
                 <circle cx="12" cy="12" r="3"/>
               </svg>
             </button>
           </div>
+          <span class="form-hint">Используйте мастер-пароль разработчика или одноразовый инвайт-код биолога. Имя синхронизируется автоматически из Telegram.</span>
         </div>
 
         <div class="modal-actions">
           <button type="submit" id="login-submit-btn" class="btn btn-primary btn-block">Войти</button>
-        </div>
-
-        <div class="modal-switch-link">
-          <span>Нет аккаунта? </span>
-          <a href="#" id="link-to-register">Регистрация</a>
         </div>
       </form>
     </div>
@@ -524,6 +520,43 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- Модалка: Подтверждение действия (без системного confirm) -->
+  <div id="modal-confirm" class="modal-backdrop hidden">
+    <div class="modal-window modal-window-small glass-panel">
+      <div class="modal-header">
+        <h3 id="modal-confirm-title" class="modal-title">Подтверждение</h3>
+        <button id="modal-confirm-close" class="btn-icon modal-close" title="Закрыть" aria-label="Закрыть">
+          <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <p id="modal-confirm-message" class="modal-confirm-text">Вы уверены?</p>
+        <div class="modal-actions horizontal-actions">
+          <button type="button" id="modal-confirm-cancel-btn" class="btn btn-secondary">Отмена</button>
+          <button type="button" id="modal-confirm-ok-btn" class="btn btn-primary">Подтвердить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Плашка: Сервер GrowVision недоступен -->
+  <div id="server-offline-banner" class="server-offline-banner hidden">
+    <svg class="offline-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="1" y1="1" x2="23" y2="23"/>
+      <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/>
+      <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>
+      <path d="M10.71 5.05A16 16 0 0 1 22.58 9"/>
+      <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/>
+      <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+      <line x1="12" y1="20" x2="12.01" y2="20"/>
+    </svg>
+    <span>Сервер GrowVision недоступен. Проверьте сетевое подключение.</span>
   </div>
 
   <!-- Контейнер всплывающих тостов -->

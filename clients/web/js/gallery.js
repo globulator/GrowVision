@@ -59,10 +59,11 @@ export async function openGalleryModal(unit) {
   showLoadingPlaceholder();
 
   try {
-    const frames = await api.getInstallationFrames(unit.id, 500);
+    const framesResp = await api.getInstallationFrames(unit.id, 500);
+    const frames = Array.isArray(framesResp) ? framesResp : (framesResp?.frames || []);
     if (!frames || frames.length === 0) {
       closeGalleryModal();
-      showError('Кадров пока нет', 'Галерея');
+      showError('Пока пусто. Фотоальбом растения ожидает первых всходов!', 'Галерея');
       return;
     }
 
@@ -255,12 +256,16 @@ function showLoadingPlaceholder() {
   const box = document.getElementById('gallery-image-box');
   if (box) {
     box.innerHTML = `
-      <div class="gallery-skeleton-placeholder">
-        <svg class="placeholder-icon rotating" viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
-          <path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/>
+      <div class="gallery-skeleton-placeholder plant-lifecycle-spinner">
+        <svg viewBox="0 0 64 64" width="56" height="56" class="plant-cycle-svg" aria-hidden="true">
+          <path class="plant-ground" d="M12 52 H52" stroke="#334155" stroke-width="2" stroke-linecap="round"/>
+          <ellipse class="plant-seed" cx="32" cy="50" rx="4" ry="3" fill="#10b981"/>
+          <path class="plant-stem" d="M32 50 Q32 36 32 24" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round"/>
+          <path class="plant-sprout-left" d="M32 38 Q22 36 20 28 Q28 28 32 36" fill="#10b981"/>
+          <path class="plant-leaf-right" d="M32 30 Q44 26 44 16 Q34 18 32 26" fill="#059669"/>
+          <path class="plant-top-leaf" d="M32 24 Q32 10 32 8 Q36 14 32 24" fill="#34d399"/>
         </svg>
-        <span class="placeholder-text">Загрузка кадров...</span>
+        <span class="placeholder-text">Растение растёт, кадры загружаются...</span>
       </div>
     `;
   }

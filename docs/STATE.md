@@ -4,31 +4,22 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 8.4.1
-- Название этапа: Хотфикс багов живого теста (битый ES-импорт в Web SPA, перехват коллбэка таймлапса в Telegram-боте, спам логов httpx, favicon)
+- Текущий этап: 8.5
+- Название этапа: UX-полировка, единый вход без пароля, 30 FPS в боте, SVG-заглушки и изоляция mock-БД
 - Режим: FULL
-- Статус: DONE
-- Итерация QA (кругов FAIL): 1 из 3
-- Ждём от пользователя: задачи следующего этапа
+- Статус: TESTING
+- Итерация QA (кругов FAIL): 0 из 3
+- Ждём от пользователя: ничего (идёт тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| qa | full-stack | stage-8/ux-and-mock-isolation | docs/tasks/stage-8-5-ux-and-mock-isolation-qa.md | — |
 
 ## Коммиты текущего этапа
-- Ветка fix/stage-8-web-and-bot создана от main (19f7552)
-- 019bdf2 fix(web,bot): resolve ES import syntax error, fix timelapse callback routing and suppress httpx logs
-- 0a625bb docs(repo): update state to testing for stage 8.4.1
-- 9ef3f4e docs(qa): record BUG-003 duplicate export in dialogs.js
-- 0bd8557 docs(repo): update state to fixing for bug-003
-- b647e2f fix(web): remove duplicate export in dialogs.js [BUG-003]
-- 0a3e4af docs(repo): update state to testing for bug-003 verification
-- 6ac2f4d docs(qa): update qa_log with stage 8.4.1 verification and mark BUG-003 fixed
-- 2673db2 chore(repo): merge fix/stage-8-web-and-bot into main
-- 1dcb680 chore(repo): bump version to 0.5.2 (tag v0.5.2)
-- b42e142 docs(repo): document stage 8.4.1 hotfix
+- Ветка stage-8/ux-and-mock-isolation создана от main (b61b3e2)
+- e24c69a feat(stage-8.5): unified web login, bot 30fps and cancel fsm, web gallery and snap fixes, mock isolation
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 8.4.1)
@@ -56,8 +47,6 @@
 - Этап 8.4.1: Хотфикс багов живого теста (ES-импорт в Web SPA, коллбэк таймлапса в боте, логи httpx, favicon) (принят QA, слит в main, версия 0.5.2, отчёт docs/stage_reports/stage-8.4.1.md)
 
 ## История (последние 15 событий)
-- 2026-11-23: Пользователь запустил хотфикс-этап 8.4.1 (ES-импорт в Web, коллбэк таймлапса в боте, логи httpx, favicon)
-- 2026-11-23: Создана ветка fix/stage-8-web-and-bot от main
 - 2026-11-23: Builder реализовал хотфикс 8.4.1 (коммит 019bdf2, 312 тестов passed), статус READY_FOR_QA
 - 2026-11-23: Подготовлена карточка docs/tasks/stage-8-4-1-hotfix-qa.md, статус TESTING, задача передана QA
 - 2026-11-23: QA выявил дефект BUG-003 (дубликат export showErrorDialog в dialogs.js), вердикт FAIL (1/3), статус FIXING
@@ -66,3 +55,7 @@
 - 2026-11-23: Ветка fix/stage-8-web-and-bot слита в main, поднята версия 0.5.2 (тег v0.5.2)
 - 2026-11-23: Scribe создал docs/stage_reports/stage-8.4.1.md, обновил README.md и docs/stage_reports/stage-8.md
 - 2026-11-23: Этап 8.4.1 окончательно закрыт (DONE)
+- 2026-11-23: Пользователь запустил этап 8.5 (UX-полировка, единый вход без пароля, 30 FPS, SVG-заглушки, mock-БД)
+- 2026-11-23: Создана ветка stage-8/ux-and-mock-isolation от main
+- 2026-11-23: Builder реализовал этап 8.5 (коммит e24c69a, 321 тест passed), статус READY_FOR_QA
+- 2026-11-23: Подготовлена карточка docs/tasks/stage-8-5-ux-and-mock-isolation-qa.md, статус TESTING, задача передана QA

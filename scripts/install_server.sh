@@ -103,6 +103,13 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now growvision-server.service || true
 echo "  Служба growvision-server зарегистрирована."
 
+echo "-> [5.1/6] Настройка беспарольного перезапуска служб через sudo (/etc/sudoers.d/growvision)..."
+if [ -d "/etc/sudoers.d" ]; then
+    echo "${TARGET_USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart growvision-server, /bin/systemctl restart growvision-bot, /bin/systemctl restart growvision-edge, /bin/systemctl status growvision-*, /usr/bin/systemctl restart growvision-server, /usr/bin/systemctl restart growvision-bot, /usr/bin/systemctl restart growvision-edge, /usr/bin/systemctl status growvision-*" | sudo tee /etc/sudoers.d/growvision > /dev/null
+    sudo chmod 0440 /etc/sudoers.d/growvision || true
+    echo "  Правило sudoers для growvision успешно добавлено."
+fi
+
 echo "-> [6/6] Установка утилиты /usr/local/bin/gv-update..."
 chmod +x "${PROJECT_ROOT}/scripts/gv-update.sh"
 sudo ln -sf "${PROJECT_ROOT}/scripts/gv-update.sh" /usr/local/bin/gv-update
