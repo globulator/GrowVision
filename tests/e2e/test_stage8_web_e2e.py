@@ -30,7 +30,7 @@ def test_stage8_e2e_web_spa_flow(e2e_uvicorn_server):
         assert "GrowVision" in r_index.text
         assert "app.js" in r_index.text
         assert "brand-logo" in r_index.text
-        assert 'viewBox="0 0 80 60"' in r_index.text
+        assert 'viewBox="0 0 120 90"' in r_index.text
 
         # Стили
         r_css = client.get("/style.css")
@@ -44,7 +44,7 @@ def test_stage8_e2e_web_spa_flow(e2e_uvicorn_server):
         for logo_name in ("logo-green.svg", "logo-white.svg", "logo-black.svg"):
             r_logo = client.get(f"/assets/{logo_name}")
             assert r_logo.status_code == 200, f"Ассет {logo_name} не найден"
-            assert 'viewBox="0 0 80 60"' in r_logo.text
+            assert 'viewBox="0 0 120 90"' in r_logo.text
 
         # JS модули
         for mod in (
@@ -352,21 +352,24 @@ def test_stage8_brand_logo_and_favicon_validation():
         tree = ET.parse(svg_path)
         root = tree.getroot()
         assert root.tag.endswith("svg"), f"{name} не является корневым <svg>"
-        assert root.attrib.get("viewBox") == "0 0 80 60", (
+        assert root.attrib.get("viewBox") == "0 0 120 90", (
             f"{name} имеет неверный viewBox"
         )
 
     # 2. Проверка интеграции логотипа в шапку Web SPA
     assert 'class="brand-logo"' in index_html or "brand-logo" in index_html
-    assert 'viewBox="0 0 80 60"' in index_html
+    assert 'viewBox="0 0 120 90"' in index_html
     assert 'class="logo-title">GrowVision</span>' in index_html
 
-    # 3. Проверка стилей и пропорций 4:3
+    # 3. Проверка стилей и квадратных пропорций 1:1
     assert ".brand-logo" in style_css
-    assert "width: 36px" in style_css or "width: 32px" in style_css
-    assert "height: 27px" in style_css or "height: 24px" in style_css
+    assert "aspect-ratio: 1 / 1" in style_css
+    assert "width: 32px" in style_css
+    assert "height: 32px" in style_css
+    assert "width: 28px" in style_css
+    assert "height: 28px" in style_css
 
-    # 4. Проверка Data URI favicon: точная копия logo-green.svg (viewBox="0 0 80 60")
+    # 4. Проверка Data URI favicon: точная копия logo-green.svg (viewBox="0 0 120 90")
     match = re.search(r'href="(data:image/svg\+xml,[^"]+)"', index_html)
     assert match, "Не найден Data URI favicon в index.html"
     raw_uri = match.group(1)
@@ -374,4 +377,4 @@ def test_stage8_brand_logo_and_favicon_validation():
     decoded_svg = urllib.parse.unquote(encoded)
     favicon_root = ET.fromstring(decoded_svg)
     assert favicon_root.tag.endswith("svg")
-    assert favicon_root.attrib.get("viewBox") == "0 0 80 60"
+    assert favicon_root.attrib.get("viewBox") == "0 0 120 90"

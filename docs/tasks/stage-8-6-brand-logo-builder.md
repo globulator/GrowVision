@@ -1,7 +1,7 @@
-# Задача: Этап 8.6 / Интеграция фирменного SVG-логотипа GrowVision в Web SPA и favicon
+# Задача: Этап 8.6 / Интеграция квадратного 1:1 SVG-логотипа GrowVision в Web SPA и favicon
 Режим: FAST
 Ветка: stage-8/brand-logo
-Цель: Интегрировать готовый фирменный SVG-логотип из clients/web/assets/ в шапку Web SPA и в favicon (Data URI).
+Цель: Интегрировать обновлённый пользователем квадратный 1:1 SVG-логотип из clients/web/assets/ в шапку Web SPA и в favicon (Data URI) со строгими пропорциями 1:1.
 
 Прочитать перед началом:
 - `docs/PROJECT.md` (раздел 9: правила скорости и тестов)
@@ -17,7 +17,7 @@ Allowed Paths (можно создавать и менять только это
 - `VERSION`
 
 Только чтение:
-- `clients/web/assets/` (СТРОГО: НЕ перерисовывать и НЕ перезаписывать logo-green.svg, logo-white.svg, logo-black.svg!)
+- `clients/web/assets/` (СТРОГО: НЕ перерисовывать, НЕ менять геометрию/viewBox и НЕ перезаписывать файлы logo-green.svg, logo-white.svg, logo-black.svg!)
 - `server/`
 - `edge_agent/`
 - `clients/cli/`
@@ -25,15 +25,15 @@ Allowed Paths (можно создавать и менять только это
 - `shared/`
 
 Критерии приёмки:
-1. Использование готовых ассетов (`clients/web/assets/`):
-   - НЕ перерисовывать и НЕ перезаписывать уже подготовленные файлы `clients/web/assets/logo-green.svg`, `clients/web/assets/logo-white.svg` и `clients/web/assets/logo-black.svg` (`viewBox="0 0 80 60"`).
+1. Сохранение пользовательских 1:1 SVG-ассетов (`clients/web/assets/`):
+   - НЕ перерисовывать, НЕ изменять геометрию/viewBox и НЕ перезаписывать подготовленные пользователем файлы `clients/web/assets/logo-green.svg`, `clients/web/assets/logo-white.svg` и `clients/web/assets/logo-black.svg` (соотношение сторон `1:1`).
 2. Интеграция в Web SPA (`clients/web/index.html`, `clients/web/style.css`):
-   - Подключить знак логотипа (из `logo-green.svg` / `logo-white.svg`) в левую часть верхней шапки рядом с названием `GrowVision` с корректными пропорциями `4:3` (например, 32×24 px или 40×30 px) и адаптацией под мобильные экраны от `360 px`.
-   - Обновить `<link rel="icon" type="image/svg+xml" ...>` в `clients/web/index.html` на встроенный Data URI, точно повторяющий `clients/web/assets/logo-green.svg` (`viewBox="0 0 80 60"`).
-   - Соблюсти все ограничения `docs/WEB_SPEC.md` (0 эмодзи, 0 внешних ссылок/CDN).
+   - Подключить знак логотипа из `clients/web/assets/logo-green.svg` (или `logo-white.svg`) в левую часть верхней шапки рядом с названием `GrowVision` строго в квадратных пропорциях `1:1` (`aspect-ratio: 1 / 1`, одинаковые `width` и `height`, например `28px × 28px` или `32px × 32px`), чтобы логотип не искажался на десктопе и мобильных экранах от `360 px`.
+   - Сгенерировать Data URI для `<link rel="icon" type="image/svg+xml" ...>` в `clients/web/index.html` напрямую из актуального файла `clients/web/assets/logo-green.svg` на диске.
+   - Соблюсти все ограничения `docs/WEB_SPEC.md` (0 эмодзи, 0 внешних ссылок и CDN).
 3. Проверка и качество:
    - Проверить валидность XML/SVG всех трёх файлов в `clients/web/assets/`.
-   - Прогнать тесты Web SPA в `tests/e2e/` и обновить автотест валидации favicon/HTML при необходимости.
+   - Обновить автотест `tests/e2e/test_stage8_web_e2e.py` под квадратные пропорции 1:1 и актуальный Data URI favicon.
    - `ruff check .` и `ruff format --check .` чисты.
 
 Команды проверки:

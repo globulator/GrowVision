@@ -6,13 +6,13 @@
 ---
 
 ## 2. Исправленные дефекты (верифицировано QA)
-- **[STAGE-8.6] [web] Интеграция фирменного SVG-логотипа GrowVision в шапку Web SPA и favicon (верифицировано QA)**
-  - **Коммиты:** `c2d1ed6` (реализация) (ветка `stage-8/brand-logo`)
+- **[STAGE-8.6] [web] Интеграция готового квадратного 1:1 SVG-логотипа GrowVision в шапку Web SPA и favicon (верифицировано QA)**
+  - **Коммиты:** `7a79d1c` (реализация) (ветка `stage-8/brand-logo`)
   - **Ключевые проверенные критерии:**
-    1. Сохранность ассетов: файлы `clients/web/assets/logo-*.svg` не были изменены или повреждены, валидный XML/SVG во всех трёх файлах (`viewBox="0 0 80 60"`).
-    2. Web SPA: в шапке `clients/web/index.html` перед названием GrowVision отображается фирменный SVG-знак с точными пропорциями 4:3 (36×27 px на десктопе, 32×24 px на мобильных экранах от 360 px); `<link rel="icon" type="image/svg+xml" ...>` содержит Data URI, точно воспроизводящий цвета и геометрию `logo-green.svg` (`viewBox="0 0 80 60"`); строго сохранены инварианты (0 эмодзи, 0 alert/confirm/prompt, 0 внешних ссылок и CDN).
-    3. Качество и тесты: быстродействие тестов (<3 с на тест, весь набор 320 тестов пройден, без sleep), чистый `git status`, линтер `ruff check .` и `ruff format --check .` чистые, версия в `VERSION` сохранена (`0.6.0`).
-  - **Результат тестирования:** 320 passed (Server & E2E 148, Edge 55, Bot 66, CLI 51), ruff clean, git status clean.
+    1. Сохранность пользовательских ассетов: файлы `clients/web/assets/logo-*.svg` сохранены без изменений (коммит `edd8560`), валидный XML/SVG во всех трёх файлах (`viewBox="0 0 120 90"`).
+    2. Web SPA: в шапке `clients/web/index.html` перед названием GrowVision отображается фирменный SVG-знак строго в квадратных пропорциях 1:1 (`aspect-ratio: 1 / 1`, 32×32 px на десктопе, 28×28 px на мобильных экранах от 360 px); геометрия не искажается; `<link rel="icon" type="image/svg+xml" ...>` содержит Data URI, сгенерированный напрямую из актуального `logo-green.svg` (`viewBox="0 0 120 90"`); строго соблюдены инварианты (0 эмодзи, 0 alert/confirm/prompt, 0 внешних ссылок и CDN).
+    3. Качество и тесты: быстродействие тестов (<3 с на тест, без sleep), чистый `git status`, линтер `ruff check .` и `ruff format --check .` чистые, версия в `VERSION` сохранена (`0.6.1`).
+  - **Результат тестирования:** `tests/e2e/test_stage8_web_e2e.py` (4 passed), полный набор Stage 8 (8 passed), компоненты CLI (51 passed), Bot (66 passed), Edge (55 passed) пройдены успешно; ruff clean, git status clean.
 
 - **[STAGE-8.5] [web, telegram_bot, server, edge_agent, scripts] Унификация входа без личного пароля, 30 FPS и кнопка Отмена в боте, фиксы Web SPA и изоляция mock-режима (верифицировано QA)**
   - **Коммиты:** `e24c69a` (реализация) (ветка `stage-8/ux-and-mock-isolation`)
