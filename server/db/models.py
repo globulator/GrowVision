@@ -30,10 +30,6 @@ class Installation(Base):
     __tablename__ = "installations"
     __table_args__ = (
         CheckConstraint(
-            "light_gpio_pin != flash_gpio_pin",
-            name="ck_installations_different_pins",
-        ),
-        CheckConstraint(
             "aruco_size_mm > 0",
             name="ck_installations_aruco_size_positive",
         ),

@@ -439,17 +439,16 @@ def test_qa_negative_installation_constraints(qa_isolated_db):
     _, session_factory = qa_isolated_db
     session = session_factory()
 
-    # light_gpio_pin == flash_gpio_pin
+    # На этапе 8.1 light_gpio_pin == flash_gpio_pin разрешены
     inst_same_pin = Installation(
-        name="Invalid Same Pin",
+        name="Valid Same Pin",
         culture_name="Салат",
         light_gpio_pin=20,
         flash_gpio_pin=20,
     )
     session.add(inst_same_pin)
-    with pytest.raises(IntegrityError):
-        session.commit()
-    session.rollback()
+    session.commit()
+    assert inst_same_pin.id is not None
 
     # aruco_size_mm <= 0
     inst_zero_aruco = Installation(

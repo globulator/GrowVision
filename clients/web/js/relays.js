@@ -22,20 +22,80 @@ export class RelaysManager {
       <div class="section-header">
         <div class="section-title-wrap">
           <h2 class="section-title">💡 Свет и реле</h2>
-          <span class="section-desc">Управление освещением и импульсными реле установок</span>
+          <span class="section-desc">Общие групповые операции управления реле установок</span>
         </div>
         <div class="section-actions">
           <button type="button" class="btn btn-secondary btn-sm" id="relays-btn-refresh">🔄 Обновить</button>
-          <button type="button" class="btn btn-primary btn-sm hidden" id="relays-btn-test">⚡ Тест реле</button>
         </div>
       </div>
 
       <div id="relays-alert-box" class="alert alert-error hidden"></div>
-      <div id="relays-grid" class="relays-grid"></div>
+
+      <!-- Панель общих групповых действий -->
+      <div class="global-relays-card">
+        <h3 class="global-relays-title">Групповые действия для всех активных установок</h3>
+        <p class="global-relays-desc">
+          Переключение всех реле одновременно или запуск тестовой последовательности на плате Raspberry Pi.
+          Индивидуальное управление реле конкретной установки доступно на карточках во вкладке «Установки».
+        </p>
+
+        <div class="global-relays-actions">
+          <button type="button" class="btn btn-primary" id="relays-btn-all-light-on">💡 Включить весь свет</button>
+          <button type="button" class="btn btn-secondary" id="relays-btn-all-light-off">💡 Выключить весь свет</button>
+          <button type="button" class="btn btn-primary" id="relays-btn-all-flash-on">⚡ Включить все вспышки</button>
+          <button type="button" class="btn btn-secondary" id="relays-btn-all-flash-off">⚡ Выключить все вспышки</button>
+          <button type="button" class="btn btn-warning" id="relays-btn-test">🧪 Тест всех реле (3 сек)</button>
+        </div>
+      </div>
+
+      <div class="relays-overview-section">
+        <h3 class="relays-overview-title">Сводная карта активных GPIO-пинов</h3>
+        <div id="relays-grid" class="relays-overview-grid"></div>
+      </div>
     `;
 
     this.container.querySelector('#relays-btn-refresh').addEventListener('click', () => {
       this.loadRelays();
+    });
+
+    this.container.querySelector('#relays-btn-all-light-on').addEventListener('click', async () => {
+      try {
+        await api.setLight('all', true);
+        window.showToast?.('Основной свет включен на всех установках', 'success');
+        await this.loadRelays();
+      } catch (err) {
+        alert('Ошибка переключения света: ' + err.message);
+      }
+    });
+
+    this.container.querySelector('#relays-btn-all-light-off').addEventListener('click', async () => {
+      try {
+        await api.setLight('all', false);
+        window.showToast?.('Основной свет выключен на всех установках', 'success');
+        await this.loadRelays();
+      } catch (err) {
+        alert('Ошибка переключения света: ' + err.message);
+      }
+    });
+
+    this.container.querySelector('#relays-btn-all-flash-on').addEventListener('click', async () => {
+      try {
+        await api.setFlash('all', true);
+        window.showToast?.('Вспышка включена на всех установках', 'success');
+        await this.loadRelays();
+      } catch (err) {
+        alert('Ошибка переключения вспышки: ' + err.message);
+      }
+    });
+
+    this.container.querySelector('#relays-btn-all-flash-off').addEventListener('click', async () => {
+      try {
+        await api.setFlash('all', false);
+        window.showToast?.('Вспышка выключена на всех установках', 'success');
+        await this.loadRelays();
+      } catch (err) {
+        alert('Ошибка переключения вспышки: ' + err.message);
+      }
     });
 
     this.container.querySelector('#relays-btn-test').addEventListener('click', () => {
@@ -60,15 +120,6 @@ export class RelaysManager {
   }
 
   render() {
-    const testBtn = this.container.querySelector('#relays-btn-test');
-    if (testBtn) {
-      if (this.userRole === 'developer') {
-        testBtn.classList.remove('hidden');
-      } else {
-        testBtn.classList.add('hidden');
-      }
-    }
-
     const grid = this.container.querySelector('#relays-grid');
     grid.innerHTML = '';
 
@@ -79,75 +130,48 @@ export class RelaysManager {
 
     const pinStates = this.relaysData.pin_states || {};
 
+    // Группировка информации по используемым пинам
+    const pinMap = new Map();
     this.relaysData.installations.forEach((inst) => {
-      const card = document.createElement('div');
-      card.className = 'relay-card';
+      const lPin = inst.light_gpio_pin;
+      const fPin = inst.flash_gpio_pin;
 
-      const lightPin = inst.light_gpio_pin;
-      const flashPin = inst.flash_gpio_pin;
+      if (!pinMap.has(lPin)) pinMap.set(lPin, { pin: lPin, roles: new Set(), insts: [] });
+      pinMap.get(lPin).roles.add('Основной свет');
+      pinMap.get(lPin).insts.push(inst.name);
 
-      const isLightOn = Boolean(pinStates[String(lightPin)]);
-      const isFlashOn = Boolean(pinStates[String(flashPin)]);
-
-      card.innerHTML = `
-        <div class="relay-card-header">
-          <h3 class="relay-unit-name">${escapeHtml(inst.name)}</h3>
-          <span class="relay-unit-culture">${escapeHtml(inst.culture_name)}</span>
-        </div>
-
-        <div class="relay-controls-list">
-          <div class="relay-control-row">
-            <div class="relay-info">
-              <span class="relay-name">💡 Основной свет</span>
-              <span class="relay-pin">GPIO ${lightPin}</span>
-            </div>
-            <div class="relay-toggle-wrap">
-              <button type="button" class="btn ${isLightOn ? 'btn-success' : 'btn-secondary'} btn-sm btn-toggle-light">
-                ${isLightOn ? '● ВКЛ' : '○ ВЫКЛ'}
-              </button>
-            </div>
-          </div>
-
-          <div class="relay-control-row">
-            <div class="relay-info">
-              <span class="relay-name">⚡ Вспышка (досветка)</span>
-              <span class="relay-pin">GPIO ${flashPin}</span>
-            </div>
-            <div class="relay-toggle-wrap">
-              <button type="button" class="btn ${isFlashOn ? 'btn-success' : 'btn-secondary'} btn-sm btn-toggle-flash">
-                ${isFlashOn ? '● ВКЛ' : '○ ВЫКЛ'}
-              </button>
-            </div>
-          </div>
-        </div>
-      `;
-
-      // Переключение света
-      card.querySelector('.btn-toggle-light').addEventListener('click', async () => {
-        const nextState = !isLightOn;
-        try {
-          await api.setLight(inst.id, nextState);
-          window.showToast?.(`Свет для «${inst.name}» (пин ${lightPin}) переключен`, 'success');
-          await this.loadRelays();
-        } catch (err) {
-          alert('Ошибка переключения света: ' + err.message);
-        }
-      });
-
-      // Переключение вспышки
-      card.querySelector('.btn-toggle-flash').addEventListener('click', async () => {
-        const nextState = !isFlashOn;
-        try {
-          await api.setFlash(inst.id, nextState);
-          window.showToast?.(`Вспышка для «${inst.name}» (пин ${flashPin}) переключена`, 'success');
-          await this.loadRelays();
-        } catch (err) {
-          alert('Ошибка переключения вспышки: ' + err.message);
-        }
-      });
-
-      grid.appendChild(card);
+      if (!pinMap.has(fPin)) pinMap.set(fPin, { pin: fPin, roles: new Set(), insts: [] });
+      pinMap.get(fPin).roles.add('Вспышка');
+      if (!pinMap.get(fPin).insts.includes(inst.name)) {
+        pinMap.get(fPin).insts.push(inst.name);
+      }
     });
+
+    Array.from(pinMap.values())
+      .sort((a, b) => a.pin - b.pin)
+      .forEach((item) => {
+        const card = document.createElement('div');
+        card.className = 'relay-pin-card';
+        const isOn = Boolean(pinStates[String(item.pin)]);
+
+        card.innerHTML = `
+          <div class="relay-pin-header">
+            <span class="relay-pin-badge">GPIO ${item.pin}</span>
+            <span class="badge ${isOn ? 'badge-success' : 'badge-secondary'}">${isOn ? 'ВКЛ' : 'ВЫКЛ'}</span>
+          </div>
+          <div class="relay-pin-body">
+            <div class="relay-pin-row">
+              <span class="relay-pin-label">Назначение:</span>
+              <span class="relay-pin-val">${Array.from(item.roles).join(', ')}</span>
+            </div>
+            <div class="relay-pin-row">
+              <span class="relay-pin-label">Установки:</span>
+              <span class="relay-pin-val">${escapeHtml(item.insts.join(', '))}</span>
+            </div>
+          </div>
+        `;
+        grid.appendChild(card);
+      });
   }
 
   async handleRelayTest() {

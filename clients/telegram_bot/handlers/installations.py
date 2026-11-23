@@ -321,14 +321,6 @@ async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
         )
         return
     flash_pin = int(raw_pin)
-    data = await state.get_data()
-    if flash_pin == data.get("light_gpio_pin"):
-        await message.answer(
-            "Пин вспышки не может совпадать с пином основного света! Введите другой пин:",
-            reply_markup=get_cancel_inline_keyboard("inst:list"),
-        )
-        return
-
     await state.update_data(flash_gpio_pin=flash_pin)
     await state.set_state(InstallationCreateStates.waiting_aruco)
 

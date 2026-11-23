@@ -519,6 +519,7 @@ class GrowVisionApiClient:
         step: int = 1,
         max_size_bytes: int = TG_VIDEO_LIMIT,
         duration_sec: float | None = None,
+        fps: float | None = None,
     ) -> tuple[str, Path | bytes | None, int]:
         """Потоковая загрузка видео таймлапса с проверкой размера.
 
@@ -533,6 +534,8 @@ class GrowVisionApiClient:
         payload: dict[str, Any] = {"camera_id": camera_id, "step": step}
         if duration_sec is not None:
             payload["duration_sec"] = duration_sec
+        if fps is not None:
+            payload["fps"] = fps
         timeout = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=10.0)
 
         async with client.stream(

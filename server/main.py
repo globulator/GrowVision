@@ -42,8 +42,27 @@ async def cleanup_timeouts_task() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Жизненный цикл приложения: инициализация БД и фоновая очистка таймаутов."""
+    """Жизненный цикл приложения: инициализация БД, пинов и фоновая очистка таймаутов."""
     init_db()
+
+    # Инициализация состояния пинов активных установок: свет ON, вспышка OFF
+    db = SessionLocal()
+    try:
+        from server.core.state import app_state
+        from server.db.models import Installation
+
+        active_installations = (
+            db.query(Installation).filter(Installation.is_archived.is_(False)).all()
+        )
+        for inst in active_installations:
+            app_state.set_pin_state(inst.light_gpio_pin, True)
+            if inst.flash_gpio_pin != inst.light_gpio_pin:
+                app_state.set_pin_state(inst.flash_gpio_pin, False)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Ошибка инициализации состояния пинов: %s", e)
+    finally:
+        db.close()
+
     task = asyncio.create_task(cleanup_timeouts_task())
     try:
         yield

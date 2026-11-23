@@ -130,7 +130,8 @@ def test_shared_gpio_pins_creation_and_warnings(client: TestClient, test_env):
     assert "⚠️ Пин 4 уже занят" in w
     assert "«Установка 1»" in w and "«Установка 2»" in w
 
-    # 4. Попытка создать установку с совпадающими light и flash внутри одной установки -> 409
+    # 4. Попытка создать установку с совпадающими light и flash внутри одной установки:
+    # разрешена на этапе 8.1 со статусом 201 и предупреждением
     r_bad = client.post(
         "/api/installations",
         headers=hdrs,
@@ -141,8 +142,8 @@ def test_shared_gpio_pins_creation_and_warnings(client: TestClient, test_env):
             "flash_gpio_pin": 8,
         },
     )
-    assert r_bad.status_code == 409
-    assert "Пины света и вспышки не могут совпадать" in r_bad.json()["detail"]
+    assert r_bad.status_code == 201
+    assert any("совпадают" in w for w in r_bad.json().get("warnings", []))
 
     # 5. Редактирование пинов (PATCH) возвращает warning
     inst2_id = data2["id"]
@@ -191,8 +192,8 @@ def test_relay_software_state_sync_by_pin(client: TestClient, test_env, monkeypa
     )
     inst2_id = r2.json()["id"]
 
-    # Изначально свет выключен
-    assert app_state.get_pin_state(12) is False
+    # На этапе 8.1 свет по умолчанию включен (True)
+    assert app_state.get_pin_state(12) is True
 
     # Мокируем wait_command_result, чтобы сразу возвращалась завершённая команда
     async def fake_wait_command(cmd_id, timeout_sec, db):

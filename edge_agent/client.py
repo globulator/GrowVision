@@ -39,12 +39,13 @@ class EdgeAPIClient:
         }
 
     def _create_client(self, timeout: float | None = None) -> httpx.Client:
-        """Создает экземпляр синхронного httpx.Client."""
+        """Создает экземпляр синхронного httpx.Client с отключенным trust_env."""
         return httpx.Client(
             base_url=self.base_url,
             headers=self._get_headers(),
             timeout=timeout if timeout is not None else self.timeout,
             transport=self.transport,
+            trust_env=False,
         )
 
     def send_heartbeat(self, telemetry: HeartbeatRequest) -> HeartbeatResponse | None:

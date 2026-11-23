@@ -629,22 +629,32 @@ async def _prompt_video_duration(
     rec_sec = max(3, min(60, round(total_frames / 10.0)))
     cam_part = str(camera_id) if camera_id is not None else "none"
 
+    top_row: list[InlineKeyboardButton] = [
+        InlineKeyboardButton(
+            text="⭐ По умолчанию (5.0 с)",
+            callback_data=f"vid_dur:{inst_id}:{cam_part}:5.0",
+        )
+    ]
+    if rec_sec != 5:
+        top_row.insert(
+            0,
+            InlineKeyboardButton(
+                text=f"⭐ Рекомендованная ({rec_sec} сек)",
+                callback_data=f"vid_dur:{inst_id}:{cam_part}:{rec_sec}",
+            ),
+        )
+
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
+            top_row,
             [
-                InlineKeyboardButton(
-                    text=f"⭐ Рекомендованная ({rec_sec} сек)",
-                    callback_data=f"vid_dur:{inst_id}:{cam_part}:{rec_sec}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="5 сек",
-                    callback_data=f"vid_dur:{inst_id}:{cam_part}:5",
-                ),
                 InlineKeyboardButton(
                     text="10 сек",
                     callback_data=f"vid_dur:{inst_id}:{cam_part}:10",
+                ),
+                InlineKeyboardButton(
+                    text="15 сек",
+                    callback_data=f"vid_dur:{inst_id}:{cam_part}:15",
                 ),
                 InlineKeyboardButton(
                     text="30 сек",
@@ -667,10 +677,11 @@ async def _prompt_video_duration(
     )
 
     text = (
-        f"🎬 <b>Параметры сборки таймлапса</b>\n\n"
+        f"🎬 <b>Параметры сборки таймлапса</b> (Шаг 1 из 3)\n\n"
         f"Установка: <b>{html.escape(inst_name)}</b>\n"
         f"Кадров для видео: <b>{total_frames}</b>\n\n"
-        f"Выберите желаемую длительность готового видео (рекомендовано <b>{rec_sec} сек</b> для плавности 10 fps) "
+        f"Выберите желаемую длительность готового видео (по умолчанию <b>5.0 с</b>, "
+        f"рекомендовано <b>{rec_sec} сек</b> для плавности 10 fps) "
         f"или выберите пресет / введите число секунд вручную:"
     )
 
@@ -679,12 +690,133 @@ async def _prompt_video_duration(
             await callback.message.edit_text(text, reply_markup=kb)
 
 
+async def _prompt_video_fps(
+    *,
+    api_client: GrowVisionApiClient,
+    user_id: int,
+    inst_id: int,
+    inst_name: str,
+    camera_id: int | None,
+    duration_sec: float,
+    total_frames: int,
+    callback: CallbackQuery | None = None,
+    message: Message | None = None,
+) -> None:
+    """Шаг 2 из 3: Настройка частоты кадров (FPS >= 1)."""
+    cam_part = str(camera_id) if camera_id is not None else "none"
+    calc_fps = max(1, round(total_frames / duration_sec)) if duration_sec > 0 else 10
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"⭐ Рассчитанный ({calc_fps} FPS)",
+                    callback_data=f"vid_fps:{inst_id}:{cam_part}:{duration_sec}:{calc_fps}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="1 FPS",
+                    callback_data=f"vid_fps:{inst_id}:{cam_part}:{duration_sec}:1",
+                ),
+                InlineKeyboardButton(
+                    text="5 FPS",
+                    callback_data=f"vid_fps:{inst_id}:{cam_part}:{duration_sec}:5",
+                ),
+                InlineKeyboardButton(
+                    text="10 FPS",
+                    callback_data=f"vid_fps:{inst_id}:{cam_part}:{duration_sec}:10",
+                ),
+                InlineKeyboardButton(
+                    text="25 FPS",
+                    callback_data=f"vid_fps:{inst_id}:{cam_part}:{duration_sec}:25",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⌨️ Ввести вручную",
+                    callback_data=f"vid_fps_manual:{inst_id}:{cam_part}:{duration_sec}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Отмена",
+                    callback_data=f"vid_dur_cancel:{inst_id}",
+                )
+            ],
+        ]
+    )
+
+    text = (
+        f"🎬 <b>Параметры сборки таймлапса</b> (Шаг 2 из 3)\n\n"
+        f"Установка: <b>{html.escape(inst_name)}</b>\n"
+        f"Кадров: <b>{total_frames}</b>, Длительность: <b>{duration_sec:.1f} с</b>\n\n"
+        f"Настройте частоту кадров (FPS ≥ 1).\n"
+        f"Расчётное значение для заданной длительности: <b>{calc_fps} FPS</b>:"
+    )
+
+    if callback and callback.message and isinstance(callback.message, Message):
+        with contextlib.suppress(Exception):
+            await callback.message.edit_text(text, reply_markup=kb)
+    elif message:
+        await message.answer(text, reply_markup=kb)
+
+
+async def _prompt_video_summary(
+    *,
+    user_id: int,
+    inst_id: int,
+    inst_name: str,
+    camera_id: int | None,
+    duration_sec: float,
+    fps: int,
+    total_frames: int,
+    callback: CallbackQuery | None = None,
+    message: Message | None = None,
+) -> None:
+    """Шаг 3 из 3: Экран сводки параметров с подтверждением."""
+    cam_part = str(camera_id) if camera_id is not None else "none"
+    cam_title = f"Камера #{camera_id}" if camera_id is not None else "Основная камера"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Подтвердить",
+                    callback_data=f"vid_confirm:{inst_id}:{cam_part}:{duration_sec}:{fps}",
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data=f"vid_dur_cancel:{inst_id}",
+                ),
+            ]
+        ]
+    )
+
+    text = (
+        f"🎬 <b>Сводка параметров таймлапса</b> (Шаг 3 из 3)\n\n"
+        f"🌱 <b>Установка:</b> {html.escape(inst_name)}\n"
+        f"📷 <b>Камера:</b> {cam_title}\n"
+        f"🎞 <b>Всего кадров:</b> {total_frames}\n"
+        f"⏱ <b>Длительность:</b> {duration_sec:.1f} с\n"
+        f"⚡ <b>Частота кадров:</b> {fps} FPS\n\n"
+        f"Запустить формирование видео?"
+    )
+
+    if callback and callback.message and isinstance(callback.message, Message):
+        with contextlib.suppress(Exception):
+            await callback.message.edit_text(text, reply_markup=kb)
+    elif message:
+        await message.answer(text, reply_markup=kb)
+
+
 @router.callback_query(F.data.startswith("vid_dur:"))
 async def handle_video_duration_preset_selected(
     callback: CallbackQuery,
+    state: FSMContext,
     api_client: GrowVisionApiClient,
 ) -> None:
-    """Выбрана длительность по кнопке-пресету."""
+    """Выбрана длительность по кнопке-пресету -> переход к выбору FPS."""
     await callback.answer()
     parts = callback.data.split(":")
     inst_id = int(parts[1])
@@ -698,13 +830,38 @@ async def handle_video_duration_preset_selected(
         return
 
     inst = await api_client.get_installation(user_id, inst_id)
-    await _execute_video_pipeline(
-        callback=callback,
-        api_client=api_client,
+    inst_name = inst.get("name", f"Установка #{inst_id}")
+
+    try:
+        frames_resp = await api_client.get_timelapse_frames(
+            user_id, inst_id, camera_id=cam_id
+        )
+        frames_list = (
+            frames_resp.get("frames", [])
+            if isinstance(frames_resp, dict)
+            else frames_resp
+        )
+        total_frames = len(frames_list)
+    except Exception:  # noqa: BLE001
+        total_frames = 20
+
+    await state.update_data(
         inst_id=inst_id,
-        inst_name=inst.get("name", f"Установка #{inst_id}"),
+        inst_name=inst_name,
         camera_id=cam_id,
         duration_sec=duration,
+        total_frames=total_frames,
+    )
+
+    await _prompt_video_fps(
+        api_client=api_client,
+        user_id=user_id,
+        inst_id=inst_id,
+        inst_name=inst_name,
+        camera_id=cam_id,
+        duration_sec=duration,
+        total_frames=total_frames,
+        callback=callback,
     )
 
 
@@ -723,11 +880,25 @@ async def handle_video_duration_manual_selected(
     user_id = callback.from_user.id if callback.from_user else 0
 
     inst = await api_client.get_installation(user_id, inst_id)
+    try:
+        frames_resp = await api_client.get_timelapse_frames(
+            user_id, inst_id, camera_id=cam_id
+        )
+        frames_list = (
+            frames_resp.get("frames", [])
+            if isinstance(frames_resp, dict)
+            else frames_resp
+        )
+        total_frames = len(frames_list)
+    except Exception:  # noqa: BLE001
+        total_frames = 20
+
     await state.set_state(TimelapseStates.waiting_duration)
     await state.update_data(
         inst_id=inst_id,
         inst_name=inst.get("name", f"Установка #{inst_id}"),
         camera_id=cam_id,
+        total_frames=total_frames,
     )
 
     kb = InlineKeyboardMarkup(
@@ -744,7 +915,7 @@ async def handle_video_duration_manual_selected(
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
             await callback.message.edit_text(
-                "Введите длительность видео в секундах (целое число от 1 до 60, например: <code>10</code>):",
+                "Введите длительность видео в секундах (число от 1 до 60, например: <code>5.0</code>):",
                 reply_markup=kb,
             )
 
@@ -754,7 +925,7 @@ async def handle_video_duration_cancel(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
-    """Отмена ручного ввода длительности."""
+    """Отмена сценария сборки видео."""
     await callback.answer()
     await state.clear()
     inst_id = int(callback.data.split(":")[-1])
@@ -782,36 +953,180 @@ async def process_video_duration_input(
     api_client: GrowVisionApiClient,
 ) -> None:
     """Обработка текстового ввода длительности видео в секундах."""
-    raw_val = (message.text or "").strip()
+    raw_val = (message.text or "").strip().replace(",", ".")
     try:
         dur = float(raw_val)
-        if not (1.0 <= dur <= 300.0):
+        if not (0.5 <= dur <= 300.0):
             raise ValueError("Вне диапазона")
     except ValueError:
         await message.answer(
-            "Некорректная длительность. Введите число секунд от 1 до 60 (например: <code>10</code>):"
+            "Некорректная длительность. Введите число секунд от 1 до 60 (например: <code>5.0</code>):"
         )
         return
 
     data = await state.get_data()
-    await state.clear()
     inst_id = data.get("inst_id")
     inst_name = data.get("inst_name", "")
     camera_id = data.get("camera_id")
-
+    total_frames = data.get("total_frames", 20)
     user_id = message.from_user.id if message.from_user else 0
-    if user_id in _user_video_locks:
-        await message.answer("Видео уже собирается, подождите...")
-        return
 
-    await _execute_video_pipeline(
-        callback=None,
+    await state.update_data(duration_sec=dur)
+
+    await _prompt_video_fps(
         api_client=api_client,
+        user_id=user_id,
         inst_id=inst_id,
         inst_name=inst_name,
         camera_id=camera_id,
         duration_sec=dur,
+        total_frames=total_frames,
         message=message,
+    )
+
+
+@router.callback_query(F.data.startswith("vid_fps:"))
+async def handle_video_fps_preset_selected(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """Выбран FPS по кнопке -> переход к экрану сводки параметров."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    inst_id = int(parts[1])
+    cam_str = parts[2]
+    duration = float(parts[3])
+    fps = max(1, int(parts[4]))
+    cam_id = None if cam_str == "none" else int(cam_str)
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    data = await state.get_data()
+    inst_name = data.get("inst_name", f"Установка #{inst_id}")
+    total_frames = data.get("total_frames", 20)
+
+    await state.update_data(fps=fps)
+
+    await _prompt_video_summary(
+        user_id=user_id,
+        inst_id=inst_id,
+        inst_name=inst_name,
+        camera_id=cam_id,
+        duration_sec=duration,
+        fps=fps,
+        total_frames=total_frames,
+        callback=callback,
+    )
+
+
+@router.callback_query(F.data.startswith("vid_fps_manual:"))
+async def handle_video_fps_manual_selected(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """Пользователь выбрал ручной ввод FPS."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    inst_id = int(parts[1])
+    cam_str = parts[2]
+    duration = float(parts[3])
+    cam_id = None if cam_str == "none" else int(cam_str)
+
+    await state.set_state(TimelapseStates.waiting_fps)
+    await state.update_data(
+        inst_id=inst_id,
+        camera_id=cam_id,
+        duration_sec=duration,
+    )
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data=f"vid_dur_cancel:{inst_id}",
+                )
+            ]
+        ]
+    )
+
+    if callback.message and isinstance(callback.message, Message):
+        with contextlib.suppress(Exception):
+            await callback.message.edit_text(
+                "Введите частоту кадров (целое число ≥ 1, например: <code>10</code>):",
+                reply_markup=kb,
+            )
+
+
+@router.message(TimelapseStates.waiting_fps)
+async def process_video_fps_input(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    """Обработка текстового ввода FPS."""
+    raw_val = (message.text or "").strip()
+    try:
+        fps = int(raw_val)
+        if fps < 1 or fps > 60:
+            raise ValueError("FPS должен быть от 1 до 60")
+    except ValueError:
+        await message.answer(
+            "Некорректная частота кадров. Введите целое число ≥ 1 (от 1 до 60, например: <code>10</code>):"
+        )
+        return
+
+    data = await state.get_data()
+    inst_id = data.get("inst_id")
+    inst_name = data.get("inst_name", "")
+    camera_id = data.get("camera_id")
+    duration_sec = data.get("duration_sec", 5.0)
+    total_frames = data.get("total_frames", 20)
+    user_id = message.from_user.id if message.from_user else 0
+
+    await state.update_data(fps=fps)
+
+    await _prompt_video_summary(
+        user_id=user_id,
+        inst_id=inst_id,
+        inst_name=inst_name,
+        camera_id=camera_id,
+        duration_sec=duration_sec,
+        fps=fps,
+        total_frames=total_frames,
+        message=message,
+    )
+
+
+@router.callback_query(F.data.startswith("vid_confirm:"))
+async def handle_video_confirmed(
+    callback: CallbackQuery,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Подтверждение сборки видео -> запуск пайплайна."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    inst_id = int(parts[1])
+    cam_str = parts[2]
+    duration = float(parts[3])
+    fps = max(1, int(parts[4]))
+    cam_id = None if cam_str == "none" else int(cam_str)
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    if user_id in _user_video_locks:
+        await callback.answer("Видео уже собирается, подождите", show_alert=True)
+        return
+
+    inst = await api_client.get_installation(user_id, inst_id)
+    await state.clear()
+
+    await _execute_video_pipeline(
+        callback=callback,
+        api_client=api_client,
+        inst_id=inst_id,
+        inst_name=inst.get("name", f"Установка #{inst_id}"),
+        camera_id=cam_id,
+        duration_sec=duration,
+        fps=fps,
     )
 
 
@@ -822,6 +1137,7 @@ async def _execute_video_pipeline(
     inst_name: str,
     camera_id: int | None,
     duration_sec: float | None = None,
+    fps: int | None = None,
     message: Message | None = None,
 ) -> None:
     """Выполняет полный пайплайн сборки видео с циклом прореживания (до 5 попыток)."""
@@ -860,6 +1176,7 @@ async def _execute_video_pipeline(
             camera_id=camera_id,
             step=1,
             duration_sec=duration_sec,
+            fps=fps,
         )
 
         # Случай 1: Плановый кадр всего один (image/jpeg)
@@ -884,6 +1201,13 @@ async def _execute_video_pipeline(
                 caption = f"🎬 <b>Таймлапс:</b> {inst_name}"
                 if camera_id:
                     caption += f" (камера #{camera_id})"
+                if duration_sec or fps:
+                    extra = []
+                    if duration_sec:
+                        extra.append(f"{duration_sec:.1f} с")
+                    if fps:
+                        extra.append(f"{fps} FPS")
+                    caption += f"\n<i>({', '.join(extra)})</i>"
                 if bot:
                     await bot.send_video(
                         chat_id=chat_id,
@@ -924,6 +1248,7 @@ async def _execute_video_pipeline(
                 camera_id=camera_id,
                 step=step,
                 duration_sec=duration_sec,
+                fps=fps,
             )
 
             if ctype == "video/mp4" and isinstance(p_path, Path):

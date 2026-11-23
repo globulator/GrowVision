@@ -160,10 +160,11 @@ export const api = {
     return request(url);
   },
 
-  async buildVideo(installationId, { cameraId = null, step = 1, durationSec = null } = {}) {
+  async buildVideo(installationId, { cameraId = null, step = 1, durationSec = null, fps = null } = {}) {
     const body = { step };
     if (cameraId !== null && cameraId !== undefined) body.camera_id = cameraId;
     if (durationSec !== null && durationSec !== undefined) body.duration_sec = durationSec;
+    if (fps !== null && fps !== undefined) body.fps = fps;
 
     return request(`/api/timelapse/${installationId}/video`, {
       method: 'POST',

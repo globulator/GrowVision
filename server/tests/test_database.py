@@ -112,18 +112,17 @@ def test_installation_check_constraints(test_db):
     _, session_factory = test_db
     session = session_factory()
 
-    # Одинаковые пины света и вспышки
+    # Одинаковые пины света и вспышки разрешены (Этап 8.1)
     inst_same_pins = Installation(
-        name="Неверная установка",
+        name="Установка с одинаковыми пинами",
         culture_name="Салат",
         light_gpio_pin=18,
         flash_gpio_pin=18,
         is_archived=False,
     )
     session.add(inst_same_pins)
-    with pytest.raises(IntegrityError):
-        session.commit()
-    session.rollback()
+    session.commit()
+    assert inst_same_pins.id is not None
 
     # Отрицательный размер маркера ArUco
     inst_negative_aruco = Installation(

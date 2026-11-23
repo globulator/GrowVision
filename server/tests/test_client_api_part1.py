@@ -310,9 +310,9 @@ def test_installations_public_and_role_projections(client: TestClient, test_env)
     assert "cameras" not in g1
     assert "aruco_size_mm" not in g1
 
-    # Запрос Гостя с include_archived=true
+    # Запрос Гостя с include_archived=true: по критерию этапа 8.1 Гость всегда получает только активные
     r_guest_all = client.get("/api/installations?include_archived=true")
-    assert len(r_guest_all.json()) == 2
+    assert len(r_guest_all.json()) == 1
 
     # 2. Запрос Biologist
     create_session(session_factory, role="biologist", external_id="bio-usr")
@@ -379,18 +379,19 @@ def test_installation_crud_and_pin_validations(client: TestClient, test_env):
     )
     assert r_dup_name.status_code == 409
 
-    # 3. Совпадение пинов света и вспышки внутри одной установки -> 409
+    # 3. Совпадение пинов света и вспышки внутри одной установки разрешено (201) с предупреждением (Этап 8.1)
     r_same_pins = client.post(
         "/api/installations",
         headers=dev_hdrs,
         json={
-            "name": "Другая",
+            "name": "Другая-1",
             "culture_name": "Перец",
             "light_gpio_pin": 21,
             "flash_gpio_pin": 21,
         },
     )
-    assert r_same_pins.status_code == 409
+    assert r_same_pins.status_code == 201
+    assert any("совпадают" in w for w in r_same_pins.json().get("warnings", []))
 
     # Использование пина другой установки разрешено (201) с предупреждением (Этап 7.4)
     r_shared_pin = client.post(

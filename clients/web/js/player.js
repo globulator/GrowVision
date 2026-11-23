@@ -1,31 +1,26 @@
 // clients/web/js/player.js
-// Плеер таймлапса GrowVision в полном соответствии с docs/WEB_SPEC.md.
+// Объединенная модалка «Галерея и таймлапс» GrowVision Web SPA.
 
 import { api } from './api.js';
 
 export class TimelapsePlayer {
-  constructor(containerEl, options = {}) {
-    this.container = containerEl;
+  constructor(modalEl, options = {}) {
+    this.modal = modalEl || document.getElementById('modal-gallery');
     this.userRole = options.userRole || 'guest';
     this.onBack = options.onBack || (() => {});
 
     this.installation = null;
     this.allFrames = [];
     this.selectedCameraId = null;
-    this.hasConflictingCameras = false;
-    this.availableCameraIds = [];
 
-    this.activeFrames = [];
     this.currentFrameIndex = 0;
     this.currentLayer = 'raw'; // 'raw' | 'annotated'
     this.isPlaying = false;
-    this.playSpeed = 1; // 1x (200ms), 2x (100ms), 4x (50ms)
+    this.playSpeed = 1; // 1x (250ms), 2x (125ms), 4x (60ms)
     this.isLooping = false;
     this.playTimer = null;
 
-    this.imageCache = new Map(); // url -> HTMLImageElement
-    this.failedLoadsCount = 0;
-    this.isLoading = false;
+    this.isDownloadingVideo = false;
 
     this.initDOM();
   }
@@ -35,430 +30,371 @@ export class TimelapsePlayer {
     this.updateRoleVisibility();
   }
 
-  initDOM() {
-    this.container.innerHTML = `
-      <div class="player-wrapper">
-        <div class="player-header">
-          <div class="player-header-left">
-            <button type="button" class="btn btn-secondary btn-sm" id="pl-btn-back">← К списку</button>
-            <div class="player-title-block">
-              <h2 id="pl-title" class="player-title">—</h2>
-              <span id="pl-culture" class="player-subtitle">—</span>
-            </div>
-          </div>
-          <div class="player-header-right">
-            <div id="pl-camera-selector-wrap" class="hidden">
-              <label for="pl-camera-select">Камера:</label>
-              <select id="pl-camera-select" class="form-select form-select-sm"></select>
-            </div>
-            <button type="button" class="btn btn-secondary btn-sm" id="pl-btn-refresh">🔄 Обновить</button>
-            <button type="button" class="btn btn-primary btn-sm hidden" id="pl-btn-video">📥 Скачать MP4</button>
-          </div>
-        </div>
-
-        <div id="pl-error-box" class="alert alert-error hidden"></div>
-
-        <div id="pl-progress-wrap" class="progress-container hidden">
-          <div class="progress-bar-bg">
-            <div id="pl-progress-bar" class="progress-bar-fill" style="width: 0%;"></div>
-          </div>
-          <div id="pl-progress-text" class="progress-text">Загрузка кадров: 0 / 0</div>
-        </div>
-
-        <div class="player-screen">
-          <div id="pl-empty-state" class="player-empty-message hidden">Плановых кадров пока нет. Они появятся после первой автосъёмки.</div>
-          <div id="pl-viewport" class="player-viewport">
-            <img id="pl-image" src="" alt="Кадр таймлапса" class="player-img hidden" />
-          </div>
-          <div id="pl-layer-selector" class="layer-selector">
-            <button type="button" class="layer-btn active" data-layer="raw">🖼 Оригинал</button>
-            <button type="button" class="layer-btn" data-layer="annotated">🧠 Разметка нейросети</button>
-          </div>
-        </div>
-
-        <div id="pl-controls-card" class="player-controls">
-          <div class="timeline-row">
-            <input type="range" id="pl-timeline" class="player-timeline" min="0" max="0" value="0" disabled />
-            <div class="timeline-meta">
-              <span id="pl-frame-counter">Кадр 0 из 0</span>
-              <span id="pl-failed-counter" class="text-danger hidden">Не удалось загрузить кадров: 0</span>
-            </div>
-          </div>
-
-          <div class="controls-toolbar">
-            <div class="controls-left">
-              <button type="button" class="btn btn-icon" id="pl-btn-step-back" title="Кадр назад" disabled>⏮</button>
-              <button type="button" class="btn btn-primary btn-icon" id="pl-btn-play" title="Воспроизведение" disabled>▶</button>
-              <button type="button" class="btn btn-icon" id="pl-btn-step-fwd" title="Кадр вперёд" disabled>⏭</button>
-            </div>
-
-            <div class="controls-center">
-              <div class="speed-selector">
-                <button type="button" class="speed-btn active" data-speed="1">1x</button>
-                <button type="button" class="speed-btn" data-speed="2">2x</button>
-                <button type="button" class="speed-btn" data-speed="4">4x</button>
-              </div>
-              <label class="checkbox-label">
-                <input type="checkbox" id="pl-loop-toggle" />
-                <span>🔁 Зациклить</span>
-              </label>
-            </div>
-
-            <div class="controls-right">
-              <span id="pl-single-frame-note" class="text-muted hidden">Пока один плановый кадр</span>
-            </div>
-          </div>
-
-          <div class="metadata-card" id="pl-metadata-card">
-            <div class="meta-item">
-              <span class="meta-label">Время съёмки:</span>
-              <span class="meta-val" id="pl-meta-time">—</span>
-            </div>
-            <div class="meta-item">
-              <span class="meta-label">Площадь растения:</span>
-              <span class="meta-val" id="pl-meta-area">—</span>
-            </div>
-            <div class="meta-item">
-              <span class="meta-label">Камера:</span>
-              <span class="meta-val" id="pl-meta-cam">—</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-
-    this.bindEvents();
-    this.updateRoleVisibility();
-  }
-
   updateRoleVisibility() {
-    const btnVideo = this.container.querySelector('#pl-btn-video');
-    if (btnVideo) {
+    const exportPanel = this.modal.querySelector('#gallery-export-panel');
+    if (exportPanel) {
       if (this.userRole === 'biologist' || this.userRole === 'developer') {
-        btnVideo.classList.remove('hidden');
+        exportPanel.classList.remove('hidden');
       } else {
-        btnVideo.classList.add('hidden');
+        exportPanel.classList.add('hidden');
       }
     }
   }
 
-  bindEvents() {
-    this.container.querySelector('#pl-btn-back').addEventListener('click', () => {
-      this.pause();
-      this.onBack();
-    });
+  initDOM() {
+    // Кнопка закрытия модалки
+    const closeBtn = this.modal.querySelector('#gallery-modal-close');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', () => this.close());
+    }
 
-    this.container.querySelector('#pl-btn-refresh').addEventListener('click', () => {
-      this.refreshFrames();
-    });
-
-    this.container.querySelector('#pl-btn-play').addEventListener('click', () => {
-      this.togglePlay();
-    });
-
-    this.container.querySelector('#pl-btn-step-back').addEventListener('click', () => {
-      this.stepFrame(-1);
-    });
-
-    this.container.querySelector('#pl-btn-step-fwd').addEventListener('click', () => {
-      this.stepFrame(1);
-    });
-
-    const timeline = this.container.querySelector('#pl-timeline');
-    timeline.addEventListener('input', (e) => {
-      const idx = parseInt(e.target.value, 10);
-      if (!isNaN(idx) && idx >= 0 && idx < this.activeFrames.length) {
-        this.currentFrameIndex = idx;
-        this.renderCurrentFrame();
+    // Закрытие при клике по фону
+    this.modal.addEventListener('click', (e) => {
+      if (e.target === this.modal) {
+        this.close();
       }
     });
 
-    // Скорость
-    this.container.querySelectorAll('.speed-btn').forEach((btn) => {
+    // Селектор камеры
+    const camSelect = this.modal.querySelector('#gallery-camera-select');
+    if (camSelect) {
+      camSelect.addEventListener('change', (e) => {
+        const val = e.target.value;
+        this.selectedCameraId = val ? parseInt(val, 10) : null;
+        this.loadFrames();
+      });
+    }
+
+    // Переключатель слоев
+    const btnRaw = this.modal.querySelector('#gallery-layer-raw');
+    const btnAnn = this.modal.querySelector('#gallery-layer-ann');
+
+    if (btnRaw && btnAnn) {
+      btnRaw.addEventListener('click', () => {
+        this.currentLayer = 'raw';
+        btnRaw.classList.add('active');
+        btnAnn.classList.remove('active');
+        this.renderCurrentFrame();
+      });
+
+      btnAnn.addEventListener('click', () => {
+        this.currentLayer = 'annotated';
+        btnAnn.classList.add('active');
+        btnRaw.classList.remove('active');
+        this.renderCurrentFrame();
+      });
+    }
+
+    // Ползунок таймлайна
+    const timeline = this.modal.querySelector('#gallery-timeline');
+    if (timeline) {
+      timeline.addEventListener('input', (e) => {
+        this.pause();
+        this.currentFrameIndex = parseInt(e.target.value, 10);
+        this.renderCurrentFrame();
+      });
+    }
+
+    // Кнопки управления плеером
+    const prevBtn = this.modal.querySelector('#gallery-btn-prev');
+    const nextBtn = this.modal.querySelector('#gallery-btn-next');
+    const playBtn = this.modal.querySelector('#gallery-btn-play');
+
+    if (prevBtn) {
+      prevBtn.addEventListener('click', () => {
+        this.pause();
+        this.step(-1);
+      });
+    }
+
+    if (nextBtn) {
+      nextBtn.addEventListener('click', () => {
+        this.pause();
+        this.step(1);
+      });
+    }
+
+    if (playBtn) {
+      playBtn.addEventListener('click', () => {
+        this.togglePlay();
+      });
+    }
+
+    // Селектор скорости
+    this.modal.querySelectorAll('.speed-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
-        this.container.querySelectorAll('.speed-btn').forEach((b) => b.classList.remove('active'));
+        this.modal.querySelectorAll('.speed-btn').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-        this.playSpeed = parseFloat(btn.dataset.speed) || 1;
+        this.playSpeed = parseInt(btn.dataset.speed, 10) || 1;
         if (this.isPlaying) {
-          this.pause();
-          this.play();
+          this.startPlaybackTimer();
         }
       });
     });
 
-    // Зацикливание
-    this.container.querySelector('#pl-loop-toggle').addEventListener('change', (e) => {
-      this.isLooping = e.target.checked;
-    });
-
-    // Слои
-    this.container.querySelectorAll('.layer-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        if (this.isLoading) return;
-        const layer = btn.dataset.layer;
-        if (layer === this.currentLayer) return;
-
-        this.container.querySelectorAll('.layer-btn').forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
-        this.currentLayer = layer;
-
-        // Предзагрузка нового слоя при необходимости
-        this.preloadActiveFrames();
+    // Чекбокс зацикливания
+    const loopToggle = this.modal.querySelector('#gallery-loop-toggle');
+    if (loopToggle) {
+      loopToggle.addEventListener('change', (e) => {
+        this.isLooping = e.target.checked;
       });
-    });
+    }
 
-    // Выбор камеры
-    const camSelect = this.container.querySelector('#pl-camera-select');
-    camSelect.addEventListener('change', (e) => {
-      const val = e.target.value;
-      this.selectedCameraId = val ? parseInt(val, 10) : null;
-      this.filterFramesByCamera();
-      this.preloadActiveFrames();
-    });
+    // Связанный расчет длительности и FPS
+    const durInput = this.modal.querySelector('#gallery-video-duration');
+    const fpsInput = this.modal.querySelector('#gallery-video-fps');
 
-    // Экспорт видео
-    this.container.querySelector('#pl-btn-video').addEventListener('click', () => {
-      if (window.showVideoExportModal) {
-        window.showVideoExportModal(this.installation, this.selectedCameraId);
-      }
-    });
+    if (durInput && fpsInput) {
+      durInput.addEventListener('input', () => {
+        const total = this.allFrames.length || 1;
+        const dur = parseFloat(durInput.value);
+        if (!isNaN(dur) && dur > 0) {
+          const calculatedFps = Math.max(1, Math.round(total / dur));
+          fpsInput.value = calculatedFps;
+        }
+      });
+
+      fpsInput.addEventListener('input', () => {
+        const total = this.allFrames.length || 1;
+        const fps = parseInt(fpsInput.value, 10);
+        if (!isNaN(fps) && fps >= 1) {
+          const calculatedDur = Math.max(0.5, total / fps).toFixed(1);
+          durInput.value = calculatedDur;
+        }
+      });
+    }
+
+    // Кнопка экспорта MP4
+    const btnDownload = this.modal.querySelector('#gallery-btn-download-mp4');
+    if (btnDownload) {
+      btnDownload.addEventListener('click', () => {
+        this.handleDownloadMp4();
+      });
+    }
   }
 
-  async loadInstallation(installation) {
-    this.pause();
+  // Открытие модалки для установки
+  open(installation) {
     this.installation = installation;
-    this.container.querySelector('#pl-title').textContent = installation.name;
-    this.container.querySelector('#pl-culture').textContent = installation.culture_name;
+    this.selectedCameraId = null;
+    this.currentFrameIndex = 0;
+    this.currentLayer = 'raw';
+    this.pause();
 
-    await this.refreshFrames();
+    // Заполнение заголовка
+    const titleEl = this.modal.querySelector('#gallery-modal-title');
+    const cultEl = this.modal.querySelector('#gallery-modal-culture');
+    if (titleEl) titleEl.textContent = `Галерея: ${installation.name}`;
+    if (cultEl) cultEl.textContent = installation.culture_name;
+
+    // Инициализация выпадающего списка камер (если камер несколько)
+    this.setupCamerasSelector();
+
+    // Видимость панели экспорта по роли
+    this.updateRoleVisibility();
+
+    // Открытие модального окна
+    this.modal.classList.remove('hidden');
+
+    // Загрузка кадров
+    this.loadFrames();
   }
 
-  async refreshFrames() {
-    this.hideError();
-    const refreshBtn = this.container.querySelector('#pl-btn-refresh');
-    refreshBtn.disabled = true;
+  // Для обратной совместимости
+  loadInstallation(installation) {
+    this.open(installation);
+  }
+
+  close() {
+    this.pause();
+    this.modal.classList.add('hidden');
+    this.onBack();
+  }
+
+  setupCamerasSelector() {
+    const wrap = this.modal.querySelector('#gallery-camera-select-wrap');
+    const select = this.modal.querySelector('#gallery-camera-select');
+    if (!wrap || !select) return;
+
+    select.innerHTML = '';
+    const cameras = this.installation.cameras || [];
+
+    if (cameras.length > 1) {
+      wrap.classList.remove('hidden');
+      const optAll = document.createElement('option');
+      optAll.value = '';
+      optAll.textContent = 'Все камеры';
+      select.appendChild(optAll);
+
+      cameras.forEach((c) => {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.auto_name ? `${c.auto_name} (#${c.id})` : `Камера #${c.id}`;
+        select.appendChild(opt);
+      });
+    } else {
+      wrap.classList.add('hidden');
+    }
+  }
+
+  async loadFrames() {
+    const alertBox = this.modal.querySelector('#gallery-alert-box');
+    const loaderWrap = this.modal.querySelector('#gallery-loader-wrap');
+    const loaderText = this.modal.querySelector('#gallery-loader-text');
+    const progressBar = this.modal.querySelector('#gallery-progress-bar');
+    const emptyState = this.modal.querySelector('#gallery-empty-state');
+    const viewportContainer = this.modal.querySelector('#gallery-viewport-container');
+    const playerControls = this.modal.querySelector('#gallery-player-controls');
+    const exportPanel = this.modal.querySelector('#gallery-export-panel');
+
+    alertBox.classList.add('hidden');
+    emptyState.classList.add('hidden');
+    loaderWrap.classList.remove('hidden');
+    progressBar.style.width = '30%';
+    loaderText.textContent = 'Запрос плановых кадров с сервера...';
 
     try {
-      const resp = await api.getTimelapseFrames(this.installation.id);
-      this.allFrames = resp.frames || [];
+      const resp = await api.getTimelapseFrames(this.installation.id, this.selectedCameraId);
+      const rawFrames = Array.isArray(resp) ? resp : (resp.frames || []);
+
+      progressBar.style.width = '70%';
+      loaderText.textContent = `Получено кадров: ${rawFrames.length}. Инициализация...`;
+
+      // Фильтрация кадров по камере, если выбрана конкретная
+      this.allFrames = rawFrames;
 
       if (this.allFrames.length === 0) {
-        this.showEmptyState();
+        loaderWrap.classList.add('hidden');
+        emptyState.classList.remove('hidden');
+        viewportContainer.classList.add('hidden');
+        playerControls.classList.add('hidden');
+        exportPanel.classList.add('hidden');
         return;
       }
 
-      this.hideEmptyState();
-      this.analyzeCameras();
-      this.filterFramesByCamera();
-      await this.preloadActiveFrames();
+      // Кадры есть -> открываем плеер
+      viewportContainer.classList.remove('hidden');
+      playerControls.classList.remove('hidden');
+      if (this.userRole === 'biologist' || this.userRole === 'developer') {
+        exportPanel.classList.remove('hidden');
+      }
+
+      // Открываем самый свежий кадр
+      this.currentFrameIndex = this.allFrames.length - 1;
+
+      // Обновление таймлайна
+      const timeline = this.modal.querySelector('#gallery-timeline');
+      if (timeline) {
+        timeline.max = this.allFrames.length - 1;
+        timeline.value = this.currentFrameIndex;
+      }
+
+      // Начальный расчет полей экспорта
+      this.updateExportCalculations();
+
+      // Отрисовка кадра
+      progressBar.style.width = '100%';
+      setTimeout(() => {
+        loaderWrap.classList.add('hidden');
+        this.renderCurrentFrame();
+      }, 150);
+
     } catch (err) {
-      this.showError('Не удалось загрузить кадры: ' + err.message);
-    } finally {
-      refreshBtn.disabled = false;
+      loaderWrap.classList.add('hidden');
+      alertBox.textContent = 'Ошибка загрузки кадров: ' + err.message;
+      alertBox.classList.remove('hidden');
     }
   }
 
-  analyzeCameras() {
-    // 4.1: Поиск соседних кадров с разными camera_id с разницей <= 10 минут (600 сек)
-    const camIds = new Set();
-    let hasConflict = false;
+  updateExportCalculations() {
+    const total = this.allFrames.length || 1;
+    const durInput = this.modal.querySelector('#gallery-video-duration');
+    const fpsInput = this.modal.querySelector('#gallery-video-fps');
 
-    for (let i = 0; i < this.allFrames.length; i++) {
-      const f1 = this.allFrames[i];
-      if (f1.camera_id) camIds.add(f1.camera_id);
-
-      const t1 = new Date(f1.captured_at).getTime();
-      for (let j = i + 1; j < this.allFrames.length; j++) {
-        const f2 = this.allFrames[j];
-        const t2 = new Date(f2.captured_at).getTime();
-        const diffSec = Math.abs(t2 - t1) / 1000;
-        if (diffSec > 600) break; // Кадры отсортированы по времени
-        if (f1.camera_id && f2.camera_id && f1.camera_id !== f2.camera_id) {
-          hasConflict = true;
-          break;
-        }
-      }
-      if (hasConflict) break;
-    }
-
-    this.hasConflictingCameras = hasConflict;
-    this.availableCameraIds = Array.from(camIds).sort((a, b) => a - b);
-
-    const camSelectorWrap = this.container.querySelector('#pl-camera-selector-wrap');
-    const camSelect = this.container.querySelector('#pl-camera-select');
-
-    if (hasConflict && this.availableCameraIds.length > 1) {
-      camSelectorWrap.classList.remove('hidden');
-      camSelect.innerHTML = '';
-      this.availableCameraIds.forEach((cid) => {
-        const opt = document.createElement('option');
-        opt.value = cid;
-        opt.textContent = `Камера ${cid}`;
-        camSelect.appendChild(opt);
-      });
-
-      // По умолчанию камера самого свежего кадра
-      const latestFrame = this.allFrames[this.allFrames.length - 1];
-      const defaultCam = latestFrame?.camera_id || this.availableCameraIds[0];
-      if (this.selectedCameraId === null || !this.availableCameraIds.includes(this.selectedCameraId)) {
-        this.selectedCameraId = defaultCam;
-      }
-      camSelect.value = String(this.selectedCameraId);
-    } else {
-      camSelectorWrap.classList.add('hidden');
-      this.selectedCameraId = null;
-    }
-  }
-
-  filterFramesByCamera() {
-    if (this.hasConflictingCameras && this.selectedCameraId !== null) {
-      this.activeFrames = this.allFrames.filter((f) => f.camera_id === this.selectedCameraId);
-    } else {
-      this.activeFrames = [...this.allFrames];
-    }
-  }
-
-  async preloadActiveFrames() {
-    this.pause();
-    this.setControlsDisabled(true);
-    this.isLoading = true;
-
-    const progressWrap = this.container.querySelector('#pl-progress-wrap');
-    const progressBar = this.container.querySelector('#pl-progress-bar');
-    const progressText = this.container.querySelector('#pl-progress-text');
-    progressWrap.classList.remove('hidden');
-
-    const total = this.activeFrames.length;
-    let loadedCount = 0;
-    this.failedLoadsCount = 0;
-
-    const updateProgress = () => {
-      const pct = total > 0 ? Math.round((loadedCount / total) * 100) : 0;
-      progressBar.style.width = `${pct}%`;
-      progressText.textContent = `Загружено ${loadedCount} из ${total}`;
-    };
-    updateProgress();
-
-    // 4.2: Предзагрузка с конкаренси до 6
-    const urls = this.activeFrames.map((f) => (this.currentLayer === 'annotated' ? f.annotated_url : f.raw_url));
-    const concurrency = 6;
-    let index = 0;
-
-    const loadSingle = async (url) => {
-      if (this.imageCache.has(url)) {
-        loadedCount++;
-        updateProgress();
-        return;
-      }
-
-      const loadImage = (src) =>
-        new Promise((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => resolve(img);
-          img.onerror = () => reject(new Error('Image load failed'));
-          img.src = src;
-        });
-
-      try {
-        const img = await loadImage(url);
-        this.imageCache.set(url, img);
-      } catch (_) {
-        // Однократный повтор (4.2)
-        try {
-          const img = await loadImage(url);
-          this.imageCache.set(url, img);
-        } catch (_) {
-          this.failedLoadsCount++;
-        }
-      } finally {
-        loadedCount++;
-        updateProgress();
-      }
-    };
-
-    const workers = Array.from({ length: Math.min(concurrency, total) }, async () => {
-      while (index < total) {
-        const currentIndex = index++;
-        await loadSingle(urls[currentIndex]);
-      }
-    });
-
-    await Promise.all(workers);
-
-    progressWrap.classList.add('hidden');
-    this.isLoading = false;
-
-    // После предзагрузки плеер стоит на последнем (самом свежем) кадре на паузе
-    this.currentFrameIndex = Math.max(0, this.activeFrames.length - 1);
-    this.renderCurrentFrame();
-    this.setControlsDisabled(false);
-
-    // Индикатор неудачных кадров
-    const failedEl = this.container.querySelector('#pl-failed-counter');
-    if (this.failedLoadsCount > 0) {
-      failedEl.textContent = `Не удалось загрузить кадров: ${this.failedLoadsCount}`;
-      failedEl.classList.remove('hidden');
-    } else {
-      failedEl.classList.add('hidden');
-    }
-  }
-
-  setControlsDisabled(disabled) {
-    const isSingle = this.activeFrames.length <= 1;
-    const playBtn = this.container.querySelector('#pl-btn-play');
-    const stepBack = this.container.querySelector('#pl-btn-step-back');
-    const stepFwd = this.container.querySelector('#pl-btn-step-fwd');
-    const timeline = this.container.querySelector('#pl-timeline');
-    const loopToggle = this.container.querySelector('#pl-loop-toggle');
-    const camSelect = this.container.querySelector('#pl-camera-select');
-    const singleNote = this.container.querySelector('#pl-single-frame-note');
-
-    this.container.querySelectorAll('.speed-btn').forEach((b) => (b.disabled = disabled || isSingle));
-    this.container.querySelectorAll('.layer-btn').forEach((b) => (b.disabled = disabled));
-
-    playBtn.disabled = disabled || isSingle;
-    stepBack.disabled = disabled || isSingle;
-    stepFwd.disabled = disabled || isSingle;
-    timeline.disabled = disabled || isSingle;
-    loopToggle.disabled = disabled || isSingle;
-    if (camSelect) camSelect.disabled = disabled;
-
-    if (isSingle && !disabled) {
-      singleNote.classList.remove('hidden');
-    } else {
-      singleNote.classList.add('hidden');
+    if (durInput && fpsInput) {
+      // По умолчанию длительность 5.0 секунд
+      const defDur = 5.0;
+      const defFps = Math.max(1, Math.round(total / defDur));
+      durInput.value = defDur;
+      fpsInput.value = defFps;
     }
   }
 
   renderCurrentFrame() {
-    const total = this.activeFrames.length;
-    if (total === 0) return;
+    if (!this.allFrames || this.allFrames.length === 0) return;
 
-    if (this.currentFrameIndex < 0) this.currentFrameIndex = 0;
-    if (this.currentFrameIndex >= total) this.currentFrameIndex = total - 1;
+    const frame = this.allFrames[this.currentFrameIndex];
+    if (!frame) return;
 
-    const frame = this.activeFrames[this.currentFrameIndex];
-    const url = this.currentLayer === 'annotated' ? frame.annotated_url : frame.raw_url;
+    const imgEl = this.modal.querySelector('#gallery-image');
+    const skeleton = this.modal.querySelector('#gallery-img-skeleton');
+    const counterEl = this.modal.querySelector('#gallery-frame-counter');
+    const timeEl = this.modal.querySelector('#gallery-meta-time');
+    const areaEl = this.modal.querySelector('#gallery-meta-area');
+    const timeline = this.modal.querySelector('#gallery-timeline');
 
-    const imgEl = this.container.querySelector('#pl-image');
-    imgEl.src = url;
-    imgEl.classList.remove('hidden');
+    if (timeline) {
+      timeline.value = this.currentFrameIndex;
+    }
 
-    const timeline = this.container.querySelector('#pl-timeline');
-    timeline.max = String(total - 1);
-    timeline.value = String(this.currentFrameIndex);
+    if (counterEl) {
+      counterEl.textContent = `Кадр ${this.currentFrameIndex + 1} из ${this.allFrames.length}`;
+    }
 
-    this.container.querySelector('#pl-frame-counter').textContent = `Кадр ${this.currentFrameIndex + 1} из ${total}`;
+    if (timeEl) {
+      const capTime = frame.captured_at ? frame.captured_at.replace('T', ' ').replace('Z', ' UTC') : '—';
+      timeEl.textContent = `🕒 ${capTime}`;
+    }
 
-    // Метаданные (4.5): локальное время браузера, площадь, камера
-    const localDate = new Date(frame.captured_at);
-    const dateStr = !isNaN(localDate.getTime())
-      ? `${localDate.toLocaleString('ru-RU')} (время вашего устройства)`
-      : frame.captured_at;
+    if (areaEl) {
+      const area = frame.area_display || (frame.total_area_cm2 !== null && frame.total_area_cm2 !== undefined ? `${frame.total_area_cm2.toFixed(1)} см²` : '—');
+      areaEl.textContent = `📐 Площадь: ${area}`;
+    }
 
-    this.container.querySelector('#pl-meta-time').textContent = dateStr;
-    this.container.querySelector('#pl-meta-area').textContent = frame.area_display || 'площадь не определена';
-    this.container.querySelector('#pl-meta-cam').textContent = frame.camera_id ? `Камера ${frame.camera_id}` : 'Основная';
+    const url = this.currentLayer === 'annotated'
+      ? (frame.annotated_url || frame.raw_url)
+      : (frame.raw_url || frame.annotated_url);
+
+    if (imgEl && url) {
+      skeleton?.classList.remove('hidden');
+      imgEl.classList.add('hidden');
+
+      const tempImg = new Image();
+      tempImg.onload = () => {
+        imgEl.src = url;
+        skeleton?.classList.add('hidden');
+        imgEl.classList.remove('hidden');
+      };
+      tempImg.onerror = () => {
+        skeleton?.classList.add('hidden');
+        imgEl.classList.remove('hidden');
+      };
+      tempImg.src = url;
+    }
+  }
+
+  step(direction) {
+    if (this.allFrames.length === 0) return;
+    let nextIndex = this.currentFrameIndex + direction;
+
+    if (nextIndex >= this.allFrames.length) {
+      if (this.isLooping) {
+        nextIndex = 0;
+      } else {
+        this.pause();
+        return;
+      }
+    } else if (nextIndex < 0) {
+      if (this.isLooping) {
+        nextIndex = this.allFrames.length - 1;
+      } else {
+        this.pause();
+        return;
+      }
+    }
+
+    this.currentFrameIndex = nextIndex;
+    this.renderCurrentFrame();
   }
 
   togglePlay() {
@@ -470,75 +406,84 @@ export class TimelapsePlayer {
   }
 
   play() {
-    if (this.activeFrames.length <= 1) return;
+    if (this.allFrames.length <= 1) return;
     this.isPlaying = true;
-    const playBtn = this.container.querySelector('#pl-btn-play');
-    playBtn.textContent = '⏸';
-    playBtn.title = 'Пауза';
+    const playBtn = this.modal.querySelector('#gallery-btn-play');
+    if (playBtn) playBtn.textContent = '⏸ Пауза';
 
-    // 4.3: Если стоит последний кадр и зацикливание выключено — начинаем с первого
-    if (this.currentFrameIndex >= this.activeFrames.length - 1 && !this.isLooping) {
-      this.currentFrameIndex = 0;
-      this.renderCurrentFrame();
-    }
-
-    const intervalMs = Math.round(200 / this.playSpeed); // 1x=200ms (5fps), 2x=100ms (10fps), 4x=50ms (20fps)
-    this.playTimer = setInterval(() => {
-      if (this.currentFrameIndex >= this.activeFrames.length - 1) {
-        if (this.isLooping) {
-          this.currentFrameIndex = 0;
-          this.renderCurrentFrame();
-        } else {
-          this.pause();
-        }
-      } else {
-        this.currentFrameIndex++;
-        this.renderCurrentFrame();
-      }
-    }, intervalMs);
+    this.startPlaybackTimer();
   }
 
   pause() {
     this.isPlaying = false;
+    const playBtn = this.modal.querySelector('#gallery-btn-play');
+    if (playBtn) playBtn.textContent = '▶ Воспроизвести';
+
     if (this.playTimer) {
       clearInterval(this.playTimer);
       this.playTimer = null;
     }
-    const playBtn = this.container.querySelector('#pl-btn-play');
-    if (playBtn) {
-      playBtn.textContent = '▶';
-      playBtn.title = 'Воспроизведение';
+  }
+
+  startPlaybackTimer() {
+    if (this.playTimer) clearInterval(this.playTimer);
+    // Скорость 1x = 250ms, 2x = 125ms, 4x = 60ms
+    const intervalMs = Math.round(250 / this.playSpeed);
+
+    this.playTimer = setInterval(() => {
+      this.step(1);
+    }, intervalMs);
+  }
+
+  async handleDownloadMp4() {
+    if (this.isDownloadingVideo) return;
+    const statusEl = this.modal.querySelector('#gallery-export-status');
+    const downloadBtn = this.modal.querySelector('#gallery-btn-download-mp4');
+    const durInput = this.modal.querySelector('#gallery-video-duration');
+    const fpsInput = this.modal.querySelector('#gallery-video-fps');
+
+    const duration = parseFloat(durInput?.value || '5.0');
+    const fps = parseInt(fpsInput?.value || '4', 10);
+
+    if (isNaN(fps) || fps < 1) {
+      alert('Частота кадров (FPS) должна быть не менее 1');
+      return;
     }
-  }
 
-  stepFrame(delta) {
-    this.pause();
-    const nextIdx = this.currentFrameIndex + delta;
-    if (nextIdx >= 0 && nextIdx < this.activeFrames.length) {
-      this.currentFrameIndex = nextIdx;
-      this.renderCurrentFrame();
+    this.isDownloadingVideo = true;
+    downloadBtn.disabled = true;
+    statusEl.classList.remove('hidden');
+    statusEl.textContent = `⏳ Идёт формирование MP4 (${duration} с, ${fps} FPS)...`;
+
+    try {
+      const blob = await api.buildVideo(this.installation.id, {
+        cameraId: this.selectedCameraId,
+        step: 1,
+        durationSec: duration,
+        fps: fps,
+      });
+
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = `${this.installation.name}_timelapse.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+
+      statusEl.textContent = '✅ Видео успешно сформировано и скачано!';
+      window.showToast?.('MP4 видео успешно скачано', 'success');
+      setTimeout(() => {
+        statusEl.classList.add('hidden');
+      }, 4000);
+    } catch (err) {
+      statusEl.textContent = `Ошибка сборки видео: ${err.message}`;
+      alert(`Ошибка экспорта видео: ${err.message}`);
+    } finally {
+      this.isDownloadingVideo = false;
+      downloadBtn.disabled = false;
     }
-  }
-
-  showEmptyState() {
-    this.container.querySelector('#pl-empty-state').classList.remove('hidden');
-    this.container.querySelector('#pl-image').classList.add('hidden');
-    this.setControlsDisabled(true);
-  }
-
-  hideEmptyState() {
-    this.container.querySelector('#pl-empty-state').classList.add('hidden');
-  }
-
-  showError(msg) {
-    const errBox = this.container.querySelector('#pl-error-box');
-    errBox.textContent = msg;
-    errBox.classList.remove('hidden');
-  }
-
-  hideError() {
-    const errBox = this.container.querySelector('#pl-error-box');
-    errBox.textContent = '';
-    errBox.classList.add('hidden');
   }
 }
