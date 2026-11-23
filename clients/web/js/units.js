@@ -27,7 +27,7 @@ function createNoFramesSvg() {
         <path d="M24 24v16" stroke-linecap="round"/>
         <circle cx="36" cy="14" r="3" fill="currentColor"/>
       </svg>
-      <span class="placeholder-text">Ожидание первого кадра</span>
+      <span class="placeholder-text">Растение ещё спит. Плановые кадры скоро появятся!</span>
     </div>
   `;
 }
@@ -42,12 +42,26 @@ function createErrorFramesSvg() {
         <path d="M42 30l-10-8-12 10-6-4-8 8" stroke-linecap="round" stroke-linejoin="round"/>
         <line x1="12" y1="36" x2="36" y2="12" stroke="#ef4444" stroke-width="2"/>
       </svg>
-      <span class="placeholder-text">Кадр недоступен</span>
+      <span class="placeholder-text">Камера в отпуске. Проверьте соединение с установкой.</span>
     </div>
   `;
 }
 
 // Отрисовка пустого списка (0 установок)
+function renderEmptyUnits(container) {
+  if (!container) return;
+  container.innerHTML = `
+    <div class="empty-state glass-panel">
+      <svg class="empty-state-icon" viewBox="0 0 64 64" width="64" height="64" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="32" cy="32" r="28" stroke-opacity="0.3"/>
+        <path d="M20 44c4-14 20-20 28-24-4 14-20 20-28 24z"/>
+        <path d="M32 30v14"/>
+      </svg>
+      <h3 class="empty-state-title">Грядки пока пусты</h3>
+      <p class="empty-state-desc">Создайте установку в Telegram-боте GrowVision или дождитесь добавления разработчиком.</p>
+    </div>
+  `;
+}
 function renderEmptyList(container) {
   container.innerHTML = `
     <div class="empty-state-container">

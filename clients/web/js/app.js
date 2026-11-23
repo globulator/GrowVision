@@ -3,7 +3,7 @@
 
 import { api, setUnauthorizedHandler } from './api.js';
 import { initAuth, openLoginModal, setAuthSuccessHandler } from './auth.js';
-import { initDialogs, showError, showToast } from './dialogs.js';
+import { initDialogs, showConfirm, showError, showToast } from './dialogs.js';
 import {
   closeGalleryModal,
   initGallery,
@@ -80,6 +80,14 @@ function applyRole(role) {
 
 // Обработка выхода из системы
 async function handleLogout() {
+  const confirmed = await showConfirm(
+    'Вы уверены, что хотите выйти из системы?',
+    'Выход из профиля',
+    'Выйти',
+    'Отмена'
+  );
+  if (!confirmed) return;
+
   try {
     await api.logout();
     currentUser = { authenticated: false, role: 'guest', login: null };

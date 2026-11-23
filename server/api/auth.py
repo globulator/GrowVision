@@ -4,7 +4,13 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy.orm import Session
 
 from server.api.deps import (
@@ -18,7 +24,6 @@ from server.api.deps import (
 )
 from server.config import get_settings
 from server.core.rate_limit import login_limiter
-from server.core.security import hash_password, verify_password
 from server.db.models import InviteCode, TelegramContact, User, WebVerificationCode
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -125,14 +130,23 @@ class WebLoginRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     telegram: str
-    password: str
+    code: str | None = None
+    password: str | None = None
 
-    @field_validator("telegram", "password")
+    @field_validator("telegram")
     @classmethod
-    def validate_fields(cls, v: str, info: ValidationInfo) -> str:
+    def validate_telegram(cls, v: str) -> str:
         if not isinstance(v, str) or not v.strip():
-            raise ValueError(f"Поле {info.field_name} не может быть пустым")
+            raise ValueError("Поле telegram не может быть пустым")
         return v.strip()
+
+    @model_validator(mode="after")
+    def validate_code(self) -> "WebLoginRequest":
+        c = (self.code or self.password or "").strip()
+        if not c:
+            raise ValueError("Поле code не может быть пустым")
+        self.code = c
+        return self
 
 
 class WebLoginResponse(BaseModel):
@@ -645,7 +659,6 @@ def auth_web_register_complete(
             detail="Имя и Фамилия не могут быть пустыми",
         )
 
-    pwd_hash = hash_password(pwd)
     ext_id = str(body.telegram_id)
 
     user = (
@@ -662,7 +675,6 @@ def auth_web_register_complete(
             external_id=ext_id,
             login=full_name,
             role=role,
-            password_hash=pwd_hash,
             is_active=True,
             authorized_at=now,
             last_active_at=now,
@@ -673,7 +685,6 @@ def auth_web_register_complete(
     else:
         user.login = full_name
         user.role = role
-        user.password_hash = pwd_hash
         user.is_active = True
         user.authorized_at = now
         user.last_active_at = now
@@ -705,7 +716,7 @@ def auth_web_login(
 ) -> WebLoginResponse:
     """POST /api/auth/web/login.
 
-    Веб-вход по Telegram (@username или ID) и личному паролю.
+    Веб-вход по Telegram (@username или ID) и коду доступа (пароль разработчика или инвайт биолога).
     Устанавливает HttpOnly-cookie gv_session (SameSite=Lax).
     """
     allowed, retry_after = login_limiter.is_allowed("web", body.telegram)
@@ -717,9 +728,86 @@ def auth_web_login(
             headers={"Retry-After": str(retry_after)},
         )
 
-    telegram_id = resolve_telegram_id(body.telegram, db)
-    ext_id = str(telegram_id)
+    # 1. Резолв пользователя Telegram
+    telegram_input = body.telegram.strip()
+    contact: TelegramContact | None = None
+    if telegram_input.isdigit() or (
+        telegram_input.startswith("-") and telegram_input[1:].isdigit()
+    ):
+        telegram_id = int(telegram_input)
+        contact = (
+            db.query(TelegramContact)
+            .filter(TelegramContact.telegram_id == telegram_id)
+            .first()
+        )
+    else:
+        norm_username = telegram_input.lstrip("@").strip().lower()
+        contact = (
+            db.query(TelegramContact)
+            .filter(TelegramContact.username == norm_username)
+            .first()
+        )
+        if not contact:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Пользователь с таким Telegram не найден. Пожалуйста, откройте Telegram-бота GrowVision, нажмите /start и повторите попытку.",
+            )
+        telegram_id = contact.telegram_id
 
+    # 2. Проверка кода доступа (DEVELOPER_PASSWORD или активный InviteCode биолога)
+    access_code = (body.code or body.password or "").strip()
+    settings = get_settings()
+    now = datetime.now(UTC)
+    role: str | None = None
+    matched_invite: InviteCode | None = None
+
+    if settings.developer_password and secrets.compare_digest(
+        access_code.encode("utf-8"), settings.developer_password.encode("utf-8")
+    ):
+        role = "developer"
+    else:
+        matched_invite = (
+            db.query(InviteCode)
+            .filter(
+                InviteCode.code == access_code.upper(),
+                InviteCode.used_at.is_(None),
+                InviteCode.is_revoked.is_(False),
+                InviteCode.expires_at > now,
+            )
+            .first()
+        )
+        if matched_invite:
+            role = matched_invite.role or "biologist"
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Неверный или просроченный код приглашения / пароль разработчика",
+            )
+
+    # 3. Синхронизация имени пользователя из TelegramContact
+    ext_id = str(telegram_id)
+    full_name = ""
+    if contact:
+        parts = [p for p in (contact.first_name, contact.last_name) if p and p.strip()]
+        if parts:
+            full_name = " ".join(parts).strip()
+        elif contact.username:
+            full_name = f"@{contact.username}"
+
+    if not full_name:
+        user_existing = (
+            db.query(User)
+            .filter(
+                User.client_type.in_(["web", "telegram"]), User.external_id == ext_id
+            )
+            .first()
+        )
+        if user_existing and user_existing.login:
+            full_name = user_existing.login
+        else:
+            full_name = f"User {telegram_id}"
+
+    # 4. Создание или обновление сессии пользователя в таблице users
     user = (
         db.query(User)
         .filter(
@@ -728,22 +816,30 @@ def auth_web_login(
         )
         .first()
     )
-    if not user or not user.password_hash:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Пользователь не зарегистрирован в веб-интерфейсе. Пожалуйста, пройдите регистрацию.",
+    if not user:
+        user = User(
+            client_type="web",
+            external_id=ext_id,
+            login=full_name,
+            role=role,
+            is_active=True,
+            authorized_at=now,
+            last_active_at=now,
+            logged_out_at=None,
         )
+        db.add(user)
+        db.flush()
+    else:
+        user.login = full_name  # Автосинхронизация имени из Telegram
+        user.role = role
+        user.is_active = True
+        user.logged_out_at = None
+        user.last_active_at = now
 
-    if not verify_password(body.password, user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверный Telegram ID / username или пароль",
-        )
+    if matched_invite:
+        matched_invite.used_at = now
+        matched_invite.used_by_user_id = user.id
 
-    now = datetime.now(UTC)
-    user.is_active = True
-    user.logged_out_at = None
-    user.last_active_at = now
     db.commit()
 
     cookie_val = create_session_cookie(user)

@@ -251,7 +251,7 @@ button {
   position: relative;
   width: 100%;
   aspect-ratio: 4 / 3;
-  background: rgba(0, 0, 0, 0.5);
+  background: #161e29;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -540,7 +540,7 @@ button {
 .gallery-image-box {
   width: 100%;
   aspect-ratio: 16 / 9;
-  background: #000;
+  background: #161e29;
   border-radius: 10px;
   display: flex;
   align-items: center;
@@ -662,7 +662,7 @@ button {
 .test-snap-preview-box {
   width: 100%;
   aspect-ratio: 4 / 3;
-  background: #000;
+  background: #161e29;
   border-radius: 10px;
   display: flex;
   align-items: center;
@@ -1041,5 +1041,181 @@ button {
   .gallery-extra-controls {
     width: 100%;
     justify-content: space-between;
+  }
+}
+
+/* ================== Плашка сетевой недоступности сервера ================== */
+.server-offline-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  background: #dc2626;
+  color: #fff;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  animation: banner-slide-down 0.3s ease-out;
+}
+
+@keyframes banner-slide-down {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.offline-icon {
+  flex-shrink: 0;
+}
+
+/* ================== Модалка подтверждения (showConfirm) ================== */
+.modal-confirm-text {
+  font-size: 0.95rem;
+  color: var(--text-main);
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+.horizontal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.horizontal-actions .btn {
+  min-width: 100px;
+}
+
+/* ================== Анимация жизненного цикла растения (семечко -> росток -> взрослый лист) ================== */
+.plant-lifecycle-spinner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.plant-cycle-svg {
+  filter: drop-shadow(0 2px 8px rgba(16, 185, 129, 0.3));
+}
+
+.plant-seed {
+  animation: plant-seed-cycle 3s infinite ease-in-out;
+  transform-origin: 32px 50px;
+}
+
+.plant-stem {
+  animation: plant-stem-cycle 3s infinite ease-in-out;
+  transform-origin: 32px 50px;
+}
+
+.plant-sprout-left {
+  animation: plant-sprout-left-cycle 3s infinite ease-in-out;
+  transform-origin: 32px 38px;
+}
+
+.plant-leaf-right {
+  animation: plant-leaf-right-cycle 3s infinite ease-in-out;
+  transform-origin: 32px 30px;
+}
+
+.plant-top-leaf {
+  animation: plant-top-leaf-cycle 3s infinite ease-in-out;
+  transform-origin: 32px 24px;
+}
+
+@keyframes plant-seed-cycle {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  20% {
+    transform: scale(1.1);
+    opacity: 1;
+  }
+  60%, 100% {
+    transform: scale(0.9);
+    opacity: 0.8;
+  }
+}
+
+@keyframes plant-stem-cycle {
+  0%, 15% {
+    opacity: 0;
+    transform: scaleY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: scaleY(0.5);
+  }
+  70%, 90% {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+  100% {
+    opacity: 0.2;
+    transform: scaleY(0.1);
+  }
+}
+
+@keyframes plant-sprout-left-cycle {
+  0%, 30% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(0.8) rotate(-5deg);
+  }
+  75%, 90% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0);
+  }
+}
+
+@keyframes plant-leaf-right-cycle {
+  0%, 45% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  65% {
+    opacity: 1;
+    transform: scale(0.8) rotate(5deg);
+  }
+  80%, 90% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0);
+  }
+}
+
+@keyframes plant-top-leaf-cycle {
+  0%, 60% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  80%, 90% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0);
   }
 }

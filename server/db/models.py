@@ -182,7 +182,6 @@ class User(Base):
     external_id = Column(String(100), nullable=False)
     login = Column(String(100), nullable=False)
     role = Column(String(20), nullable=False)
-    password_hash = Column(String(255), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     authorized_at = Column(
         DateTime(timezone=True),

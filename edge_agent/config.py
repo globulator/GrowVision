@@ -1,3 +1,4 @@
+import contextlib
 import os
 from pathlib import Path
 from typing import Literal
@@ -18,6 +19,25 @@ def resolve_path(p: str | Path) -> Path:
     """Разрешает путь относительно корня репозитория (REPO_ROOT), если он относительный."""
     path = Path(p)
     return path if path.is_absolute() else (REPO_ROOT / path).resolve()
+
+
+def is_raspberry_pi() -> bool:
+    """Определяет, запущено ли приложение на физической плате Raspberry Pi."""
+    with contextlib.suppress(OSError):
+        model_path = Path("/proc/device-tree/model")
+        if model_path.exists():
+            content = model_path.read_text(encoding="utf-8", errors="ignore").lower()
+            if "raspberry pi" in content:
+                return True
+
+    with contextlib.suppress(OSError):
+        fw_path = Path("/sys/firmware/devicetree/base/model")
+        if fw_path.exists():
+            content = fw_path.read_text(encoding="utf-8", errors="ignore").lower()
+            if "raspberry pi" in content:
+                return True
+
+    return any(Path(p).exists() for p in ["/dev/gpiomem", "/dev/gpiochip0"])
 
 
 resolve_repo_path = resolve_path
@@ -99,12 +119,15 @@ def load_config(env_path: Path | str | None = None) -> EdgeConfig:
     )
     edge_api_key = get_val("EDGE_API_KEY", "") or ""
 
-    hw_mode_raw = (get_val("HARDWARE_MODE", "mock") or "mock").strip().lower()
-    if hw_mode_raw not in ("rpi", "mock"):
+    hw_mode_raw = (get_val("HARDWARE_MODE", "auto") or "auto").strip().lower()
+    if hw_mode_raw not in ("auto", "rpi", "mock"):
         raise ValueError(
-            f"Недопустимое значение HARDWARE_MODE='{hw_mode_raw}'. Допустимы только 'rpi' или 'mock'."
+            f"Недопустимое значение HARDWARE_MODE='{hw_mode_raw}'. Допустимы только 'auto', 'rpi' или 'mock'."
         )
-    hardware_mode: Literal["rpi", "mock"] = "rpi" if hw_mode_raw == "rpi" else "mock"
+    if hw_mode_raw == "auto":
+        hardware_mode: Literal["rpi", "mock"] = "rpi" if is_raspberry_pi() else "mock"
+    else:
+        hardware_mode = "rpi" if hw_mode_raw == "rpi" else "mock"
 
     try:
         heartbeat_interval = float(get_val("HEARTBEAT_INTERVAL_SEC", "30.0") or 30.0)

@@ -128,13 +128,15 @@ async def handle_installations_menu(
         await message.answer(f"Не удалось загрузить список установок:\n{err}")
 
 
-@router.callback_query(F.data == "inst:list")
+@router.callback_query(F.data.in_(["inst:list", "inst:cancel"]))
 async def handle_installations_back_to_list(
     callback: CallbackQuery,
     api_client: GrowVisionApiClient,
+    state: FSMContext,
 ) -> None:
-    """Возврат к активному списку установок."""
+    """Возврат к активному списку установок со сбросом FSM."""
     await callback.answer()
+    await state.clear()
     user_id = callback.from_user.id if callback.from_user else 0
     try:
         text, kb = await render_installations_list(
@@ -145,6 +147,37 @@ async def handle_installations_back_to_list(
                 await callback.message.edit_text(text, reply_markup=kb)
     except Exception as exc:  # noqa: BLE001
         await callback.answer(f"Ошибка: {exc}", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("inst:cancel_edit:"))
+async def handle_cancel_edit_installation(
+    callback: CallbackQuery,
+    api_client: GrowVisionApiClient,
+    config: BotConfig,
+    state: FSMContext,
+) -> None:
+    """Сброс FSM редактирования и возврат в карточку установки."""
+    await callback.answer()
+    await state.clear()
+    parts = callback.data.split(":")
+    inst_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+    user_id = callback.from_user.id if callback.from_user else 0
+    try:
+        inst = await api_client.get_installation(user_id, inst_id)
+        me = await api_client.get_me(user_id)
+        role = me.get("role", "guest") if me else "guest"
+        card_text = format_installation_card(
+            inst, role=role, web_public_url=config.web_public_url
+        )
+        kb = get_installation_card_keyboard(
+            inst_id, role=role, is_archived=inst.get("is_archived", False)
+        )
+        if callback.message and isinstance(callback.message, Message):
+            with contextlib.suppress(Exception):
+                await callback.message.edit_text(card_text, reply_markup=kb)
+    except Exception as exc:  # noqa: BLE001
+        if callback.message and isinstance(callback.message, Message):
+            await callback.message.edit_text(f"Ошибка загрузки карточки: {exc}")
 
 
 @router.callback_query(F.data.startswith("pag:inst:"))
@@ -178,9 +211,11 @@ async def handle_installation_view(
     callback: CallbackQuery,
     api_client: GrowVisionApiClient,
     config: BotConfig,
+    state: FSMContext,
 ) -> None:
-    """Просмотр карточки установки."""
+    """Просмотр карточки установки со сбросом FSM."""
     await callback.answer()
+    await state.clear()
     parts = callback.data.split(":")
     inst_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
     user_id = callback.from_user.id if callback.from_user else 0
@@ -317,10 +352,19 @@ async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
     if not raw_pin.isdigit() or not (0 <= int(raw_pin) <= 53):
         await message.answer(
             "Пин вспышки должен быть целым числом в диапазоне от 0 до 53 (например, 27). Повторите ввод:",
-            reply_markup=get_cancel_inline_keyboard("inst:list"),
+            reply_markup=get_cancel_inline_keyboard("inst:cancel"),
         )
         return
     flash_pin = int(raw_pin)
+    data = await state.get_data()
+    light_pin = data.get("light_gpio_pin")
+    if light_pin is not None and flash_pin == light_pin:
+        await message.answer(
+            f"Пин вспышки не может совпадать с пином света (GPIO {light_pin}). Введите другой GPIO-пин:",
+            reply_markup=get_cancel_inline_keyboard("inst:cancel"),
+        )
+        return
+
     await state.update_data(flash_gpio_pin=flash_pin)
     await state.set_state(InstallationCreateStates.waiting_aruco)
 
@@ -332,7 +376,7 @@ async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
                     callback_data="inst:skip_aruco",
                 )
             ],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="inst:list")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="inst:cancel")],
         ]
     )
     await message.answer(
@@ -352,7 +396,6 @@ async def _finish_create_installation(
     user_id: int,
 ) -> None:
     data = await state.get_data()
-    await state.clear()
 
     payload = {
         "name": data["name"],
@@ -364,6 +407,7 @@ async def _finish_create_installation(
 
     try:
         created = await api_client.create_installation(user_id, payload)
+        await state.clear()
         inst_id = created.get("id")
         card_text = format_installation_card(
             created, role="developer", web_public_url=config.web_public_url
@@ -382,16 +426,8 @@ async def _finish_create_installation(
     except ApiError as exc:
         err = format_api_error(exc)
         await target_msg.answer(
-            f"❌ Не удалось создать установку:\n{err}",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="⬅️ К списку установок", callback_data="inst:list"
-                        )
-                    ]
-                ]
-            ),
+            f"❌ Не удалось создать установку:\n{err}\n\nПовторите ввод или нажмите «Отмена»:",
+            reply_markup=get_cancel_inline_keyboard("inst:cancel"),
         )
 
 
@@ -583,12 +619,15 @@ async def process_edit_value(
                 raise ValueError("Размер ArUco должен быть > 0")
             patch_payload["aruco_size_mm"] = v
     except ValueError as ve:
-        await message.answer(f"Ошибка ввода: {ve}. Повторите ввод:")
+        await message.answer(
+            f"Ошибка ввода: {ve}. Повторите ввод или нажмите «Отмена»:",
+            reply_markup=get_cancel_inline_keyboard(f"inst:cancel_edit:{inst_id}"),
+        )
         return
 
-    await state.clear()
     try:
         updated = await api_client.update_installation(user_id, inst_id, patch_payload)
+        await state.clear()
         me = await api_client.get_me(user_id)
         role = me.get("role", "guest") if me else "guest"
         card_text = format_installation_card(
@@ -608,17 +647,8 @@ async def process_edit_value(
     except ApiError as exc:
         err = format_api_error(exc)
         await message.answer(
-            f"❌ Не удалось обновить установку:\n{err}",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="⬅️ К карточке установки",
-                            callback_data=f"inst:view:{inst_id}",
-                        )
-                    ]
-                ]
-            ),
+            f"❌ Не удалось обновить установку:\n{err}\n\nПовторите ввод или нажмите «Отмена»:",
+            reply_markup=get_cancel_inline_keyboard(f"inst:cancel_edit:{inst_id}"),
         )
 
 

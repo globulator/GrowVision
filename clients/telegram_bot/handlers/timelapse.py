@@ -663,46 +663,16 @@ async def _prompt_video_duration(
         )
         return
 
-    # Рекомендованная длительность: из расчета ~10 кадров в секунду (fps=10) для плавной анимации
-    rec_sec = max(3, min(60, round(total_frames / 10.0)))
+    # Расчет длительности строго под 30 FPS (Этап 8.5)
+    calc_duration = max(1.0, round(total_frames / 30.0, 1))
     cam_part = str(camera_id) if camera_id is not None else "none"
-
-    top_row: list[InlineKeyboardButton] = [
-        InlineKeyboardButton(
-            text="⭐ По умолчанию (5.0 с)",
-            callback_data=f"vid_dur:{inst_id}:{cam_part}:5.0",
-        )
-    ]
-    if rec_sec != 5:
-        top_row.insert(
-            0,
-            InlineKeyboardButton(
-                text=f"⭐ Рекомендованная ({rec_sec} сек)",
-                callback_data=f"vid_dur:{inst_id}:{cam_part}:{rec_sec}",
-            ),
-        )
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            top_row,
             [
                 InlineKeyboardButton(
-                    text="10 сек",
-                    callback_data=f"vid_dur:{inst_id}:{cam_part}:10",
-                ),
-                InlineKeyboardButton(
-                    text="15 сек",
-                    callback_data=f"vid_dur:{inst_id}:{cam_part}:15",
-                ),
-                InlineKeyboardButton(
-                    text="30 сек",
-                    callback_data=f"vid_dur:{inst_id}:{cam_part}:30",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⌨️ Ввести вручную",
-                    callback_data=f"vid_dur_manual:{inst_id}:{cam_part}",
+                    text="▶️ Собрать видео (30 FPS)",
+                    callback_data=f"vid_confirm:{inst_id}:{cam_part}:{calc_duration}:30",
                 )
             ],
             [
@@ -715,12 +685,12 @@ async def _prompt_video_duration(
     )
 
     text = (
-        f"🎬 <b>Параметры сборки таймлапса</b> (Шаг 1 из 3)\n\n"
+        f"🎬 <b>Сборка таймлапса</b>\n\n"
         f"Установка: <b>{html.escape(inst_name)}</b>\n"
-        f"Кадров для видео: <b>{total_frames}</b>\n\n"
-        f"Выберите желаемую длительность готового видео (по умолчанию <b>5.0 с</b>, "
-        f"рекомендовано <b>{rec_sec} сек</b> для плавности 10 fps) "
-        f"или выберите пресет / введите число секунд вручную:"
+        f"Кадров для сборки: <b>{total_frames}</b>\n"
+        f"Частота: <b>30 FPS</b>\n"
+        f"Расчётная длительность: <b>{calc_duration:.1f} с</b>\n\n"
+        "Запустить сборку готового таймлапса?"
     )
 
     if callback.message and isinstance(callback.message, Message):
@@ -1304,7 +1274,7 @@ async def _execute_video_pipeline(
                 try:
                     caption = (
                         f"🎬 <b>Таймлапс:</b> {inst_name}.\n"
-                        f"Прореженная версия: каждый {step}-й кадр.\n"
+                        f"Собрано видео с частотой 30 FPS (прореживание 1 из {step} для соблюдения лимита Telegram). Прореженная версия: каждый {step}-й кадр.\n"
                         f"<i>(Полную версию можно скачать через консольный клиент: snap video {inst_id})</i>"
                     )
                     if bot:

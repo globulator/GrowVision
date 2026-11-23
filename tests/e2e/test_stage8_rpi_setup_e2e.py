@@ -6,7 +6,6 @@ from pathlib import Path
 
 import httpx
 
-from server.core.security import hash_password
 from server.db.models import User
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -37,7 +36,6 @@ def test_stage8_rpi_setup_and_scripts_e2e(e2e_uvicorn_server):
             external_id=dev_tg_id,
             login="Главный Разработчик",
             role="developer",
-            password_hash=hash_password(dev_pass),
             is_active=True,
             authorized_at=now,
             last_active_at=now,

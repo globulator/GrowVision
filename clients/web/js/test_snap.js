@@ -62,16 +62,14 @@ async function triggerSnap() {
 
   if (previewBox) {
     previewBox.innerHTML = `
-      <div class="snap-loading-placeholder">
-        <svg class="placeholder-icon rotating" viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="12" y1="2" x2="12" y2="6"/>
-          <line x1="12" y1="18" x2="12" y2="22"/>
-          <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
-          <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
-          <line x1="2" y1="12" x2="6" y2="12"/>
-          <line x1="18" y1="12" x2="22" y2="12"/>
-          <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/>
-          <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
+      <div class="snap-loading-placeholder plant-lifecycle-spinner">
+        <svg viewBox="0 0 64 64" width="56" height="56" class="plant-cycle-svg" aria-hidden="true">
+          <path class="plant-ground" d="M12 52 H52" stroke="#334155" stroke-width="2" stroke-linecap="round"/>
+          <ellipse class="plant-seed" cx="32" cy="50" rx="4" ry="3" fill="#10b981"/>
+          <path class="plant-stem" d="M32 50 Q32 36 32 24" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round"/>
+          <path class="plant-sprout-left" d="M32 38 Q22 36 20 28 Q28 28 32 36" fill="#10b981"/>
+          <path class="plant-leaf-right" d="M32 30 Q44 26 44 16 Q34 18 32 26" fill="#059669"/>
+          <path class="plant-top-leaf" d="M32 24 Q32 10 32 8 Q36 14 32 24" fill="#34d399"/>
         </svg>
         <span class="placeholder-text">Выполнение снимка Edge-агентом...</span>
       </div>
@@ -82,7 +80,21 @@ async function triggerSnap() {
   try {
     // Внимание: target передается строго как целое число Number(unit.id)
     const res = await api.snap(Number(currentUnit.id));
-    currentSnapData = res;
+    if (res.status === 'error') {
+      throw new Error(res.result_message || 'Ошибка выполнения снимка Edge-агентом');
+    }
+
+    const cap = (res.captures && res.captures[0]) ? res.captures[0] : res;
+    currentSnapData = {
+      ...res,
+      ...cap,
+      raw_image_url: cap.raw_url || cap.raw_image_url || res.raw_url || res.raw_image_url,
+      annotated_image_url:
+        cap.annotated_url || cap.annotated_image_url || res.annotated_url || res.annotated_image_url,
+      captured_at: cap.captured_at || res.captured_at,
+      area_display: cap.area_display || res.area_display,
+    };
+
     renderSnapImage();
     if (resnapBtn) resnapBtn.disabled = false;
     if (downloadBtn) downloadBtn.disabled = false;
@@ -90,8 +102,12 @@ async function triggerSnap() {
     showError(err.message, 'Ошибка съёмки');
     if (previewBox) {
       previewBox.innerHTML = `
-        <div class="snap-loading-placeholder">
-          <span class="placeholder-text error-text">Не удалось получить снимок</span>
+        <div class="snap-loading-placeholder snap-error-placeholder">
+          <svg class="placeholder-icon" viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <line x1="1" y1="1" x2="23" y2="23"/>
+          </svg>
+          <span class="placeholder-text error-text">Камера стесняется или недоступна. Проверьте подключение оборудования.</span>
         </div>
       `;
     }

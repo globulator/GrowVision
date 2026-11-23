@@ -411,8 +411,8 @@ pending --claim--> running --result--> done | error
   Ответ `200`: `{"role": "biologist", "login": "Иван Иванов", "status": "ok"}`.
 
 - `POST /api/auth/web/login`:
-  Вход в систему из браузера по Telegram (`@username` или ID) и личному паролю. Лимит: 5 попыток в минуту. Устанавливает `HttpOnly`-cookie `gv_session`.
-  Тело: `{"telegram": "@username_or_id", "password": "my_secure_password"}`.
+  Вход в систему из браузера по Telegram (`@username` или ID) и коду доступа (мастер-пароль разработчика `DEVELOPER_PASSWORD` или одноразовый инвайт-код биолога). Личный пароль не требуется; имя пользователя автоматически синхронизируется из базы контактов Telegram (`first_name` + `last_name` или `username`). Лимит: 5 попыток в минуту. Устанавливает `HttpOnly`-cookie `gv_session`.
+  Тело: `{"telegram": "@username_or_id", "code": "INVITE_OR_DEV_PASS"}` (также поддерживается алиас `password` для совместимости).
   Ответ `200`: `{"role": "biologist", "login": "Иван Иванов", "status": "ok"}`.
 
 - `POST /api/auth/web/logout`:

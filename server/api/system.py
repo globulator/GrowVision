@@ -1,5 +1,7 @@
+import contextlib
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
@@ -38,6 +40,25 @@ def get_version(
     Публичный эндпоинт версии сервера для всех клиентов.
     """
     return {"server_version": get_app_version()}
+
+
+def is_raspberry_pi() -> bool:
+    """Определяет, запущено ли приложение на физической плате Raspberry Pi."""
+    with contextlib.suppress(OSError):
+        model_p = Path("/proc/device-tree/model")
+        if model_p.exists():
+            content = model_p.read_text(encoding="utf-8", errors="ignore").lower()
+            if "raspberry pi" in content:
+                return True
+
+    with contextlib.suppress(OSError):
+        fw_p = Path("/sys/firmware/devicetree/base/model")
+        if fw_p.exists():
+            content = fw_p.read_text(encoding="utf-8", errors="ignore").lower()
+            if "raspberry pi" in content:
+                return True
+
+    return any(Path(p).exists() for p in ["/dev/gpiomem", "/dev/gpiochip0"])
 
 
 @router.get("/api/system/status", response_model=dict[str, Any])
@@ -90,10 +111,22 @@ def get_system_status(
         float(delay_setting.value) if delay_setting and delay_setting.value else 1.5
     )
 
+    real_rpi = is_raspberry_pi()
+    if (
+        rpi_telemetry
+        and isinstance(rpi_telemetry, dict)
+        and (
+            rpi_telemetry.get("hardware_mode") == "rpi"
+            or rpi_telemetry.get("is_raspberry_pi")
+        )
+    ):
+        real_rpi = True
+
     return {
         "server_version": get_app_version(),
         "rpi_connection": rpi_connection,
         "rpi_last_heartbeat_at": rpi_last_heartbeat_at,
+        "is_real_rpi": real_rpi,
         "settings": {
             "capture_interval_hours": capture_interval_hours,
             "debug_mode": debug_mode,

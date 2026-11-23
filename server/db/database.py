@@ -1,6 +1,7 @@
 import contextlib
 import sqlite3
 from collections.abc import Generator
+from pathlib import Path
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
@@ -78,14 +79,37 @@ def init_db(target_engine: Engine | None = None) -> None:
                     text("ALTER TABLE users ADD COLUMN logged_out_at DATETIME;")
                 )
                 conn.commit()
-            if "password_hash" not in user_cols:
-                conn.execute(
-                    text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255);")
-                )
-                conn.commit()
 
         # Безопасное удаление устаревших уникальных индексов на GPIO-пины (Этап 7.4)
         with contextlib.suppress(Exception):
             conn.execute(text("DROP INDEX IF EXISTS uq_active_light_pin;"))
             conn.execute(text("DROP INDEX IF EXISTS uq_active_flash_pin;"))
             conn.commit()
+
+        # Изоляция Mock-режима (Этап 8.5): синхронизация пользователей из growvision.db в growvision_mock.db
+        with contextlib.suppress(Exception):
+            db_name = str(eng.url)
+            if "growvision_mock.db" in db_name:
+                main_db_path = Path("growvision.db")
+                if main_db_path.exists():
+                    conn.execute(text("ATTACH DATABASE 'growvision.db' AS main_db;"))
+                    conn.execute(
+                        text(
+                            "INSERT OR IGNORE INTO users (id, client_type, external_id, login, role, is_active, authorized_at, last_active_at, logged_out_at) "
+                            "SELECT id, client_type, external_id, login, role, is_active, authorized_at, last_active_at, logged_out_at FROM main_db.users;"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "INSERT OR IGNORE INTO invite_codes (id, code, role, created_by_user_id, created_at, expires_at, used_at, used_by_user_id, is_revoked) "
+                            "SELECT id, code, role, created_by_user_id, created_at, expires_at, used_at, used_by_user_id, is_revoked FROM main_db.invite_codes;"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "INSERT OR IGNORE INTO telegram_contacts (id, telegram_id, username, first_name, last_name, updated_at) "
+                            "SELECT id, telegram_id, username, first_name, last_name, updated_at FROM main_db.telegram_contacts;"
+                        )
+                    )
+                    conn.execute(text("DETACH DATABASE main_db;"))
+                    conn.commit()

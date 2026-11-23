@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from server.api.deps import get_db
 from server.config import get_settings
-from server.core.security import verify_password
 from server.core.state import app_state
 from server.db.database import Base
 from server.db.models import (
@@ -283,7 +282,7 @@ def test_web_telegram_registration_and_login_full_flow(test_env, client: TestCli
     db = session_factory()
     inv_check = db.query(InviteCode).filter(InviteCode.code == "BIOINV1").first()
     assert inv_check.used_at is not None
-    # Проверяем пользователя в БД: external_id равен числовому telegram_id, password_hash сохранен
+    # Проверяем пользователя в БД: external_id равен числовому telegram_id, роль biologist
     user_db = (
         db.query(User)
         .filter(User.client_type == "web", User.external_id == str(tg_id))
@@ -292,7 +291,7 @@ def test_web_telegram_registration_and_login_full_flow(test_env, client: TestCli
     assert user_db is not None
     assert user_db.login == "Анна Гровер"
     assert user_db.role == "biologist"
-    assert verify_password("secret_password", user_db.password_hash)
+    assert user_db.is_active is True
     db.close()
 
     # 7. GET /api/auth/web/me возвращает авторизованного биолога
@@ -309,23 +308,37 @@ def test_web_telegram_registration_and_login_full_flow(test_env, client: TestCli
     assert r_me_after.json()["authenticated"] is False
     assert r_me_after.json()["role"] == "guest"
 
-    # 9. Вход POST /api/auth/web/login по @username и паролю
+    # 9. Создаем новый инвайт для входа биолога без личного пароля
+    db2 = session_factory()
+    dev_u = db2.query(User).filter(User.role == "developer").first()
+    inv_login = InviteCode(
+        code="BIOINV2",
+        role="biologist",
+        created_by_user_id=dev_u.id,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        is_revoked=False,
+    )
+    db2.add(inv_login)
+    db2.commit()
+    db2.close()
+
+    # Вход POST /api/auth/web/login по @username и коду инвайта биолога
     r_login_un = client.post(
         "/api/auth/web/login",
-        json={"telegram": "@anna_grower", "password": "secret_password"},
+        json={"telegram": "@anna_grower", "code": "BIOINV2"},
     )
     assert r_login_un.status_code == 200
     assert r_login_un.json()["role"] == "biologist"
     assert "gv_session" in client.cookies
 
-    # 10. Вход POST /api/auth/web/login по числовому ID и паролю
+    # 10. Вход POST /api/auth/web/login разработчика по мастер-паролю (DEVELOPER_PASSWORD)
     client.cookies.clear()
-    r_login_id = client.post(
+    r_login_dev = client.post(
         "/api/auth/web/login",
-        json={"telegram": str(tg_id), "password": "secret_password"},
+        json={"telegram": str(tg_id), "code": DEV_PASSWORD},
     )
-    assert r_login_id.status_code == 200
-    assert r_login_id.json()["role"] == "biologist"
+    assert r_login_dev.status_code == 200
+    assert r_login_dev.json()["role"] == "developer"
 
 
 def test_installations_fields_for_web(test_env, client: TestClient):

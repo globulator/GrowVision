@@ -223,20 +223,20 @@ async function handleLoginFormSubmit(e) {
   if (e) e.preventDefault();
 
   const tgInput = document.getElementById('login-telegram');
-  const pwdInput = document.getElementById('login-password');
+  const pwdInput = document.getElementById('login-password') || document.getElementById('login-code');
   const btn = document.getElementById('login-submit-btn');
 
   const telegram = tgInput ? tgInput.value.trim() : '';
-  const password = pwdInput ? pwdInput.value.trim() : '';
+  const accessCode = pwdInput ? pwdInput.value.trim() : '';
 
-  if (!telegram || !password) {
-    showError('Заполните логин и пароль', 'Вход в систему');
+  if (!telegram || !accessCode) {
+    showError('Заполните Telegram и код доступа', 'Вход в систему');
     return;
   }
 
   if (btn) btn.disabled = true;
   try {
-    const res = await api.login({ telegram, password });
+    const res = await api.login({ telegram, code: accessCode, password: accessCode });
     closeLoginModal();
     showToast(`Успешный вход: ${res.login || telegram}`);
     if (typeof authSuccessCallback === 'function') {

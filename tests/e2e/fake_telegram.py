@@ -116,6 +116,15 @@ class FakeTelegramServer:
                     "can_join_groups": False,
                     "can_read_all_group_messages": False,
                     "supports_inline_queries": False,
+                    "supports_guest_queries": False,
+                    "needs_inline_query_location": False,
+                    "can_connect_to_business": False,
+                    "has_main_web_app": False,
+                    "has_topics_enabled": False,
+                    "allows_users_to_create_topics": False,
+                    "has_topic_sidebar": False,
+                    "can_manage_bots": False,
+                    "supports_join_request_queries": False,
                 },
             }
         )

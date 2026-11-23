@@ -148,6 +148,21 @@ function applyStatusData(statusData) {
       rpiLivePing.textContent = 'Нет данных';
     }
   }
+
+  // Проверка физического наличия Raspberry Pi: если нет, блокируем переключение на rpi
+  const isRealRpi = Boolean(statusData && statusData.is_real_rpi);
+  const rpiRadio = document.querySelector('input[name="rpi-hw-mode"][value="rpi"]');
+  const mockRadio = document.querySelector('input[name="rpi-hw-mode"][value="mock"]');
+  if (rpiRadio) {
+    if (!isRealRpi) {
+      rpiRadio.disabled = true;
+      rpiRadio.title = 'Реальное оборудование Raspberry Pi не обнаружено. Доступен только Mock-режим (эмуляция).';
+      if (mockRadio) mockRadio.checked = true;
+    } else {
+      rpiRadio.disabled = false;
+      rpiRadio.removeAttribute('title');
+    }
+  }
 }
 
 async function openRpiModal() {
@@ -219,6 +234,14 @@ async function handleGenerateCommand(e) {
   const netbirdKey = netbirdKeyInput ? netbirdKeyInput.value.trim() : '';
   const hwModeRadio = document.querySelector('input[name="rpi-hw-mode"]:checked');
   const hwMode = hwModeRadio ? hwModeRadio.value : 'rpi';
+
+  if (hwMode === 'rpi' && hwModeRadio && hwModeRadio.disabled) {
+    showError(
+      'Реальное оборудование Raspberry Pi не обнаружено. Выберите режим эмуляции (Mock).',
+      'Оборудование RPi'
+    );
+    return;
+  }
 
   if (generateBtn) {
     generateBtn.disabled = true;

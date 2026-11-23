@@ -2,6 +2,53 @@
 // Модальные уведомления, ошибки и тосты без системных alert/confirm/prompt
 
 let activeErrorResolve = null;
+let activeConfirmResolve = null;
+
+export function showConfirm(
+  message,
+  title = 'Подтверждение',
+  confirmText = 'Подтвердить',
+  cancelText = 'Отмена'
+) {
+  return new Promise((resolve) => {
+    activeConfirmResolve = resolve;
+    const modal = document.getElementById('modal-confirm');
+    if (!modal) {
+      resolve(false);
+      return;
+    }
+
+    const titleEl = document.getElementById('modal-confirm-title');
+    const msgEl = document.getElementById('modal-confirm-message');
+    const okBtn = document.getElementById('modal-confirm-ok-btn');
+    const cancelBtn = document.getElementById('modal-confirm-cancel-btn');
+
+    if (titleEl) titleEl.textContent = title;
+    if (msgEl) msgEl.textContent = message;
+    if (okBtn) okBtn.textContent = confirmText;
+    if (cancelBtn) cancelBtn.textContent = cancelText;
+
+    modal.classList.remove('hidden');
+    document.body.classList.add('modal-open');
+
+    if (okBtn) {
+      okBtn.focus();
+    }
+  });
+}
+
+export function closeConfirmModal(result = false) {
+  const modal = document.getElementById('modal-confirm');
+  if (modal) {
+    modal.classList.add('hidden');
+    document.body.classList.remove('modal-open');
+  }
+  if (activeConfirmResolve) {
+    const resolve = activeConfirmResolve;
+    activeConfirmResolve = null;
+    resolve(result);
+  }
+}
 
 export function showError(message, title = 'Внимание') {
   return new Promise((resolve) => {
@@ -59,29 +106,52 @@ export function showToast(message, type = 'info', durationMs = 3500) {
   }, durationMs);
 }
 
-// Инициализация событий закрытия ошибки
+// Инициализация событий модальных окон
 export function initDialogs() {
-  const modal = document.getElementById('modal-error');
-  if (!modal) return;
-
-  const okBtn = document.getElementById('modal-error-ok-btn');
-  if (okBtn) {
-    okBtn.addEventListener('click', closeErrorModal);
+  const modalErr = document.getElementById('modal-error');
+  if (modalErr) {
+    const okBtn = document.getElementById('modal-error-ok-btn');
+    if (okBtn) {
+      okBtn.addEventListener('click', closeErrorModal);
+    }
+    modalErr.addEventListener('click', (e) => {
+      if (e.target === modalErr) {
+        closeErrorModal();
+      }
+    });
   }
 
-  // Клик по затемнённому фону
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) {
-      closeErrorModal();
-    }
-  });
+  const modalCnf = document.getElementById('modal-confirm');
+  if (modalCnf) {
+    const okBtn = document.getElementById('modal-confirm-ok-btn');
+    const cancelBtn = document.getElementById('modal-confirm-cancel-btn');
+    const closeBtn = document.getElementById('modal-confirm-close');
+
+    if (okBtn) okBtn.addEventListener('click', () => closeConfirmModal(true));
+    if (cancelBtn) cancelBtn.addEventListener('click', () => closeConfirmModal(false));
+    if (closeBtn) closeBtn.addEventListener('click', () => closeConfirmModal(false));
+
+    modalCnf.addEventListener('click', (e) => {
+      if (e.target === modalCnf) {
+        closeConfirmModal(false);
+      }
+    });
+  }
 
   // Клавиши Esc и Enter
   window.addEventListener('keydown', (e) => {
-    if (modal && !modal.classList.contains('hidden')) {
+    if (modalErr && !modalErr.classList.contains('hidden')) {
       if (e.key === 'Escape' || e.key === 'Enter') {
         e.preventDefault();
         closeErrorModal();
+      }
+    } else if (modalCnf && !modalCnf.classList.contains('hidden')) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeConfirmModal(false);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        closeConfirmModal(true);
       }
     }
   });
