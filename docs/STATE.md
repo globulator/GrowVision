@@ -7,15 +7,15 @@
 - Текущий этап: 8.4.1
 - Название этапа: Хотфикс багов живого теста (битый ES-импорт в Web SPA, перехват коллбэка таймлапса в Telegram-боте, спам логов httpx, favicon)
 - Режим: FULL
-- Статус: TESTING
+- Статус: STAGE_PASS
 - Итерация QA (кругов FAIL): 1 из 3
-- Ждём от пользователя: ничего (идёт повторная проверка QA)
+- Ждём от пользователя: ничего (оформление документации Scribe)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| qa | full-stack | fix/stage-8-web-and-bot | docs/tasks/stage-8-4-1-hotfix-qa.md | — |
+| scribe | docs | main | — | — |
 
 ## Коммиты текущего этапа
 - Ветка fix/stage-8-web-and-bot создана от main (19f7552)
@@ -24,10 +24,13 @@
 - 9ef3f4e docs(qa): record BUG-003 duplicate export in dialogs.js
 - 0bd8557 docs(repo): update state to fixing for bug-003
 - b647e2f fix(web): remove duplicate export in dialogs.js [BUG-003]
+- 0a3e4af docs(repo): update state to testing for bug-003 verification
+- 6ac2f4d docs(qa): update qa_log with stage 8.4.1 verification and mark BUG-003 fixed
+- 1dcb680 chore(repo): bump version to 0.5.2 (tag v0.5.2)
 
 ## Последний вердикт QA
-- Вердикт: FAIL (по этапу 8.4.1, устраняется BUG-003)
-- Открытые дефекты (ID): BUG-003 (исправлен в b647e2f, на проверке)
+- Вердикт: PASS (по этапу 8.4.1)
+- Открытые дефекты (ID): —
 - Отложенные (DEFERRED, ID): —
 
 ## Закрытые этапы
@@ -50,8 +53,6 @@
 - Этап 8.4: Помощник подключения Raspberry Pi в Web SPA, bootstrap-скрипт, gv-update и install_server (принят QA, слит в main, версия 0.5.1, отчёт docs/stage_reports/stage-8.4.md)
 
 ## История (последние 15 событий)
-- 2026-11-23: Builder реализовал этап 8.4 (коммит 0ec13b1, 310 тестов passed), статус READY_FOR_QA
-- 2026-11-23: Подготовлена карточка docs/tasks/stage-8-rpi-setup-and-deploy-qa.md, статус TESTING
 - 2026-11-23: QA проверил этап 8.4, вердикт PASS (310 тестов, 0 дефектов)
 - 2026-11-23: Ветка stage-8/rpi-setup-and-deploy слита в main, поднята версия 0.5.1 (тег v0.5.1)
 - 2026-11-23: Scribe создал docs/stage_reports/stage-8.4.md, обновил README.md и docs/stage_reports/stage-8.md
@@ -62,3 +63,6 @@
 - 2026-11-23: Подготовлена карточка docs/tasks/stage-8-4-1-hotfix-qa.md, статус TESTING, задача передана QA
 - 2026-11-23: QA выявил дефект BUG-003 (дубликат export showErrorDialog в dialogs.js), вердикт FAIL (1/3), статус FIXING
 - 2026-11-23: Builder устранил BUG-003 (коммит b647e2f, тест валидации ES-модулей passed), статус READY_FOR_QA, передано QA в режиме VERIFY
+- 2026-11-23: QA проверил этап 8.4.1 в режиме VERIFY, вердикт PASS (BUG-003 закрыт, 312 тестов passed)
+- 2026-11-23: Ветка fix/stage-8-web-and-bot слита в main, поднята версия 0.5.2 (тег v0.5.2)
+- 2026-11-23: Scribe назначен для подготовки отчёта docs/stage_reports/stage-8.4.1.md и обновления документации
