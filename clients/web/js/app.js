@@ -16,6 +16,7 @@ import {
   openTestSnapModal,
   setTestSnapRole,
 } from './test_snap.js';
+import { initRpiSetup, updateRpiRole } from './rpi_setup.js';
 import {
   initUnits,
   loadAndRenderUnits,
@@ -73,6 +74,7 @@ function applyRole(role) {
   updateUnitsRole(role);
   setGalleryRole(role);
   setTestSnapRole(role);
+  updateRpiRole(role);
   updateHeaderUi();
 }
 
@@ -141,6 +143,7 @@ async function bootstrap() {
   initUnits();
   initGallery();
   initTestSnap();
+  initRpiSetup();
 
   setUnauthorizedHandler(handleSessionExpired);
 

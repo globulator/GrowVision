@@ -48,6 +48,7 @@ def test_stage8_e2e_web_spa_flow(e2e_uvicorn_server):
             "test_snap.js",
             "units.js",
             "gif_encoder.js",
+            "rpi_setup.js",
         ):
             r_mod = client.get(f"/js/{mod}")
             assert r_mod.status_code == 200, f"Модуль {mod} не найден"

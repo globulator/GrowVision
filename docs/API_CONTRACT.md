@@ -714,3 +714,44 @@ pending --claim--> running --result--> done | error
 ```json
 {"detail": "Камера недоступна, попробуйте позже"}
 ```
+
+### 4.8. Первичная настройка и подключение Edge-агента (Raspberry Pi)
+
+Функционал генерации одноразового скрипта развёртывания для тонкой настройки плат Raspberry Pi.
+
+#### GET /api/edge/setup/defaults
+Доступен только роли `developer`. Возвращает дефолтный URL сервера (из `EDGE_SERVER_URL` или `.env`) и публичный URL Git-репозитория (`REPO_URL` или автоматически определённый из `git remote get-url origin`).
+
+Ответ `200 OK`:
+```json
+{
+  "default_server_url": "http://<server-host>:8000",
+  "repo_url": "https://github.com/<owner>/<repo>.git"
+}
+```
+
+#### POST /api/edge/setup/token
+Доступен только роли `developer`. Генерирует криптостойкий одноразовый токен установки с TTL 600 секунд. Данные сохраняются строго в оперативной памяти (без записи в SQLite и без логирования секретов).
+
+Тело запроса:
+```json
+{
+  "server_url": "http://<server-host>:8000",
+  "netbird_setup_key": "nb-setup-token-key-optional",
+  "hardware_mode": "rpi"
+}
+```
+
+Ответ `200 OK`:
+```json
+{
+  "token": "4Fw_K93d_abcdef12345678",
+  "expires_in_sec": 600,
+  "script_path": "/api/edge/setup/4Fw_K93d_abcdef12345678"
+}
+```
+
+#### GET /api/edge/setup/{token}
+Публичный эндпоинт для автоматического скачивания bash-скрипта через `curl -fsSL ... | bash`.
+При первом обращении проверяет токен и TTL, **немедленно сжигает токен** (удаляет из памяти) и возвращает bash-скрипт (`Content-Type: text/x-shellscript`).
+При повторном обращении с тем же токеном возвращает `404 Not Found`.
