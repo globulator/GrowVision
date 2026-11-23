@@ -400,3 +400,30 @@ def test_scheduled_capture_buffered_to_queue_on_network_error(
     orchestrator.trigger_scheduled_capture()
 
     assert get_queue_count(test_config.offline_queue_dir) == 1
+
+
+def test_orchestrator_stop_idempotent(orchestrator: EdgeOrchestrator):
+    """Проверка идемпотентности метода stop(): повторные вызовы безопасны и не повторяют cleanup."""
+    orchestrator.hardware.cleanup = MagicMock()
+    assert orchestrator._stopped is False
+    orchestrator.stop()
+    assert orchestrator._stopped is True
+    assert orchestrator.hardware.cleanup.call_count == 1
+
+    # Повторный вызов
+    orchestrator.stop()
+    assert orchestrator._stopped is True
+    assert orchestrator.hardware.cleanup.call_count == 1
+
+
+def test_orchestrator_logger_no_duplicate_handlers():
+    """Проверка отсутствия дублирующих обработчиков в edge_agent.orchestrator."""
+    import logging
+
+    from shared.logger import setup_logger
+
+    root_logger = setup_logger("edge_agent", debug_mode=False)
+    orch_logger = logging.getLogger("edge_agent.orchestrator")
+
+    assert len(orch_logger.handlers) == 0
+    assert len(root_logger.handlers) > 0

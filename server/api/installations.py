@@ -403,6 +403,41 @@ def archive_installation(
     return serialize_installation(inst, current_user.role, db)
 
 
+@router.post("/{installation_id}/unarchive", response_model=dict[str, Any])
+def unarchive_installation(
+    installation_id: int,
+    current_user: Annotated[User, Depends(require_role("developer"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """POST /api/installations/{id}/unarchive (Developer).
+
+    Восстановление установки из архива:
+    - перевод в is_archived = False;
+    - свет по умолчанию ВКЛ (True), вспышка ВЫКЛ (False);
+    - проверка пересечения пинов с другими активными установками и возврат warnings.
+    """
+    inst = db.query(Installation).filter(Installation.id == installation_id).first()
+    if not inst:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Установка не найдена",
+        )
+
+    inst.is_archived = False
+    db.commit()
+    db.refresh(inst)
+
+    app_state.set_pin_state(inst.light_gpio_pin, True)
+    if inst.flash_gpio_pin != inst.light_gpio_pin:
+        app_state.set_pin_state(inst.flash_gpio_pin, False)
+
+    warnings = check_pin_conflicts_and_warnings(
+        inst.light_gpio_pin, inst.flash_gpio_pin, db, exclude_id=inst.id
+    )
+
+    return serialize_installation(inst, current_user.role, db, warnings=warnings)
+
+
 @router.delete("/{installation_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_installation(
     installation_id: int,

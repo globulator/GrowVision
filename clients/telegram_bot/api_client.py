@@ -29,7 +29,7 @@ class GrowVisionApiClient:
     async def get_client(self) -> httpx.AsyncClient:
         """Возвращает или создает экземпляр httpx.AsyncClient."""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(base_url=self.base_url)
+            self._client = httpx.AsyncClient(base_url=self.base_url, trust_env=False)
             self._owns_client = True
         return self._client
 
@@ -308,6 +308,17 @@ class GrowVisionApiClient:
         return await self._request(
             "POST",
             f"/api/installations/{inst_id}/archive",
+            user_id=user_id,
+            timeout=15.0,
+        )
+
+    async def unarchive_installation(
+        self, user_id: int, inst_id: int
+    ) -> dict[str, Any]:
+        """Восстановление установки из архива (Developer)."""
+        return await self._request(
+            "POST",
+            f"/api/installations/{inst_id}/unarchive",
             user_id=user_id,
             timeout=15.0,
         )

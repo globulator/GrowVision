@@ -2,6 +2,7 @@
 // Главный модуль веб-клиента GrowVision SPA: маршрутизация, модалки, тосты и роли.
 
 import { api } from './api.js';
+import { showToast, showConfirm, showPrompt } from './dialogs.js';
 import { UnitsManager } from './units.js';
 import { TimelapsePlayer } from './player.js';
 import { RelaysManager } from './relays.js';
@@ -205,30 +206,39 @@ class App {
     });
 
     document.getElementById('header-btn-logout').addEventListener('click', async () => {
-      if (!confirm('Вы действительно хотите выйти из системы?')) return;
+      const ok = await showConfirm({
+        title: 'Выход из системы',
+        message: 'Вы действительно хотите выйти из системы?',
+        confirmText: 'Выйти',
+      });
+      if (!ok) return;
       try {
         await api.logout();
-        this.showToast('Вы вышли из системы', 'info');
+        showToast('Вы вышли из системы', 'info');
         await this.checkAuth();
       } catch (err) {
-        alert('Ошибка при выходе: ' + err.message);
+        showToast('Ошибка при выходе: ' + err.message, 'error');
       }
     });
 
     document.getElementById('header-btn-rename-me').addEventListener('click', async () => {
       const currentName = this.currentUser.login || '';
-      const newName = prompt('Введите новое имя и фамилию для вашего профиля:', currentName);
+      const newName = await showPrompt({
+        title: 'Изменение имени',
+        message: 'Введите новое имя и фамилию для вашего профиля:',
+        defaultValue: currentName,
+      });
       if (newName === null) return;
       if (!newName.trim()) {
-        alert('Имя не может быть пустым.');
+        showToast('Имя не может быть пустым.', 'warning');
         return;
       }
       try {
         await api.updateMe(newName.trim());
-        this.showToast('Имя успешно обновлено', 'success');
+        showToast('Имя успешно обновлено', 'success');
         await this.checkAuth();
       } catch (err) {
-        alert('Ошибка изменения имени: ' + err.message);
+        showToast('Ошибка изменения имени: ' + err.message, 'error');
       }
     });
   }
@@ -493,7 +503,7 @@ class App {
         }
 
         if (resp.debug_info?.log_line) {
-          debugBox.innerHTML = `<strong>🐞 Лог:</strong> <code>${escapeHtml(resp.debug_info.log_line)}</code>`;
+          debugBox.innerHTML = `<strong>Лог:</strong> <code>${escapeHtml(resp.debug_info.log_line)}</code>`;
           debugBox.classList.remove('hidden');
         }
       } catch (err) {

@@ -2,6 +2,7 @@
 // Управление светом, вспышкой и тестом реле с синхронизацией состояний по GPIO-пинам.
 
 import { api } from './api.js';
+import { showToast, showConfirm } from './dialogs.js';
 
 export class RelaysManager {
   constructor(containerEl, options = {}) {
@@ -21,11 +22,17 @@ export class RelaysManager {
     this.container.innerHTML = `
       <div class="section-header">
         <div class="section-title-wrap">
-          <h2 class="section-title">💡 Свет и реле</h2>
+          <h2 class="section-title">
+            <svg class="icon-inline" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="9" y1="18" x2="15" y2="18"></line><line x1="10" y1="22" x2="14" y2="22"></line><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"></path></svg>
+            <span>Свет и реле</span>
+          </h2>
           <span class="section-desc">Общие групповые операции управления реле установок</span>
         </div>
         <div class="section-actions">
-          <button type="button" class="btn btn-secondary btn-sm" id="relays-btn-refresh">🔄 Обновить</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="relays-btn-refresh">
+            <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+            <span>Обновить</span>
+          </button>
         </div>
       </div>
 
@@ -40,11 +47,26 @@ export class RelaysManager {
         </p>
 
         <div class="global-relays-actions">
-          <button type="button" class="btn btn-primary" id="relays-btn-all-light-on">💡 Включить весь свет</button>
-          <button type="button" class="btn btn-secondary" id="relays-btn-all-light-off">💡 Выключить весь свет</button>
-          <button type="button" class="btn btn-primary" id="relays-btn-all-flash-on">⚡ Включить все вспышки</button>
-          <button type="button" class="btn btn-secondary" id="relays-btn-all-flash-off">⚡ Выключить все вспышки</button>
-          <button type="button" class="btn btn-warning" id="relays-btn-test">🧪 Тест всех реле (3 сек)</button>
+          <button type="button" class="btn btn-primary" id="relays-btn-all-light-on">
+            <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="9" y1="18" x2="15" y2="18"></line><line x1="10" y1="22" x2="14" y2="22"></line><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"></path></svg>
+            <span>Включить весь свет</span>
+          </button>
+          <button type="button" class="btn btn-secondary" id="relays-btn-all-light-off">
+            <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="9" y1="18" x2="15" y2="18"></line><line x1="10" y1="22" x2="14" y2="22"></line><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"></path></svg>
+            <span>Выключить весь свет</span>
+          </button>
+          <button type="button" class="btn btn-primary" id="relays-btn-all-flash-on">
+            <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            <span>Включить все вспышки</span>
+          </button>
+          <button type="button" class="btn btn-secondary" id="relays-btn-all-flash-off">
+            <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            <span>Выключить все вспышки</span>
+          </button>
+          <button type="button" class="btn btn-warning" id="relays-btn-test">
+            <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v7.31"></path><path d="M14 9.3V2"></path><path d="M8.5 2h7"></path><path d="M14 9.3a6.5 6.5 0 1 1-4 0"></path><path d="M5.52 16h12.96"></path></svg>
+            <span>Тест всех реле (3 сек)</span>
+          </button>
         </div>
       </div>
 
@@ -61,40 +83,40 @@ export class RelaysManager {
     this.container.querySelector('#relays-btn-all-light-on').addEventListener('click', async () => {
       try {
         await api.setLight('all', true);
-        window.showToast?.('Основной свет включен на всех установках', 'success');
+        showToast('Основной свет включен на всех установках', 'success');
         await this.loadRelays();
       } catch (err) {
-        alert('Ошибка переключения света: ' + err.message);
+        showToast('Ошибка переключения света: ' + err.message, 'error');
       }
     });
 
     this.container.querySelector('#relays-btn-all-light-off').addEventListener('click', async () => {
       try {
         await api.setLight('all', false);
-        window.showToast?.('Основной свет выключен на всех установках', 'success');
+        showToast('Основной свет выключен на всех установках', 'success');
         await this.loadRelays();
       } catch (err) {
-        alert('Ошибка переключения света: ' + err.message);
+        showToast('Ошибка переключения света: ' + err.message, 'error');
       }
     });
 
     this.container.querySelector('#relays-btn-all-flash-on').addEventListener('click', async () => {
       try {
         await api.setFlash('all', true);
-        window.showToast?.('Вспышка включена на всех установках', 'success');
+        showToast('Вспышка включена на всех установках', 'success');
         await this.loadRelays();
       } catch (err) {
-        alert('Ошибка переключения вспышки: ' + err.message);
+        showToast('Ошибка переключения вспышки: ' + err.message, 'error');
       }
     });
 
     this.container.querySelector('#relays-btn-all-flash-off').addEventListener('click', async () => {
       try {
         await api.setFlash('all', false);
-        window.showToast?.('Вспышка выключена на всех установках', 'success');
+        showToast('Вспышка выключена на всех установках', 'success');
         await this.loadRelays();
       } catch (err) {
-        alert('Ошибка переключения вспышки: ' + err.message);
+        showToast('Ошибка переключения вспышки: ' + err.message, 'error');
       }
     });
 
@@ -175,14 +197,20 @@ export class RelaysManager {
   }
 
   async handleRelayTest() {
-    if (!confirm('Запустить цикл тестирования всех реле (последовательное переключение пинов на Raspberry Pi)?')) return;
+    const ok = await showConfirm({
+      title: 'Тестирование реле',
+      message: 'Запустить цикл тестирования всех реле (последовательное переключение пинов на Raspberry Pi на 3 секунды)?',
+      confirmText: 'Запустить тест',
+    });
+    if (!ok) return;
+
     try {
-      window.showToast?.('Запуск теста реле...', 'info');
-      await api.testRelays();
-      window.showToast?.('Тест реле успешно завершён', 'success');
+      showToast('Запуск теста реле...', 'info');
+      await api.testRelays('all');
+      showToast('Тест реле успешно завершён', 'success');
       await this.loadRelays();
     } catch (err) {
-      alert('Ошибка теста реле: ' + err.message);
+      showToast('Ошибка теста реле: ' + err.message, 'error');
     }
   }
 }

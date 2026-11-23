@@ -60,3 +60,18 @@ def test_config_validation_invalid_url(monkeypatch: pytest.MonkeyPatch, capsys):
         "Ошибка конфигурации CLI: некорректный адрес SERVER_URL («ftp://invalid-url»)"
         in captured.err
     )
+
+
+def test_cli_client_trust_env_false(monkeypatch: pytest.MonkeyPatch):
+    """Проверка, что httpx.Client в APIClient инициализируется с trust_env=False."""
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:10808")
+    monkeypatch.setenv("SERVER_URL", "http://localhost:8000")
+    monkeypatch.setenv("CLIENT_API_KEY", "test-key")
+    from clients.cli.client import APIClient
+
+    client = APIClient()
+    h_client = client._get_client(timeout=5.0)
+    try:
+        assert h_client.trust_env is False
+    finally:
+        h_client.close()

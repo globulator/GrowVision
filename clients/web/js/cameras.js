@@ -2,6 +2,7 @@
 // Управление камерами установки: список, сканирование, привязка/отвязка, редактирование.
 
 import { api } from './api.js';
+import { showToast, showPrompt } from './dialogs.js';
 
 export class CamerasManager {
   constructor(containerEl, options = {}) {
@@ -22,12 +23,21 @@ export class CamerasManager {
     this.container.innerHTML = `
       <div class="section-header">
         <div class="section-title-wrap">
-          <h2 class="section-title">📷 Камеры видеонаблюдения</h2>
+          <h2 class="section-title">
+            <svg class="icon-inline" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+            <span>Камеры видеонаблюдения</span>
+          </h2>
           <span class="section-desc">Список физических камер Raspberry Pi и привязка к установкам</span>
         </div>
         <div class="section-actions">
-          <button type="button" class="btn btn-primary btn-sm" id="cams-btn-scan">🔍 Сканировать камеры</button>
-          <button type="button" class="btn btn-secondary btn-sm" id="cams-btn-refresh">🔄 Обновить</button>
+          <button type="button" class="btn btn-primary btn-sm" id="cams-btn-scan">
+            <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <span>Сканировать камеры</span>
+          </button>
+          <button type="button" class="btn btn-secondary btn-sm" id="cams-btn-refresh">
+            <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+            <span>Обновить</span>
+          </button>
         </div>
       </div>
 
@@ -71,24 +81,30 @@ export class CamerasManager {
     const debugBox = this.container.querySelector('#cams-debug-box');
     debugBox.classList.add('hidden');
     scanBtn.disabled = true;
-    scanBtn.textContent = 'Сканирование...';
+    scanBtn.innerHTML = `
+      <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+      <span>Сканирование...</span>
+    `;
 
     try {
       const resp = await api.scanCameras();
       const foundCount = resp.cameras ? resp.cameras.length : 0;
-      window.showToast?.(`Сканирование завершено: найдено камер: ${foundCount}`, 'success');
+      showToast(`Сканирование завершено: найдено камер: ${foundCount}`, 'success');
 
       if (resp.debug_info && resp.debug_info.log_line) {
-        debugBox.innerHTML = `<strong>🐞 Лог сканирования:</strong> <code>${escapeHtml(resp.debug_info.log_line)}</code>`;
+        debugBox.innerHTML = `<strong>Лог сканирования:</strong> <code>${escapeHtml(resp.debug_info.log_line)}</code>`;
         debugBox.classList.remove('hidden');
       }
 
       await this.loadData();
     } catch (err) {
-      alert('Ошибка сканирования камер: ' + err.message);
+      showToast('Ошибка сканирования камер: ' + err.message, 'error');
     } finally {
       scanBtn.disabled = false;
-      scanBtn.textContent = '🔍 Сканировать камеры';
+      scanBtn.innerHTML = `
+        <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <span>Сканировать камеры</span>
+      `;
     }
   }
 
@@ -107,7 +123,6 @@ export class CamerasManager {
 
       const assignedUnit = this.units.find((u) => u.id === cam.installation_id);
       const assignedName = assignedUnit ? assignedUnit.name : (cam.installation_id ? `Установка #${cam.installation_id}` : 'Не привязана');
-
       const lastSeen = cam.last_seen_at
         ? new Date(cam.last_seen_at).toLocaleString('ru-RU')
         : 'никогда';
@@ -152,7 +167,10 @@ export class CamerasManager {
                 : ''
             }
           </div>
-          <button type="button" class="btn btn-secondary btn-sm btn-action-rename">✏️ Имя</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-action-rename">
+            <svg class="icon-inline" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
+            <span>Имя</span>
+          </button>
         </div>
       `;
 
@@ -161,15 +179,15 @@ export class CamerasManager {
         const select = card.querySelector(`#cam-select-unit-${cam.id}`);
         const unitId = select.value;
         if (!unitId) {
-          alert('Пожалуйста, выберите установку из списка.');
+          showToast('Пожалуйста, выберите установку из списка.', 'warning');
           return;
         }
         try {
-          await api.bindCamera(cam.id, unitId);
-          window.showToast?.(`Камера #${cam.id} успешно привязана`, 'success');
+          await api.bindCamera(cam.id, Number(unitId));
+          showToast(`Камера #${cam.id} успешно привязана`, 'success');
           await this.loadData();
         } catch (err) {
-          alert('Ошибка привязки: ' + err.message);
+          showToast('Ошибка привязки: ' + err.message, 'error');
         }
       });
 
@@ -179,28 +197,32 @@ export class CamerasManager {
         unbindBtn.addEventListener('click', async () => {
           try {
             await api.unbindCamera(cam.id);
-            window.showToast?.(`Камера #${cam.id} отвязана`, 'success');
+            showToast(`Камера #${cam.id} отвязана`, 'success');
             await this.loadData();
           } catch (err) {
-            alert('Ошибка отвязки: ' + err.message);
+            showToast('Ошибка отвязки: ' + err.message, 'error');
           }
         });
       }
 
       // Переименование
       card.querySelector('.btn-action-rename').addEventListener('click', async () => {
-        const newName = prompt(`Введите новое название для камеры #${cam.id}:`, cam.auto_name);
+        const newName = await showPrompt({
+          title: 'Переименование камеры',
+          message: `Введите новое название для камеры #${cam.id}:`,
+          defaultValue: cam.auto_name,
+        });
         if (newName === null) return;
         if (!newName.trim()) {
-          alert('Название камеры не может быть пустым.');
+          showToast('Название камеры не может быть пустым.', 'warning');
           return;
         }
         try {
           await api.renameCamera(cam.id, newName.trim());
-          window.showToast?.('Название камеры обновлено', 'success');
+          showToast('Название камеры обновлено', 'success');
           await this.loadData();
         } catch (err) {
-          alert('Ошибка переименования: ' + err.message);
+          showToast('Ошибка переименования: ' + err.message, 'error');
         }
       });
 

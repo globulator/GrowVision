@@ -123,6 +123,7 @@ pending --claim--> running --result--> done | error
 | POST | `/api/installations` | Developer | Создать установку. |
 | PATCH | `/api/installations/{id}` | Biologist (name, culture_name), Developer (все поля) | Изменить установку. |
 | POST | `/api/installations/{id}/archive` | Developer | Архивировать установку, отвязать камеры. |
+| POST | `/api/installations/{id}/unarchive` | Developer | Восстановить установку из архива (свет ON, вспышка OFF, проверка пинов). |
 | DELETE | `/api/installations/{id}` | Developer | Удалить установку (только если кадров 0). |
 | GET | `/api/cameras` | Developer | Список камер. |
 | POST | `/api/cameras/scan` | Developer | Сканирование камер на RPi (SCAN_CAMERAS). |
@@ -492,6 +493,7 @@ pending --claim--> running --result--> done | error
 | `POST /api/installations` | `{"name", "culture_name", "light_gpio_pin", "flash_gpio_pin", "aruco_size_mm"}` (`aruco_size_mm` необязательный) | `201` карточка с `warnings[]`. `409`: имя занято; `422`: невалидные данные. Разрешены общие пины и совпадение пинов света и вспышки. |
 | `PATCH /api/installations/{id}` | Любое подмножество полей; Biologist — только `name`, `culture_name` | `200` карточка. Biologist с другими полями → `403`; `409` как при создании. |
 | `POST /api/installations/{id}/archive` | — | `200`: `is_archived = TRUE`, у всех камер установки `installation_id = NULL`. |
+| `POST /api/installations/{id}/unarchive` | — | `200`: `is_archived = FALSE`, свет по умолчанию ВКЛ (`True`), вспышка ВЫКЛ (`False`), возвращает объект установки с `warnings[]`. Только Developer (`403` для Biologist/Guest). |
 | `DELETE /api/installations/{id}` | — | `204`, если в `captures` 0 кадров; иначе `409` `{"detail": "У установки есть снимки, используйте архивацию"}`. |
 
 ### 4.3. Камеры
@@ -514,7 +516,7 @@ pending --claim--> running --result--> done | error
 
 ### 4.4. Управление
 
-Все запросы принимают `target`: число (`installation_id`) или `"all"`. Установка не найдена → `404`, установка в архиве → `409`, `"all"` без активных установок → `409` `{"detail": "Нет активных установок"}`, RPi офлайн → `503`, нет ответа → `504`. Время ожидания — по 1.4 (для SNAP с `"all"`: 15 с + 10 с × N).
+Все запросы принимают `target`: строго целое положительное число (`int`) с `installation_id` или строка `"all"` (строковые представления чисел вроде `"1"` отклоняются валидатором с ошибкой 422). Установка не найдена → `404`, установка в архиве → `409`, `"all"` без активных установок → `409` `{"detail": "Нет активных установок"}`, RPi офлайн → `503`, нет ответа → `504`. Время ожидания — по 1.4 (для SNAP с `"all"`: 15 с + 10 с × N).
 
 `POST /api/control/snap` — `{"target": 1}`. Ответ `200`:
 

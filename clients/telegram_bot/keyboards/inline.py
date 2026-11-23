@@ -118,8 +118,16 @@ def get_installation_card_keyboard(
                 ]
             )
     else:
-        # Для архивной установки Developer видит скачивание видео и удаление
+        # Для архивной установки Developer видит разархивацию, скачивание видео и удаление
         if role == "developer":
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text="♻️ Восстановить из архива",
+                        callback_data=f"inst:unarchive:{inst_id}",
+                    )
+                ]
+            )
             buttons.append(
                 [
                     InlineKeyboardButton(

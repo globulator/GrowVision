@@ -189,7 +189,7 @@ export class TerminalManager {
     ]);
 
     const vStr = version ? `v${version.server_version}` : 'неизвестно';
-    const edgeOnline = telemetry && telemetry.is_online ? '✅ Онлайн' : '❌ Оффлайн';
+    const edgeOnline = telemetry && telemetry.is_online ? '[Онлайн]' : '[Оффлайн]';
 
     let html = `<strong>Статус системы:</strong>\n`;
     html += `  Версия сервера: ${vStr}\n`;
@@ -244,7 +244,7 @@ export class TerminalManager {
       });
       this.printLine(`Установка «${resp.name}» (#${resp.id}) успешно создана!`, 'success');
       if (resp.warnings && resp.warnings.length > 0) {
-        resp.warnings.forEach((w) => this.printLine(`⚠️ ${escapeHtml(w)}`, 'warning'));
+        resp.warnings.forEach((w) => this.printLine(`[Предупреждение] ${escapeHtml(w)}`, 'warning'));
       }
     } else {
       this.printLine('Использование: unit list [archived] | unit get <id> | unit create ...', 'error');
@@ -271,7 +271,7 @@ export class TerminalManager {
       const count = resp.cameras ? resp.cameras.length : 0;
       this.printLine(`Сканирование завершено: найдено камер: ${count}`, 'success');
       if (resp.debug_info?.log_line) {
-        this.printLine(`🐞 Лог: <code>${escapeHtml(resp.debug_info.log_line)}</code>`, 'info');
+        this.printLine(`[Лог] <code>${escapeHtml(resp.debug_info.log_line)}</code>`, 'info');
       }
     } else if (sub === 'bind') {
       const camId = parseInt(args[1], 10);
@@ -305,7 +305,7 @@ export class TerminalManager {
     const resp = await api.setLight(target, state);
     this.printLine(`Основной свет переключен в ${state ? 'ON' : 'OFF'} для target=${target}`, 'success');
     if (resp.debug_info?.log_line) {
-      this.printLine(`🐞 Лог: <code>${escapeHtml(resp.debug_info.log_line)}</code>`, 'info');
+      this.printLine(`[Лог] <code>${escapeHtml(resp.debug_info.log_line)}</code>`, 'info');
     }
   }
 
@@ -319,7 +319,7 @@ export class TerminalManager {
     const resp = await api.setFlash(target, state);
     this.printLine(`Вспышка переключена в ${state ? 'ON' : 'OFF'} для target=${target}`, 'success');
     if (resp.debug_info?.log_line) {
-      this.printLine(`🐞 Лог: <code>${escapeHtml(resp.debug_info.log_line)}</code>`, 'info');
+      this.printLine(`[Лог] <code>${escapeHtml(resp.debug_info.log_line)}</code>`, 'info');
     }
   }
 
@@ -335,7 +335,7 @@ export class TerminalManager {
       });
     }
     if (resp.debug_info?.log_line) {
-      this.printLine(`🐞 Лог: <code>${escapeHtml(resp.debug_info.log_line)}</code>`, 'info');
+      this.printLine(`[Лог] <code>${escapeHtml(resp.debug_info.log_line)}</code>`, 'info');
     }
   }
 
@@ -344,7 +344,7 @@ export class TerminalManager {
     const resp = await api.testRelays();
     this.printLine('Тест реле успешно выполнен!', 'success');
     if (resp.debug_info?.log_line) {
-      this.printLine(`🐞 Лог: <code>${escapeHtml(resp.debug_info.log_line)}</code>`, 'info');
+      this.printLine(`[Лог] <code>${escapeHtml(resp.debug_info.log_line)}</code>`, 'info');
     }
   }
 

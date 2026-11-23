@@ -14,7 +14,9 @@ def run_shell(app_caller: Any) -> None:
     server_version = ""
     with contextlib.suppress(httpx.HTTPError, OSError):
         config = APIClient().config
-        with httpx.Client(base_url=config.server_url, timeout=2.0) as cl:
+        with httpx.Client(
+            base_url=config.server_url, timeout=2.0, trust_env=False
+        ) as cl:
             r = cl.get("/api/version")
             if r.status_code == 200:
                 data = r.json()
