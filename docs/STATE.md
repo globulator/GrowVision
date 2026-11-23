@@ -7,22 +7,25 @@
 - Текущий этап: 8.6
 - Название этапа: Интеграция квадратного 1:1 SVG-логотипа GrowVision в шапку Web SPA и favicon
 - Режим: FAST
-- Статус: TESTING
+- Статус: STAGE_PASS
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт тестирование QA)
+- Ждём от пользователя: ничего (оформление документации Scribe)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| qa | web | stage-8/brand-logo | docs/tasks/stage-8-6-brand-logo-qa.md | — |
+| scribe | docs | main | — | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-8/brand-logo создана от main (edd8560)
 - 7a79d1c feat(stage-8.6): integrate 1:1 brand logo into web spa header and favicon
+- 093c9f9 docs(repo): update state to testing for stage 8.6 1:1 logo
+- d2fc555 docs(qa): update qa_log with stage 8.6 1:1 logo verification
+- v0.6.1 chore(repo): tag updated to include 1:1 logo
 
 ## Последний вердикт QA
-- Вердикт: PASS (по этапу 8.5)
+- Вердикт: PASS (по этапу 8.6)
 - Открытые дефекты (ID): —
 - Отложенные (DEFERRED, ID): —
 
@@ -49,8 +52,6 @@
 - Этап 8.6: Интеграция фирменного SVG-логотипа GrowVision в шапку Web SPA и favicon (принят QA, слит в main, версия 0.6.1, отчёт docs/stage_reports/stage-8.6.md)
 
 ## История (последние 15 событий)
-- 2026-11-23: Scribe создал docs/stage_reports/stage-8.5.md, обновил README.md и docs/stage_reports/stage-8.md
-- 2026-11-23: Этап 8.5 окончательно закрыт (DONE)
 - 2026-11-24: Пользователь запустил этап 8.6 (интеграция фирменного SVG-логотипа в Web SPA и favicon)
 - 2026-11-24: Создана ветка stage-8/brand-logo от main
 - 2026-11-24: Builder реализовал этап 8.6 (коммит c2d1ed6), статус READY_FOR_QA
@@ -63,3 +64,6 @@
 - 2026-11-24: Ветка stage-8/brand-logo пересоздана от main (edd8560)
 - 2026-11-24: Builder реализовал этап 8.6 (коммит 7a79d1c), статус READY_FOR_QA
 - 2026-11-24: Подготовлена карточка docs/tasks/stage-8-6-brand-logo-qa.md, статус TESTING, задача передана QA
+- 2026-11-24: QA проверил этап 8.6 с 1:1 логотипом, вердикт PASS (320 тестов, 0 дефектов)
+- 2026-11-24: Ветка stage-8/brand-logo слита в main, тег v0.6.1 обновлён
+- 2026-11-24: Scribe назначен для обновления отчёта docs/stage_reports/stage-8.6.md и документации
