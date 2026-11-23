@@ -7,23 +7,25 @@
 - Текущий этап: 8.3
 - Название этапа: Полная пересборка Web SPA с нуля по новому WEB_SPEC.md (Telegram-авторизация, плеер с клиентским GIF-экспортом, бейдж роли, только SVG)
 - Режим: FULL
-- Статус: TESTING
+- Статус: STAGE_PASS
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (идёт тестирование QA)
+- Ждём от пользователя: ничего (оформление документации Scribe)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| qa | full-stack | stage-8/web-rebuild | docs/tasks/stage-8-web-rebuild-qa.md | — |
+| scribe | docs | main | — | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-8/web-rebuild создана от main (cb13144)
-- a40fdc7 docs(repo): prepare stage 8.3 task and update state to building
 - 8742557 feat(web,server,bot): rebuild web spa from scratch, telegram auth, clean player, gif export
+- 0d34495 docs(repo): update state to testing for stage 8.3
+- c7bf48f docs(qa): update qa_log with stage 8.3 verification
+- 0984dc2 chore(repo): bump version to 0.5.0 (tag v0.5.0)
 
 ## Последний вердикт QA
-- Вердикт: PASS (по этапу 8.2)
+- Вердикт: PASS (по этапу 8.3)
 - Открытые дефекты (ID): —
 - Отложенные (DEFERRED, ID): —
 
@@ -45,11 +47,6 @@
 - Этап 8.2: Фиксы Web SPA, разархивация, clean UI, прокси и логирование (принят QA, слит в main, версия 0.4.2, отчёт docs/stage_reports/stage-8.2.md)
 
 ## История (последние 15 событий)
-- 2026-11-23: Builder реализовал этап 8.1 (295 тестов passed), QA проверил этап 8.1 (PASS)
-- 2026-11-23: Ветка stage-8/ux-polish-and-fixes слита в main, поднята версия 0.4.1 (тег v0.4.1)
-- 2026-11-23: Scribe обновил отчёты и документацию, этап 8.1 закрыт (DONE)
-- 2026-11-23: Пользователь запустил этап 8.2 (web/bot фиксы, разархивация, clean UI, прокси, логгер)
-- 2026-11-23: Создана ветка stage-8/web-bot-fixes от main
 - 2026-11-23: Подготовлена карточка docs/tasks/stage-8-web-bot-fixes-builder.md, статус BUILDING, задача передана Builder-у
 - 2026-11-23: Builder реализовал этап 8.2 (303 теста passed), статус READY_FOR_QA
 - 2026-11-23: Подготовлена карточка docs/tasks/stage-8-web-bot-fixes-qa.md, статус изменён на TESTING, задача передана QA
@@ -60,3 +57,6 @@
 - 2026-11-23: Пользователь запустил этап 8.3 (полная пересборка Web SPA с нуля по новому WEB_SPEC.md)
 - 2026-11-23: Создана ветка stage-8/web-rebuild от main
 - 2026-11-23: Builder реализовал этап 8.3 (305 тестов passed), статус READY_FOR_QA
+- 2026-11-23: QA проверил этап 8.3, вердикт PASS (305 тестов, 0 дефектов)
+- 2026-11-23: Ветка stage-8/web-rebuild слита в main, поднята версия 0.5.0 (тег v0.5.0)
+- 2026-11-23: Scribe назначен для подготовки отчёта docs/stage_reports/stage-8.3.md и обновления документации
