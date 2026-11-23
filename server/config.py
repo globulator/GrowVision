@@ -20,6 +20,8 @@ class Settings(BaseModel):
     developer_password: str = Field(default="", alias="DEVELOPER_PASSWORD")
     video_max_fps: int = Field(default=10, ge=1, alias="VIDEO_MAX_FPS")
     video_min_duration_sec: int = Field(default=2, ge=1, alias="VIDEO_MIN_DURATION_SEC")
+    repo_url: str | None = Field(default=None, alias="REPO_URL")
+    edge_server_url: str | None = Field(default=None, alias="EDGE_SERVER_URL")
 
 
 def load_settings(env_path: Path | str | None = None) -> Settings:

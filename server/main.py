@@ -13,6 +13,7 @@ from server.api.auth import router as auth_router
 from server.api.cameras import router as cameras_router
 from server.api.control import router as control_router
 from server.api.edge import router as edge_router
+from server.api.edge_setup import router as edge_setup_router
 from server.api.installations import router as installations_router
 from server.api.system import router as system_router
 from server.api.timelapse import router as timelapse_router
@@ -82,6 +83,7 @@ app = FastAPI(
 
 # Подключение API-роутеров
 app.include_router(edge_router)
+app.include_router(edge_setup_router)
 app.include_router(auth_router)
 app.include_router(installations_router)
 app.include_router(cameras_router)

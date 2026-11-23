@@ -124,4 +124,15 @@ export const api = {
 
   // Версия системы
   getVersion: () => request('/api/version'),
+
+  // Системный статус (для разработчика)
+  getSystemStatus: () => request('/api/system/status'),
+
+  // Помощник настройки Edge-агента (Raspberry Pi)
+  getEdgeSetupDefaults: () => request('/api/edge/setup/defaults'),
+  createEdgeSetupToken: ({ server_url, netbird_setup_key, hardware_mode }) =>
+    request('/api/edge/setup/token', {
+      method: 'POST',
+      body: JSON.stringify({ server_url, netbird_setup_key, hardware_mode }),
+    }),
 };
