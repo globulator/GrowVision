@@ -1,7 +1,12 @@
 # Журнал контроля качества (QA Log)
 
 ## 1. Открытые дефекты и замечания
-*(Открытых дефектов нет)*
+- **[BUG-003]** | Критичность: `CRITICAL` | Статус: `OPEN`
+  - **Обнаружен в коммите:** `019bdf2` (ветка `fix/stage-8-web-and-bot`)
+  - **Где:** `clients/web/js/dialogs.js:33` и `clients/web/js/dialogs.js:94`
+  - **Суть проблемы:** В модуле `clients/web/js/dialogs.js` дважды присутствует объявление `export { showError as showErrorDialog };` (на строке 33 и на строке 94). По спецификации ECMAScript (§16.2.3.1 Static Semantics: Early Errors) дублирование экспортируемых идентификаторов в одном модуле вызывает `SyntaxError: Duplicate export of 'showErrorDialog'`. Из-за этого браузеры при загрузке `dialogs.js` падают с синтаксической ошибкой, и всё веб-приложение Web SPA не инициализируется.
+  - **Ожидаемое поведение:** Экспорт алиаса `showErrorDialog` должен быть объявлен ровно один раз (или отсутствовать, так как в `rpi_setup.js` импорт переведён на `showError`). В файле `dialogs.js` не должно быть дублирующихся строк `export { showError as showErrorDialog };`.
+  - **Фактическое поведение:** На строке 33 и строке 94 дублируется строка `export { showError as showErrorDialog };`. Тест `tests/e2e/test_stage8_web_e2e.py::test_stage8_web_es_modules_static_import_export_validation` падает с `AssertionError: В dialogs.js обнаружены дублирующиеся экспорты: ['showErrorDialog'] (SyntaxError в ES-модулях)`.
 
 ---
 

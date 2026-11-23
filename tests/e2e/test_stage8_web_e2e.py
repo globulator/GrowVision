@@ -265,8 +265,12 @@ def test_stage8_web_es_modules_static_import_export_validation(e2e_uvicorn_serve
                 name = parts[-1].strip()
                 if name:
                     block_exp.append(name)
-        all_exp = set(fn_exp + var_exp + block_exp)
-        exports[f.name] = all_exp
+        all_exp_list = fn_exp + var_exp + block_exp
+        dups = [x for x in set(all_exp_list) if all_exp_list.count(x) > 1]
+        assert not dups, (
+            f"В {f.name} обнаружены дублирующиеся экспорты: {dups} (SyntaxError в ES-модулях)"
+        )
+        exports[f.name] = set(all_exp_list)
 
     unresolved_imports = []
     for f in js_files:
