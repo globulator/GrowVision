@@ -4,27 +4,21 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 8.5
-- Название этапа: UX-полировка, единый вход без пароля, 30 FPS в боте, SVG-заглушки и изоляция mock-БД
-- Режим: FULL
-- Статус: DONE
+- Текущий этап: 8.6
+- Название этапа: Интеграция фирменного SVG-логотипа GrowVision в шапку Web SPA и favicon
+- Режим: FAST
+- Статус: BUILDING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: задачи следующего этапа
+- Ждём от пользователя: ничего (идёт разработка Builder)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| builder | web | stage-8/brand-logo | docs/tasks/stage-8-6-brand-logo-builder.md | — |
 
 ## Коммиты текущего этапа
-- Ветка stage-8/ux-and-mock-isolation создана от main (b61b3e2)
-- e24c69a feat(stage-8.5): unified web login, bot 30fps and cancel fsm, web gallery and snap fixes, mock isolation
-- 079333b docs(repo): update state to testing for stage 8.5
-- d8a98b9 docs(qa): update qa_log with stage 8.5 verification
-- eea5b41 chore(repo): merge stage-8/ux-and-mock-isolation into main
-- ba5efba chore(repo): bump version to 0.6.0 (tag v0.6.0)
-- d8df006 docs(repo): document stage 8.5 ux and mock isolation
+- Ветка stage-8/brand-logo создана от main (5a5b558)
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 8.5)
@@ -65,6 +59,6 @@
 - 2026-11-23: Ветка stage-8/ux-and-mock-isolation слита в main, поднята версия 0.6.0 (тег v0.6.0)
 - 2026-11-23: Scribe создал docs/stage_reports/stage-8.5.md, обновил README.md и docs/stage_reports/stage-8.md
 - 2026-11-23: Этап 8.5 окончательно закрыт (DONE)
-- 2026-11-23: QA проверил этап 8.5, вердикт PASS (319 тестов, 0 дефектов)
-- 2026-11-23: Ветка stage-8/ux-and-mock-isolation слита в main, поднята версия 0.6.0 (тег v0.6.0)
-- 2026-11-23: Scribe назначен для подготовки отчёта docs/stage_reports/stage-8.5.md и обновления документации
+- 2026-11-24: Пользователь запустил этап 8.6 (интеграция фирменного SVG-логотипа в Web SPA и favicon)
+- 2026-11-24: Создана ветка stage-8/brand-logo от main
+- 2026-11-24: Подготовлена карточка docs/tasks/stage-8-6-brand-logo-builder.md, статус BUILDING, задача передана Builder-у
