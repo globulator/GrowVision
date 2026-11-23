@@ -25,7 +25,9 @@ EXPECTED_TABLES = {
     "invite_codes",
     "plant_measurements",
     "system_settings",
+    "telegram_contacts",
     "users",
+    "web_verification_codes",
 }
 
 
@@ -53,7 +55,7 @@ def test_db_tables_and_pragmas(test_db):
     assert tables == EXPECTED_TABLES, (
         f"Ожидались таблицы {EXPECTED_TABLES}, получены {tables}"
     )
-    assert len(tables) == 8
+    assert len(tables) == len(EXPECTED_TABLES)
 
     with engine.connect() as conn:
         fk = conn.execute(text("PRAGMA foreign_keys;")).scalar()

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import sys
 
@@ -157,6 +158,41 @@ async def run_polling_with_reconnect(
             await asyncio.sleep(delay)
 
 
+async def poll_and_deliver_verification_codes(
+    bot: Bot, api_client: GrowVisionApiClient
+) -> None:
+    """Фоновая доставка кодов подтверждения Web SPA в Telegram."""
+    while True:
+        try:
+            codes = await api_client.get_pending_verification_codes()
+            for item in codes:
+                code_id = item.get("id")
+                tg_id = item.get("telegram_id")
+                code_val = item.get("code")
+                if not (code_id and tg_id and code_val):
+                    continue
+                try:
+                    text = (
+                        f"🔐 Ваш код подтверждения GrowVision: <b>{code_val}</b>\n\n"
+                        f"Код действителен 10 минут. Если вы не запрашивали регистрацию в веб-интерфейсе, "
+                        f"проигнорируйте это сообщение."
+                    )
+                    await bot.send_message(chat_id=tg_id, text=text)
+                    await api_client.ack_verification_code(code_id)
+                    logger.info(
+                        f"Код подтверждения #{code_id} успешно доставлен пользователю {tg_id}"
+                    )
+                except Exception as send_err:  # noqa: BLE001
+                    logger.warning(
+                        f"Не удалось отправить код подтверждения #{code_id} пользователю {tg_id}: {send_err}"
+                    )
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Ошибка при опросе очереди кодов подтверждения: {exc}")
+        await asyncio.sleep(2.0)
+
+
 async def main() -> None:
     """Точка входа Telegram-бота GrowVision."""
     config = validate_and_get_config()
@@ -178,12 +214,20 @@ async def main() -> None:
     api_client = GrowVisionApiClient(config)
     dp = build_dispatcher(config, api_client)
 
+    code_worker: asyncio.Task | None = None
     try:
         await wait_for_telegram_connection(bot, config)
+        code_worker = asyncio.create_task(
+            poll_and_deliver_verification_codes(bot, api_client)
+        )
         await run_polling_with_reconnect(dp, bot, config)
     except (asyncio.CancelledError, KeyboardInterrupt):
         logger.info("Получен сигнал остановки бота")
     finally:
+        if code_worker and not code_worker.done():
+            code_worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await code_worker
         logger.info("Остановка бота и закрытие сетевых соединений...")
         await api_client.close()
         await bot.session.close()

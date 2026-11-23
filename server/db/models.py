@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -181,6 +182,7 @@ class User(Base):
     external_id = Column(String(100), nullable=False)
     login = Column(String(100), nullable=False)
     role = Column(String(20), nullable=False)
+    password_hash = Column(String(255), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     authorized_at = Column(
         DateTime(timezone=True),
@@ -307,3 +309,45 @@ class SystemSetting(Base):
         server_default=func.now(),
         onupdate=utc_now,
     )
+
+
+class TelegramContact(Base):
+    """3.9. telegram_contacts — Связка username -> telegram_id для авторизации в Web SPA."""
+
+    __tablename__ = "telegram_contacts"
+    __table_args__ = ({"sqlite_autoincrement": True},)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    username = Column(String(100), unique=True, nullable=True, index=True)
+    first_name = Column(String(150), nullable=True)
+    last_name = Column(String(150), nullable=True)
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+        onupdate=utc_now,
+    )
+
+
+class WebVerificationCode(Base):
+    """3.10. web_verification_codes — Очередь кодов подтверждения регистрации Web SPA через Telegram."""
+
+    __tablename__ = "web_verification_codes"
+    __table_args__ = ({"sqlite_autoincrement": True},)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    telegram_id = Column(BigInteger, nullable=False, index=True)
+    code = Column(String(6), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    is_verified = Column(Boolean, nullable=False, default=False)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    is_delivered = Column(Boolean, nullable=False, default=False)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)

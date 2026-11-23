@@ -187,17 +187,18 @@ erDiagram
 | plant_index | INTEGER | NOT NULL, DEFAULT 0 | Порядковый номер куста на кадре (0 для MVP). |
 | area_px | FLOAT | NOT NULL, CHECK (>= 0) | Площадь маски растения в px. |
 
-### 3.5. `users` — Пользователи и сессии (Telegram-бот и CLI)
+### 3.5. `users` — Пользователи и сессии (Telegram-бот, CLI и Web SPA)
 
 Хранит историю пользователей и статус сессий авторизации. При выходе (`logout`) или принудительном завершении сессии (`terminate`/кик) запись **не удаляется**: она переводится в `is_active = FALSE` с фиксацией времени `logged_out_at` (что сохраняет историю сессий и привязку `login` к `external_id`). Роль «Гость» отдельной записью не хранится: это неавторизованный клиент, которому в таблице соответствует отсутствие активной записи (`is_active = TRUE`).
 
 | Поле | Тип | Ограничения | Описание |
 |---|---|---|---|
 | id | INTEGER | PK, AUTOINCREMENT | Уникальный ID записи. |
-| client_type | VARCHAR(20) | NOT NULL, CHECK (IN ('telegram', 'cli')) | Тип клиента. |
-| external_id | VARCHAR(100) | NOT NULL | `telegram_id` для бота или идентификатор профиля CLI (`cli_<uuid4>`). |
+| client_type | VARCHAR(20) | NOT NULL, CHECK (IN ('telegram', 'cli', 'web')) | Тип клиента. |
+| external_id | VARCHAR(100) | NOT NULL | `telegram_id` для бота и Web SPA или идентификатор профиля CLI (`cli_<uuid4>`). |
 | login | VARCHAR(100) | NOT NULL | Логин (имя), введённый пользователем (напр. «Андрей Бармин»). |
 | role | VARCHAR(20) | NOT NULL, CHECK (IN ('biologist', 'developer')) | Роль, определённая по паролю разработчика или инвайт-коду. |
+| password_hash | VARCHAR(255) | NULLABLE | Хэш личного пароля с солью (PBKDF2-HMAC-SHA256) для входа через Web SPA. |
 | is_active | BOOLEAN | NOT NULL, DEFAULT TRUE | Признак активной сессии. Только активные пользователи считаются авторизованными. |
 | authorized_at | DATETIME | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Время последней успешной авторизации (UTC). |
 | last_active_at | DATETIME | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Время последнего выполненного действия (UTC). |
@@ -270,6 +271,35 @@ Pull-модель: сервер ставит команды в очередь, �
 | used_at | DATETIME | NULLABLE | Время использования кода (UTC). При использовании фиксируется и код больше не действует. |
 | used_by_user_id | INTEGER | FK → users.id (SET NULL), NULLABLE | ID пользователя, активировавшего код. |
 | is_revoked | BOOLEAN | NOT NULL, DEFAULT FALSE | Признак ручного отзыва кода разработчиком. |
+
+### 3.9. `telegram_contacts` — Связка контактов Telegram для Web SPA
+
+Связка между `@username` и числовым `telegram_id`. Заполняется Telegram-ботом при каждом взаимодействии пользователя (`/start`, входящие сообщения). Используется сервером для однозначного резолва `@username` в постоянный числовой ID при регистрации и входе через веб-интерфейс.
+
+| Поле | Тип | Ограничения | Описание |
+|---|---|---|---|
+| id | INTEGER | PK, AUTOINCREMENT | Уникальный ID записи. |
+| telegram_id | BIGINT | UNIQUE, NOT NULL, INDEX | Постоянный числовой Telegram ID пользователя. |
+| username | VARCHAR(100) | UNIQUE, NULLABLE, INDEX | Имя пользователя в Telegram (хранится в нижнем регистре без ведущего `@`). |
+| first_name | VARCHAR(150) | NULLABLE | Имя пользователя в профиле Telegram. |
+| last_name | VARCHAR(150) | NULLABLE | Фамилия пользователя в профиле Telegram. |
+| updated_at | DATETIME | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Время последнего обновления контакта (UTC). |
+
+### 3.10. `web_verification_codes` — Очередь кодов подтверждения регистрации Web SPA
+
+Очередь 6-значных цифровых кодов для подтверждения привязки Telegram-аккаунта при регистрации в Web SPA. Бот опрашивает сервер, доставляет код пользователю в Telegram и отправляет подтверждение доставки (`ack`).
+
+| Поле | Тип | Ограничения | Описание |
+|---|---|---|---|
+| id | INTEGER | PK, AUTOINCREMENT | Уникальный ID записи. |
+| telegram_id | BIGINT | NOT NULL, INDEX | Целевой числовой Telegram ID. |
+| code | VARCHAR(6) | NOT NULL | 6-значный цифровой код подтверждения (напр. `528194`). |
+| created_at | DATETIME | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Время создания кода (UTC). |
+| expires_at | DATETIME | NOT NULL | Срок действия кода (UTC, `created_at + 10 минут`). |
+| is_verified | BOOLEAN | NOT NULL, DEFAULT FALSE | Флаг успешной проверки кода пользователем в веб-интерфейсе. |
+| verified_at | DATETIME | NULLABLE | Время проверки кода (UTC). |
+| is_delivered | BOOLEAN | NOT NULL, DEFAULT FALSE | Флаг отправки кода ботом пользователю в Telegram. |
+| delivered_at | DATETIME | NULLABLE | Время успешной отправки сообщения ботом (UTC). |
 
 ---
 
