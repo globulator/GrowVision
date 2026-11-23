@@ -7,25 +7,27 @@
 - Текущий этап: 8.4.1
 - Название этапа: Хотфикс багов живого теста (битый ES-импорт в Web SPA, перехват коллбэка таймлапса в Telegram-боте, спам логов httpx, favicon)
 - Режим: FULL
-- Статус: FIXING
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 1 из 3
-- Ждём от пользователя: ничего (идёт устранение дефекта Builder)
+- Ждём от пользователя: ничего (идёт повторная проверка QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| builder | full-stack | fix/stage-8-web-and-bot | docs/tasks/stage-8-4-1-hotfix-builder.md | — |
+| qa | full-stack | fix/stage-8-web-and-bot | docs/tasks/stage-8-4-1-hotfix-qa.md | — |
 
 ## Коммиты текущего этапа
 - Ветка fix/stage-8-web-and-bot создана от main (19f7552)
 - 019bdf2 fix(web,bot): resolve ES import syntax error, fix timelapse callback routing and suppress httpx logs
 - 0a625bb docs(repo): update state to testing for stage 8.4.1
 - 9ef3f4e docs(qa): record BUG-003 duplicate export in dialogs.js
+- 0bd8557 docs(repo): update state to fixing for bug-003
+- b647e2f fix(web): remove duplicate export in dialogs.js [BUG-003]
 
 ## Последний вердикт QA
-- Вердикт: FAIL (по этапу 8.4.1)
-- Открытые дефекты (ID): BUG-003 (дублирование export showErrorDialog в clients/web/js/dialogs.js)
+- Вердикт: FAIL (по этапу 8.4.1, устраняется BUG-003)
+- Открытые дефекты (ID): BUG-003 (исправлен в b647e2f, на проверке)
 - Отложенные (DEFERRED, ID): —
 
 ## Закрытые этапы
@@ -48,7 +50,6 @@
 - Этап 8.4: Помощник подключения Raspberry Pi в Web SPA, bootstrap-скрипт, gv-update и install_server (принят QA, слит в main, версия 0.5.1, отчёт docs/stage_reports/stage-8.4.md)
 
 ## История (последние 15 событий)
-- 2026-11-23: Создана ветка stage-8/rpi-setup-and-deploy от main
 - 2026-11-23: Builder реализовал этап 8.4 (коммит 0ec13b1, 310 тестов passed), статус READY_FOR_QA
 - 2026-11-23: Подготовлена карточка docs/tasks/stage-8-rpi-setup-and-deploy-qa.md, статус TESTING
 - 2026-11-23: QA проверил этап 8.4, вердикт PASS (310 тестов, 0 дефектов)
@@ -60,3 +61,4 @@
 - 2026-11-23: Builder реализовал хотфикс 8.4.1 (коммит 019bdf2, 312 тестов passed), статус READY_FOR_QA
 - 2026-11-23: Подготовлена карточка docs/tasks/stage-8-4-1-hotfix-qa.md, статус TESTING, задача передана QA
 - 2026-11-23: QA выявил дефект BUG-003 (дубликат export showErrorDialog в dialogs.js), вердикт FAIL (1/3), статус FIXING
+- 2026-11-23: Builder устранил BUG-003 (коммит b647e2f, тест валидации ES-модулей passed), статус READY_FOR_QA, передано QA в режиме VERIFY
