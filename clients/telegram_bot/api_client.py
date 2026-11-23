@@ -643,3 +643,45 @@ class GrowVisionApiClient:
             json=payload,
             timeout=15.0,
         )
+
+    # ------------------ 8. Синхронизация контактов и кодов Web SPA ------------------
+
+    async def sync_telegram_contact(
+        self,
+        telegram_id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+    ) -> dict[str, bool]:
+        """Синхронизация Telegram контакта на сервере для резолва в Web SPA."""
+        return await self._request(
+            "POST",
+            "/api/auth/telegram/contact",
+            user_id=telegram_id,
+            json={
+                "telegram_id": telegram_id,
+                "username": username,
+                "first_name": first_name,
+                "last_name": last_name,
+            },
+            timeout=10.0,
+        )
+
+    async def get_pending_verification_codes(self) -> list[dict[str, Any]]:
+        """Получение очереди кодов подтверждения Web SPA для отправки в Telegram."""
+        res = await self._request(
+            "GET",
+            "/api/auth/web/pending-codes",
+            user_id=0,
+            timeout=10.0,
+        )
+        return res if isinstance(res, list) else []
+
+    async def ack_verification_code(self, code_id: int) -> dict[str, bool]:
+        """Подтверждение отправки кода пользователю."""
+        return await self._request(
+            "POST",
+            f"/api/auth/web/pending-codes/{code_id}/ack",
+            user_id=0,
+            timeout=10.0,
+        )

@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -20,6 +22,19 @@ class DebugLoggingMiddleware(BaseMiddleware):
         debug_logger = get_debug_logger()
         state: FSMContext | None = data.get("state")
         current_state = await state.get_state() if state else None
+
+        api_client = data.get("api_client")
+        from_user = getattr(event, "from_user", None)
+        if api_client and from_user and from_user.id:
+            with contextlib.suppress(Exception):
+                asyncio.create_task(
+                    api_client.sync_telegram_contact(
+                        telegram_id=from_user.id,
+                        username=from_user.username,
+                        first_name=from_user.first_name,
+                        last_name=from_user.last_name,
+                    )
+                )
 
         if isinstance(event, Message):
             user_id = event.from_user.id if event.from_user else 0

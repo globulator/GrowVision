@@ -78,6 +78,11 @@ def init_db(target_engine: Engine | None = None) -> None:
                     text("ALTER TABLE users ADD COLUMN logged_out_at DATETIME;")
                 )
                 conn.commit()
+            if "password_hash" not in user_cols:
+                conn.execute(
+                    text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255);")
+                )
+                conn.commit()
 
         # Безопасное удаление устаревших уникальных индексов на GPIO-пины (Этап 7.4)
         with contextlib.suppress(Exception):

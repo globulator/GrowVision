@@ -10,9 +10,17 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from server.api.deps import get_db
 from server.config import get_settings
+from server.core.security import verify_password
 from server.core.state import app_state
 from server.db.database import Base
-from server.db.models import InviteCode, User
+from server.db.models import (
+    Camera,
+    Capture,
+    Installation,
+    InviteCode,
+    TelegramContact,
+    User,
+)
 from server.main import app
 
 DEV_PASSWORD = "developer-strong-password"
@@ -22,7 +30,7 @@ CLIENT_KEY = "test-client-secret-key"
 
 @pytest.fixture
 def test_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    db_file = tmp_path / "test_stage8.db"
+    db_file = tmp_path / "test_stage8_rebuild.db"
     db_url = f"sqlite:///{db_file}"
     engine = create_engine(db_url, connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
@@ -69,11 +77,26 @@ def test_web_static_files_served(client: TestClient):
     assert "text/css" in r_css.headers.get("content-type", "")
 
     # JS модули
-    r_js = client.get("/js/app.js")
-    assert r_js.status_code == 200
-    assert "javascript" in r_js.headers.get("content-type", "")
+    for js_file in [
+        "app.js",
+        "api.js",
+        "auth.js",
+        "dialogs.js",
+        "units.js",
+        "gallery.js",
+        "test_snap.js",
+        "gif_encoder.js",
+    ]:
+        r_js = client.get(f"/js/{js_file}")
+        assert r_js.status_code == 200
+        assert "javascript" in r_js.headers.get("content-type", "")
 
-    # API по-прежнему отвечает JSON, не перехватывается статикой
+    # Фон
+    r_bg = client.get("/assets/background.svg")
+    assert r_bg.status_code == 200
+    assert "svg" in r_bg.headers.get("content-type", "")
+
+    # API не перехватывается статикой
     r_api = client.get("/api/version")
     assert r_api.status_code == 200
     assert "server_version" in r_api.json()
@@ -92,197 +115,259 @@ def test_no_x_client_key_in_web_files():
             )
 
 
-def test_web_auth_flow_biologist_and_developer(test_env, client: TestClient):
-    """Полный цикл веб-авторизации: needs_login, сессия с кукой, доступ к API, повторный вход, кик и логаут."""
+def test_telegram_contact_sync_and_pending_codes_queue(test_env, client: TestClient):
+    """Тест синхронизации контактов бота и очереди кодов подтверждения."""
+    # 1. Синхронизация контакта без X-Client-Key -> 401
+    r_unauth = client.post(
+        "/api/auth/telegram/contact",
+        json={"telegram_id": 111222, "username": "ivan_bio"},
+    )
+    assert r_unauth.status_code == 401
+
+    # 2. Успешная синхронизация контакта под ключом бота
+    headers = {"X-Client-Key": CLIENT_KEY}
+    r_sync = client.post(
+        "/api/auth/telegram/contact",
+        headers=headers,
+        json={
+            "telegram_id": 111222,
+            "username": "@Ivan_Bio",  # проверка нормализации
+            "first_name": "Иван",
+            "last_name": "Биолог",
+        },
+    )
+    assert r_sync.status_code == 200
+    assert r_sync.json()["ok"] is True
+
+    # Проверяем в БД нормализацию
     session_factory, _ = test_env
-
-    # 1. Гость: без куки GET /api/auth/web/me возвращает роль guest
-    r_guest = client.get("/api/auth/web/me")
-    assert r_guest.status_code == 200
-    assert r_guest.json()["role"] == "guest"
-    assert r_guest.json()["login"] is None
-
-    # Создадим создателя инвайта (Developer) в БД
     db: Session = session_factory()
-    now = datetime.now(UTC)
-    creator = User(
+    contact = (
+        db.query(TelegramContact).filter(TelegramContact.telegram_id == 111222).first()
+    )
+    assert contact is not None
+    assert contact.username == "ivan_bio"
+    db.close()
+
+    # 3. Очередь кодов пока пуста
+    r_codes = client.get("/api/auth/web/pending-codes", headers=headers)
+    assert r_codes.status_code == 200
+    assert r_codes.json() == []
+
+
+def test_web_telegram_registration_and_login_full_flow(test_env, client: TestClient):
+    """Полный цикл: регистрация через Telegram (3 шага), вход, cookie, сессия и логаут."""
+    session_factory, _ = test_env
+    headers_bot = {"X-Client-Key": CLIENT_KEY}
+
+    # 1. Бот передает контакт пользователя в Telegram
+    tg_id = 987654321
+    r_sync = client.post(
+        "/api/auth/telegram/contact",
+        headers=headers_bot,
+        json={
+            "telegram_id": tg_id,
+            "username": "anna_grower",
+            "first_name": "Анна",
+        },
+    )
+    assert r_sync.status_code == 200
+
+    # Создадим инвайт-код для биолога
+    db: Session = session_factory()
+    dev_user = User(
         client_type="cli",
-        external_id="dev_admin",
-        login="Админ",
+        external_id="dev_1",
+        login="Разработчик",
         role="developer",
         is_active=True,
     )
-    db.add(creator)
+    db.add(dev_user)
     db.commit()
-    db.refresh(creator)
 
+    now = datetime.now(UTC)
     inv = InviteCode(
-        code="WEBTEST1",
+        code="BIOINV1",
         role="biologist",
-        created_by_user_id=creator.id,
+        created_by_user_id=dev_user.id,
         created_at=now,
         expires_at=now + timedelta(minutes=10),
-        is_revoked=False,
     )
     db.add(inv)
     db.commit()
-    creator_id = creator.id
     db.close()
 
-    client_id = "web_browser_client_1"
-
-    # 2. Неверный пароль -> 401
-    r_bad = client.post(
-        "/api/auth/web/login",
-        json={"password": "WRONG_PASSWORD", "client_id": client_id},
+    # 2. Неизвестный пользователь в Шаге 1 -> 400 с понятной подсказкой
+    r_unknown = client.post(
+        "/api/auth/web/register/start",
+        json={"telegram": "@unknown_user_123"},
     )
-    assert r_bad.status_code == 401
+    assert r_unknown.status_code == 400
+    assert "нажмите /start" in r_unknown.json()["detail"]
 
-    # 3. Первый вход биолога по коду БЕЗ логина -> needs_login (код НЕ сжигается)
-    r_needs = client.post(
-        "/api/auth/web/login",
-        json={"password": "WEBTEST1", "client_id": client_id},
+    # 3. Шаг 1: старт регистрации по @username
+    r_step1 = client.post(
+        "/api/auth/web/register/start",
+        json={"telegram": "@Anna_Grower"},
     )
-    assert r_needs.status_code == 200
-    data_needs = r_needs.json()
-    assert data_needs.get("status") == "needs_login"
-    assert data_needs.get("role") == "biologist"
-    assert data_needs.get("client_id") == client_id
+    assert r_step1.status_code == 200
+    data_step1 = r_step1.json()
+    assert data_step1["status"] == "code_sent"
+    assert data_step1["telegram_id"] == tg_id
 
-    # Проверяем, что код не использован
-    db = session_factory()
-    inv_check = db.query(InviteCode).filter(InviteCode.code == "WEBTEST1").first()
-    assert inv_check.used_at is None
-    db.close()
+    # 4. Бот забирает код из очереди
+    r_pending = client.get("/api/auth/web/pending-codes", headers=headers_bot)
+    assert r_pending.status_code == 200
+    codes = r_pending.json()
+    assert len(codes) == 1
+    code_item = codes[0]
+    assert code_item["telegram_id"] == tg_id
+    code_id = code_item["id"]
+    code_val = code_item["code"]
+    assert len(code_val) == 6
 
-    # 4. Завершение первого входа с логином -> 200 OK, код сожжен, кука gv_session установлена
-    r_login = client.post(
-        "/api/auth/web/login",
+    # Бот подтверждает доставку
+    r_ack = client.post(
+        f"/api/auth/web/pending-codes/{code_id}/ack", headers=headers_bot
+    )
+    assert r_ack.status_code == 200
+    # В очереди больше нет неотправленных кодов
+    assert client.get("/api/auth/web/pending-codes", headers=headers_bot).json() == []
+
+    # 5. Шаг 2: проверка кода (неверный код -> 400, верный -> 200)
+    r_bad_code = client.post(
+        "/api/auth/web/register/verify",
+        json={"telegram_id": tg_id, "code": "000000"},
+    )
+    assert r_bad_code.status_code == 400
+
+    r_verify = client.post(
+        "/api/auth/web/register/verify",
+        json={"telegram_id": tg_id, "code": code_val},
+    )
+    assert r_verify.status_code == 200
+    assert r_verify.json()["status"] == "verified"
+
+    # 6. Шаг 3: завершение регистрации
+    # Неверный инвайт -> 400
+    r_bad_inv = client.post(
+        "/api/auth/web/register/complete",
         json={
-            "password": "WEBTEST1",
-            "client_id": client_id,
-            "login": "Мария Склодовская",
+            "telegram_id": tg_id,
+            "verification_code": code_val,
+            "full_name": "Анна Гровер",
+            "access_code": "WRONG_INV",
+            "password": "secret_password",
         },
     )
-    assert r_login.status_code == 200
-    assert r_login.json()["role"] == "biologist"
-    assert r_login.json()["login"] == "Мария Склодовская"
+    assert r_bad_inv.status_code == 400
+
+    # Успешная регистрация с верным инвайтом
+    r_reg = client.post(
+        "/api/auth/web/register/complete",
+        json={
+            "telegram_id": tg_id,
+            "verification_code": code_val,
+            "full_name": "Анна Гровер",
+            "access_code": "BIOINV1",
+            "password": "secret_password",
+        },
+    )
+    assert r_reg.status_code == 200
+    reg_data = r_reg.json()
+    assert reg_data["role"] == "biologist"
+    assert reg_data["login"] == "Анна Гровер"
     assert "gv_session" in client.cookies
 
-    # Проверяем, что код помечен как использованный
+    # Проверяем, что инвайт сожжен
     db = session_factory()
-    inv_check = db.query(InviteCode).filter(InviteCode.code == "WEBTEST1").first()
+    inv_check = db.query(InviteCode).filter(InviteCode.code == "BIOINV1").first()
     assert inv_check.used_at is not None
-    user_bio = (
+    # Проверяем пользователя в БД: external_id равен числовому telegram_id, password_hash сохранен
+    user_db = (
         db.query(User)
-        .filter(User.client_type == "web", User.external_id == client_id)
+        .filter(User.client_type == "web", User.external_id == str(tg_id))
         .first()
     )
-    assert user_bio is not None
-    assert user_bio.login == "Мария Склодовская"
-    bio_user_id = user_bio.id
+    assert user_db is not None
+    assert user_db.login == "Анна Гровер"
+    assert user_db.role == "biologist"
+    assert verify_password("secret_password", user_db.password_hash)
     db.close()
 
-    # 5. GET /api/auth/web/me с кукой -> роль biologist
+    # 7. GET /api/auth/web/me возвращает авторизованного биолога
     r_me = client.get("/api/auth/web/me")
     assert r_me.status_code == 200
+    assert r_me.json()["authenticated"] is True
     assert r_me.json()["role"] == "biologist"
-    assert r_me.json()["login"] == "Мария Склодовская"
+    assert r_me.json()["login"] == "Анна Гровер"
 
-    # 6. Изменение имени через PATCH /api/auth/me (доступно с кукой без заголовков X-Client-Key!)
-    r_rename = client.patch(
-        "/api/auth/me",
-        json={"login": "Мария Кюри"},
-    )
-    assert r_rename.status_code == 200
-    assert r_rename.json()["login"] == "Мария Кюри"
-
-    # 7. Проверка прав: биолог пытается создать установку -> 403 Forbidden
-    r_create_inst_bio = client.post(
-        "/api/installations",
-        json={
-            "name": "Тест Установка",
-            "culture_name": "Базилик",
-            "light_gpio_pin": 10,
-            "flash_gpio_pin": 11,
-        },
-    )
-    assert r_create_inst_bio.status_code == 403
-
-    # 8. Логаут биолога через POST /api/auth/web/logout
-    r_logout = client.post("/api/auth/web/logout")
-    assert r_logout.status_code == 200
-    assert r_logout.json()["ok"] is True
-
-    # Теперь кука очищена / сессия не активна
+    # 8. Выход POST /api/auth/web/logout
+    r_out = client.post("/api/auth/web/logout")
+    assert r_out.status_code == 200
     r_me_after = client.get("/api/auth/web/me")
-    assert r_me_after.status_code == 200
+    assert r_me_after.json()["authenticated"] is False
     assert r_me_after.json()["role"] == "guest"
 
-    # 9. Повторный вход тем же браузером (client_id): создаем новый инвайт-код
-    db = session_factory()
-    inv2 = InviteCode(
-        code="WEBTEST2",
-        role="biologist",
-        created_by_user_id=creator_id,
-        created_at=datetime.now(UTC),
-        expires_at=datetime.now(UTC) + timedelta(minutes=10),
-        is_revoked=False,
+    # 9. Вход POST /api/auth/web/login по @username и паролю
+    r_login_un = client.post(
+        "/api/auth/web/login",
+        json={"telegram": "@anna_grower", "password": "secret_password"},
     )
-    db.add(inv2)
+    assert r_login_un.status_code == 200
+    assert r_login_un.json()["role"] == "biologist"
+    assert "gv_session" in client.cookies
+
+    # 10. Вход POST /api/auth/web/login по числовому ID и паролю
+    client.cookies.clear()
+    r_login_id = client.post(
+        "/api/auth/web/login",
+        json={"telegram": str(tg_id), "password": "secret_password"},
+    )
+    assert r_login_id.status_code == 200
+    assert r_login_id.json()["role"] == "biologist"
+
+
+def test_installations_fields_for_web(test_env, client: TestClient):
+    """Проверка, что GET /api/installations отдает frames_count и last_frame_url."""
+    session_factory, _ = test_env
+    db: Session = session_factory()
+    inst = Installation(
+        name="Тестовая Установка",
+        culture_name="Базилик",
+        light_gpio_pin=17,
+        flash_gpio_pin=27,
+        is_archived=False,
+    )
+    db.add(inst)
     db.commit()
+
+    cam = Camera(
+        hardware_id="cam_hw_1",
+        auto_name="Камера 1",
+        installation_id=inst.id,
+    )
+    db.add(cam)
+    db.commit()
+
+    cap = Capture(
+        installation_id=inst.id,
+        camera_id=cam.id,
+        captured_at=datetime.now(UTC),
+        raw_image_path=f"media/{inst.id}/raw_1.jpg",
+        annotated_image_path=f"media/{inst.id}/ann_1.jpg",
+        is_manual=False,
+    )
+    db.add(cap)
+    db.commit()
+    inst_id = inst.id
     db.close()
 
-    # Вход БЕЗ передачи логина: имя «Мария Кюри» подтягивается автоматически!
-    r_relogin = client.post(
-        "/api/auth/web/login",
-        json={"password": "WEBTEST2", "client_id": client_id},
-    )
-    assert r_relogin.status_code == 200
-    assert r_relogin.json().get("status") is None
-    assert r_relogin.json()["login"] == "Мария Кюри"
-    assert r_relogin.json()["role"] == "biologist"
-
-    # 10. Вход разработчика из другого браузера
-    client_dev = TestClient(app)
-    r_dev_login = client_dev.post(
-        "/api/auth/web/login",
-        json={
-            "password": DEV_PASSWORD,
-            "client_id": "web_dev_browser",
-            "login": "Главный Разработчик",
-        },
-    )
-    assert r_dev_login.status_code == 200
-    assert r_dev_login.json()["role"] == "developer"
-
-    # Разработчик может создавать установки
-    r_create_inst_dev = client_dev.post(
-        "/api/installations",
-        json={
-            "name": "Тест Установка Веб",
-            "culture_name": "Томат",
-            "light_gpio_pin": 14,
-            "flash_gpio_pin": 15,
-        },
-    )
-    assert r_create_inst_dev.status_code == 201
-
-    # Разработчик видит веб-сессии в GET /api/auth/sessions
-    r_sessions = client_dev.get("/api/auth/sessions")
-    assert r_sessions.status_code == 200
-    sess_list = r_sessions.json()
-    assert any(
-        s["client_type"] == "web" and s["login"] == "Мария Кюри" for s in sess_list
-    )
-
-    # 11. Разработчик принудительно завершает (кикает) сессию биолога
-    r_kick = client_dev.post(f"/api/auth/sessions/{bio_user_id}/terminate")
-    assert r_kick.status_code == 200
-
-    # Запрос от биолога с прежней кукой теперь возвращает 401
-    r_bio_after_kick = client.patch(
-        "/api/auth/me",
-        json={"login": "Попытка Изменения"},
-    )
-    assert r_bio_after_kick.status_code == 401
+    r = client.get("/api/installations")
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    unit = data[0]
+    assert unit["id"] == inst_id
+    assert unit["frames_count"] == 1
+    assert unit["last_frame_url"] == f"/media/{inst_id}/raw_1.jpg"

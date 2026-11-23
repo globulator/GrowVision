@@ -356,25 +356,64 @@ pending --claim--> running --result--> done | error
 ```
 Если сессия не найдена или `is_active == False` → `401`.
 
-#### Веб-авторизация (Web SPA — Cookie-сессии)
+#### Синхронизация контактов Telegram и доставка кодов (для Telegram-бота)
 
-- `POST /api/auth/web/login`:
-  Вход в систему из браузера по паролю разработчика или одноразовому коду биолога. **Не требует заголовка `X-Client-Key`**.
-  Тело запроса:
+- `POST /api/auth/telegram/contact`:
+  Доступ: `X-Client-Key`.
+  Синхронизация связки `@username` → `telegram_id` при взаимодействии пользователя с ботом.
+  Тело:
   ```json
   {
-    "password": "secret_or_code",
-    "login": "Иван Иванов",
-    "client_id": "web_custom_id"
+    "telegram_id": 123456789,
+    "username": "ivan_bio",
+    "first_name": "Иван",
+    "last_name": "Иванов"
   }
   ```
-  Правила:
-  - При первом входе без `login`: возвращается `{"status": "needs_login", "role": role, "client_id": "..."}`, одноразовый код **не сжигается**.
-  - При успешном завершении: устанавливается защищённая `HttpOnly`-cookie `gv_session` (`SameSite=Lax`, `Path=/`), ответ:
-    ```json
-    {"role": "biologist", "login": "Иван Иванов", "client_id": "web_..."}
-    ```
-  - При повторном входе с тем же `client_id`: сохранённый `user.login` подтягивается автоматически.
+  Ответ: `200 {"ok": true}`.
+
+- `GET /api/auth/web/pending-codes`:
+  Доступ: `X-Client-Key`.
+  Очередь неотправленных кодов подтверждения Web SPA для доставки пользователю ботом.
+  Ответ: `200 [{"id": 1, "telegram_id": 123456789, "code": "582194"}]`.
+
+- `POST /api/auth/web/pending-codes/{id}/ack`:
+  Доступ: `X-Client-Key`.
+  Подтверждение отправки кода ботом пользователю.
+  Ответ: `200 {"ok": true}`.
+
+#### Веб-регистрация и авторизация (Web SPA — Cookie-сессии)
+
+Не требует заголовка `X-Client-Key`. Авторизация работает исключительно через подписанную `HttpOnly`-cookie `gv_session` (`SameSite=Lax`).
+
+- `POST /api/auth/web/register/start`:
+  Шаг 1 регистрации. Тело: `{"telegram": "@username_or_id"}`.
+  Резолвит ввод в числовой `telegram_id` через `telegram_contacts`. Если контакт не найден, возвращает 400 с подсказкой нажать `/start` в боте. Генерирует 6-значный код (TTL 10 мин) и ставит в очередь отправки ботом.
+  Ответ `200`: `{"status": "code_sent", "telegram_id": 123456789, "expires_in": 600}`.
+
+- `POST /api/auth/web/register/verify`:
+  Шаг 2 регистрации. Тело: `{"telegram_id": 123456789, "code": "582194"}`.
+  Проверяет 6-значный код. При успехе помечает его верифицированным.
+  Ответ `200`: `{"status": "verified", "telegram_id": 123456789}`.
+
+- `POST /api/auth/web/register/complete`:
+  Шаг 3 регистрации. Тело:
+  ```json
+  {
+    "telegram_id": 123456789,
+    "verification_code": "582194",
+    "full_name": "Иван Иванов",
+    "access_code": "INVITE_OR_DEV_PASS",
+    "password": "my_secure_password"
+  }
+  ```
+  Проверяет код, инвайт-код/пароль разработчика (инвайт биолога сжигается), хэширует пароль (PBKDF2-HMAC-SHA256), сохраняет пользователя с `external_id = str(telegram_id)`, выставляет `HttpOnly`-cookie `gv_session`.
+  Ответ `200`: `{"role": "biologist", "login": "Иван Иванов", "status": "ok"}`.
+
+- `POST /api/auth/web/login`:
+  Вход в систему из браузера по Telegram (`@username` или ID) и личному паролю. Лимит: 5 попыток в минуту. Устанавливает `HttpOnly`-cookie `gv_session`.
+  Тело: `{"telegram": "@username_or_id", "password": "my_secure_password"}`.
+  Ответ `200`: `{"role": "biologist", "login": "Иван Иванов", "status": "ok"}`.
 
 - `POST /api/auth/web/logout`:
   Выход из системы. Очищает сессионную куку `gv_session` (`delete_cookie`) и переводит запись пользователя в `is_active = False`.
@@ -382,8 +421,8 @@ pending --claim--> running --result--> done | error
 
 - `GET /api/auth/web/me`:
   Проверка статуса текущей веб-сессии по куке `gv_session`. Не требует ключей и не возвращает 401 для гостей.
-  - Если активна: `{"role": "biologist", "login": "...", "authorized_at": "...", "last_active_at": "..."}`.
-  - Если нет куки или сессия завершена: `{"role": "guest", "login": null}`.
+  - Если активна: `{"authenticated": true, "role": "biologist", "login": "Иван Иванов", "external_id": "123456789"}`.
+  - Если нет куки или сессия завершена: `{"authenticated": false, "role": "guest", "login": null}`.
 
 #### Эндпоинты управления кодами приглашений (только Developer)
 
@@ -446,7 +485,7 @@ pending --claim--> running --result--> done | error
 
 | Роль | Поля |
 |---|---|
-| Гость | `id`, `name`, `culture_name`, `is_archived`, `last_area_display`, `last_frame_raw_url`, `warnings[]`. Без пинов и `hardware_id`. Всегда возвращаются только активные установки (параметр `include_archived` игнорируется). |
+| Гость | `id`, `name`, `culture_name`, `is_archived`, `last_area_display`, `last_frame_raw_url`, `last_frame_url`, `frames_count`, `warnings[]`. Без пинов и `hardware_id`. Всегда возвращаются только активные установки (параметр `include_archived` игнорируется). |
 | Biologist | Поля Гостя + `aruco_size_mm`, `created_at`, `cameras[]` (`id`, `auto_name`, `is_online`), `capture_delay_sec`. |
 | Developer | Поля Biologist + `light_gpio_pin`, `flash_gpio_pin`, `light_state`, `flash_state`, `cameras[].hardware_id`. |
 

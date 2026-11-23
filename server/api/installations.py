@@ -105,6 +105,7 @@ def serialize_installation(
     area_display, last_raw_url = get_installation_last_capture_info(
         inst.id, inst.aruco_size_mm, db
     )
+    frames_count = db.query(Capture).filter(Capture.installation_id == inst.id).count()
     data: dict[str, Any] = {
         "id": inst.id,
         "name": inst.name,
@@ -112,6 +113,8 @@ def serialize_installation(
         "is_archived": inst.is_archived,
         "last_area_display": area_display,
         "last_frame_raw_url": last_raw_url,
+        "last_frame_url": last_raw_url,
+        "frames_count": frames_count,
         "warnings": warnings if warnings is not None else [],
     }
 

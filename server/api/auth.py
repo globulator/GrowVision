@@ -18,7 +18,8 @@ from server.api.deps import (
 )
 from server.config import get_settings
 from server.core.rate_limit import login_limiter
-from server.db.models import InviteCode, User
+from server.core.security import hash_password, verify_password
+from server.db.models import InviteCode, TelegramContact, User, WebVerificationCode
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -49,32 +50,106 @@ class LoginResponse(BaseModel):
     status: str | None = None
 
 
+class TelegramContactSync(BaseModel):
+    """Синхронизация связки username -> telegram_id от Telegram-бота."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    telegram_id: int
+    username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+
+
+class PendingCodeItem(BaseModel):
+    """Элемент очереди кодов подтверждения для доставки ботом."""
+
+    id: int
+    telegram_id: int
+    code: str
+
+
+class WebRegisterStartRequest(BaseModel):
+    """Тело запроса POST /api/auth/web/register/start."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    telegram: str
+
+    @field_validator("telegram")
+    @classmethod
+    def validate_telegram(cls, v: str) -> str:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError("Поле telegram не может быть пустым")
+        return v.strip()
+
+
+class WebRegisterVerifyRequest(BaseModel):
+    """Тело запроса POST /api/auth/web/register/verify."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    telegram_id: int
+    code: str
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError("Код подтверждения не может быть пустым")
+        return v.strip()
+
+
+class WebRegisterCompleteRequest(BaseModel):
+    """Тело запроса POST /api/auth/web/register/complete."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    telegram_id: int
+    verification_code: str
+    full_name: str
+    access_code: str
+    password: str
+
+    @field_validator("full_name", "access_code", "password", "verification_code")
+    @classmethod
+    def validate_non_empty(cls, v: str, info: ValidationInfo) -> str:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(f"Поле {info.field_name} не может быть пустым")
+        return v.strip()
+
+
 class WebLoginRequest(BaseModel):
     """Тело запроса POST /api/auth/web/login."""
 
     model_config = ConfigDict(extra="ignore")
 
+    telegram: str
     password: str
-    login: str | None = None
-    client_id: str | None = None
+
+    @field_validator("telegram", "password")
+    @classmethod
+    def validate_fields(cls, v: str, info: ValidationInfo) -> str:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(f"Поле {info.field_name} не может быть пустым")
+        return v.strip()
 
 
 class WebLoginResponse(BaseModel):
     """Ответ на веб-вход."""
 
-    role: str | None = None
-    login: str | None = None
-    status: str | None = None
-    client_id: str | None = None
+    role: str
+    login: str
+    status: str = "ok"
 
 
 class WebMeResponse(BaseModel):
     """Ответ на GET /api/auth/web/me."""
 
+    authenticated: bool
     role: str
     login: str | None = None
-    authorized_at: str | None = None
-    last_active_at: str | None = None
+    external_id: str | None = None
 
 
 class MeResponse(BaseModel):
@@ -321,100 +396,273 @@ def update_me(
     )
 
 
-# ================== Веб-авторизация (Web SPA) ==================
+# ================== Telegram синхронизация и доставка кодов ==================
 
 
 @router.post(
-    "/web/login",
-    response_model=WebLoginResponse,
-    response_model_exclude_none=True,
+    "/telegram/contact",
+    response_model=dict[str, bool],
+    dependencies=[Depends(verify_client_key)],
 )
-def auth_web_login(
-    body: WebLoginRequest,
+def sync_telegram_contact(
+    body: TelegramContactSync,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, bool]:
+    """Синхронизация связки username -> telegram_id от Telegram-бота."""
+    norm_username = (
+        body.username.lstrip("@").strip().lower()
+        if (body.username and body.username.strip())
+        else None
+    )
+
+    contact = (
+        db.query(TelegramContact)
+        .filter(TelegramContact.telegram_id == body.telegram_id)
+        .first()
+    )
+    now = datetime.now(UTC)
+    if contact:
+        contact.username = norm_username
+        contact.first_name = body.first_name
+        contact.last_name = body.last_name
+        contact.updated_at = now
+    else:
+        # Если username уже привязан к другой записи, освобождаем
+        if norm_username:
+            existing_user = (
+                db.query(TelegramContact)
+                .filter(TelegramContact.username == norm_username)
+                .first()
+            )
+            if existing_user:
+                existing_user.username = None
+
+        contact = TelegramContact(
+            telegram_id=body.telegram_id,
+            username=norm_username,
+            first_name=body.first_name,
+            last_name=body.last_name,
+            updated_at=now,
+        )
+        db.add(contact)
+
+    db.commit()
+    return {"ok": True}
+
+
+@router.get(
+    "/web/pending-codes",
+    response_model=list[PendingCodeItem],
+    dependencies=[Depends(verify_client_key)],
+)
+def get_pending_verification_codes(
+    db: Annotated[Session, Depends(get_db)],
+) -> list[PendingCodeItem]:
+    """Очередь неотправленных кодов подтверждения регистрации для Telegram-бота."""
+    now = datetime.now(UTC)
+    codes = (
+        db.query(WebVerificationCode)
+        .filter(
+            WebVerificationCode.is_delivered.is_(False),
+            WebVerificationCode.is_verified.is_(False),
+            WebVerificationCode.expires_at > now,
+        )
+        .order_by(WebVerificationCode.created_at.asc())
+        .all()
+    )
+    return [
+        PendingCodeItem(id=c.id, telegram_id=c.telegram_id, code=c.code) for c in codes
+    ]
+
+
+@router.post(
+    "/web/pending-codes/{code_id}/ack",
+    response_model=dict[str, bool],
+    dependencies=[Depends(verify_client_key)],
+)
+def ack_verification_code(
+    code_id: int,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, bool]:
+    """Подтверждение доставки кода пользователю в Telegram."""
+    rec = (
+        db.query(WebVerificationCode).filter(WebVerificationCode.id == code_id).first()
+    )
+    if rec:
+        rec.is_delivered = True
+        rec.delivered_at = datetime.now(UTC)
+        db.commit()
+    return {"ok": True}
+
+
+# ================== Веб-регистрация и авторизация (Web SPA) ==================
+
+
+def resolve_telegram_id(telegram_input: str, db: Session) -> int:
+    """Резолвит ввод пользователя (@username или числовой ID) в числовой telegram_id."""
+    val = telegram_input.strip()
+    if val.isdigit() or (val.startswith("-") and val[1:].isdigit()):
+        return int(val)
+
+    norm_username = val.lstrip("@").strip().lower()
+    contact = (
+        db.query(TelegramContact)
+        .filter(TelegramContact.username == norm_username)
+        .first()
+    )
+    if not contact:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Пользователь с таким Telegram не найден. Пожалуйста, откройте Telegram-бота GrowVision, нажмите /start и повторите попытку.",
+        )
+    return contact.telegram_id
+
+
+@router.post("/web/register/start")
+def auth_web_register_start(
+    body: WebRegisterStartRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Шаг 1 регистрации: валидация Telegram пользователя и отправка 6-значного кода."""
+    telegram_id = resolve_telegram_id(body.telegram, db)
+
+    now = datetime.now(UTC)
+    expires = now + timedelta(minutes=10)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+
+    ver_rec = WebVerificationCode(
+        telegram_id=telegram_id,
+        code=code,
+        created_at=now,
+        expires_at=expires,
+        is_verified=False,
+        is_delivered=False,
+    )
+    db.add(ver_rec)
+    db.commit()
+
+    return {
+        "status": "code_sent",
+        "telegram_id": telegram_id,
+        "expires_in": 600,
+    }
+
+
+@router.post("/web/register/verify")
+def auth_web_register_verify(
+    body: WebRegisterVerifyRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Шаг 2 регистрации: проверка введённого 6-значного кода."""
+    now = datetime.now(UTC)
+    rec = (
+        db.query(WebVerificationCode)
+        .filter(
+            WebVerificationCode.telegram_id == body.telegram_id,
+            WebVerificationCode.code == body.code.strip(),
+            WebVerificationCode.expires_at > now,
+            WebVerificationCode.is_verified.is_(False),
+        )
+        .order_by(WebVerificationCode.created_at.desc())
+        .first()
+    )
+    if not rec:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неверный или просроченный код подтверждения",
+        )
+
+    rec.is_verified = True
+    rec.verified_at = now
+    db.commit()
+
+    return {"status": "verified", "telegram_id": body.telegram_id}
+
+
+@router.post("/web/register/complete", response_model=WebLoginResponse)
+def auth_web_register_complete(
+    body: WebRegisterCompleteRequest,
     response: Response,
     db: Annotated[Session, Depends(get_db)],
-) -> Any:
-    """POST /api/auth/web/login.
-
-    Веб-вход по паролю или одноразовому коду с установкой HttpOnly-cookie (SameSite=Lax).
-    Не требует заголовка X-Client-Key.
-    """
-    client_id = (
-        body.client_id.strip() if (body.client_id and body.client_id.strip()) else None
+) -> WebLoginResponse:
+    """Шаг 3 регистрации: профиль, инвайт/пароль разработчика, личный пароль."""
+    now = datetime.now(UTC)
+    ver = (
+        db.query(WebVerificationCode)
+        .filter(
+            WebVerificationCode.telegram_id == body.telegram_id,
+            WebVerificationCode.code == body.verification_code.strip(),
+            WebVerificationCode.is_verified.is_(True),
+            WebVerificationCode.expires_at > now,
+        )
+        .first()
     )
-    allowed, retry_after = login_limiter.is_allowed("web", client_id or "browser")
-    if not allowed:
-        response.headers["Retry-After"] = str(retry_after)
+    if not ver:
         raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Превышен лимит попыток входа. Попробуйте позже.",
-            headers={"Retry-After": str(retry_after)},
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Код подтверждения не верифицирован или истёк",
         )
 
     settings = get_settings()
-    pwd_bytes = body.password.strip().encode("utf-8")
-    now = datetime.now(UTC)
-
+    access_code = body.access_code.strip()
     role: str | None = None
     matched_invite: InviteCode | None = None
 
     if settings.developer_password and secrets.compare_digest(
-        pwd_bytes, settings.developer_password.encode("utf-8")
+        access_code.encode("utf-8"), settings.developer_password.encode("utf-8")
     ):
         role = "developer"
     else:
-        invite = (
+        matched_invite = (
             db.query(InviteCode)
             .filter(
-                InviteCode.code == body.password.strip().upper(),
+                InviteCode.code == access_code.upper(),
                 InviteCode.used_at.is_(None),
                 InviteCode.is_revoked.is_(False),
                 InviteCode.expires_at > now,
             )
             .first()
         )
-        if invite:
-            role = invite.role
-            matched_invite = invite
-        elif settings.biologist_password and secrets.compare_digest(
-            pwd_bytes, settings.biologist_password.encode("utf-8")
-        ):
-            role = "biologist"
+        if matched_invite:
+            role = matched_invite.role or "biologist"
         else:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Неверный пароль или одноразовый код",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Неверный или просроченный код приглашения / пароль доступа",
             )
 
-    if not client_id:
-        client_id = f"web_{secrets.token_hex(12)}"
+    pwd = body.password.strip()
+    if len(pwd) < 4:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Пароль должен содержать не менее 4 символов",
+        )
+
+    full_name = body.full_name.strip()
+    if not full_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Имя и Фамилия не могут быть пустыми",
+        )
+
+    pwd_hash = hash_password(pwd)
+    ext_id = str(body.telegram_id)
 
     user = (
         db.query(User)
         .filter(
             User.client_type == "web",
-            User.external_id == client_id,
+            User.external_id == ext_id,
         )
         .first()
     )
-
-    resolved_login = body.login.strip() if (body.login and body.login.strip()) else None
-
     if not user:
-        if not resolved_login:
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "status": "needs_login",
-                    "role": role,
-                    "client_id": client_id,
-                },
-            )
         user = User(
             client_type="web",
-            external_id=client_id,
-            login=resolved_login,
+            external_id=ext_id,
+            login=full_name,
             role=role,
+            password_hash=pwd_hash,
             is_active=True,
             authorized_at=now,
             last_active_at=now,
@@ -423,10 +671,9 @@ def auth_web_login(
         db.add(user)
         db.flush()
     else:
-        if not resolved_login:
-            resolved_login = user.login
-        user.login = resolved_login
+        user.login = full_name
         user.role = role
+        user.password_hash = pwd_hash
         user.is_active = True
         user.authorized_at = now
         user.last_active_at = now
@@ -447,7 +694,68 @@ def auth_web_login(
         path="/",
     )
 
-    return WebLoginResponse(role=role, login=resolved_login, client_id=client_id)
+    return WebLoginResponse(role=role, login=full_name, status="ok")
+
+
+@router.post("/web/login", response_model=WebLoginResponse)
+def auth_web_login(
+    body: WebLoginRequest,
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+) -> WebLoginResponse:
+    """POST /api/auth/web/login.
+
+    Веб-вход по Telegram (@username или ID) и личному паролю.
+    Устанавливает HttpOnly-cookie gv_session (SameSite=Lax).
+    """
+    allowed, retry_after = login_limiter.is_allowed("web", body.telegram)
+    if not allowed:
+        response.headers["Retry-After"] = str(retry_after)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Превышен лимит попыток входа. Попробуйте позже.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    telegram_id = resolve_telegram_id(body.telegram, db)
+    ext_id = str(telegram_id)
+
+    user = (
+        db.query(User)
+        .filter(
+            User.client_type == "web",
+            User.external_id == ext_id,
+        )
+        .first()
+    )
+    if not user or not user.password_hash:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Пользователь не зарегистрирован в веб-интерфейсе. Пожалуйста, пройдите регистрацию.",
+        )
+
+    if not verify_password(body.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный Telegram ID / username или пароль",
+        )
+
+    now = datetime.now(UTC)
+    user.is_active = True
+    user.logged_out_at = None
+    user.last_active_at = now
+    db.commit()
+
+    cookie_val = create_session_cookie(user)
+    response.set_cookie(
+        key="gv_session",
+        value=cookie_val,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+    return WebLoginResponse(role=user.role, login=user.login, status="ok")
 
 
 @router.post("/web/logout")
@@ -483,12 +791,12 @@ def auth_web_me(
         user = verify_session_cookie(gv_session, db)
         if user:
             return WebMeResponse(
+                authenticated=True,
                 role=user.role,
                 login=user.login,
-                authorized_at=format_utc_z(user.authorized_at),
-                last_active_at=format_utc_z(user.last_active_at),
+                external_id=user.external_id,
             )
-    return WebMeResponse(role="guest", login=None)
+    return WebMeResponse(authenticated=False, role="guest", login=None)
 
 
 # ================== Управление приглашениями (Developer) ==================
