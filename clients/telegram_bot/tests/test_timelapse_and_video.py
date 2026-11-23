@@ -249,3 +249,45 @@ async def test_parallel_video_generation_protection(bot_config: BotConfig, mock_
         show_alert=True,
     )
     _user_video_locks.clear()
+
+
+@pytest.mark.asyncio
+async def test_frm_timelapse_callback_routing_without_value_error(
+    bot_config: BotConfig, mock_bot
+):
+    """Критерий Этапа 8.4.1: Коллбэк 'frm:timelapse:1' не падает в ValueError в навигации галереи, а корректно инициирует таймлапс."""
+    _user_video_locks.clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/installations/1":
+            return httpx.Response(
+                200,
+                json={
+                    "id": 1,
+                    "name": "Мята",
+                    "cameras": [{"id": 1, "name": "Cam 1"}],
+                },
+            )
+        if path == "/api/timelapse/1/frames":
+            return httpx.Response(
+                200,
+                json={"frames": [{"id": 10, "captured_at": "2026-11-23T10:00:00Z"}]},
+            )
+        if path == "/api/timelapse/1/video":
+            return httpx.Response(
+                200,
+                headers={"content-type": "image/jpeg"},
+                content=b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xdb",
+            )
+        return httpx.Response(404)
+
+    api_client = create_mock_api_client(bot_config, handler)
+    dp = build_dispatcher(bot_config, api_client)
+
+    cb = create_test_callback_query("frm:timelapse:1")
+    await dp.feed_update(mock_bot, Update(update_id=105, callback_query=cb))
+
+    mock_bot.send_photo.assert_called_once()
+    caption = mock_bot.send_photo.call_args[1]["caption"]
+    assert "Плановый кадр пока один, видео не собрано" in caption
