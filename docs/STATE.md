@@ -7,15 +7,15 @@
 - Текущий этап: 8.4.1
 - Название этапа: Хотфикс багов живого теста (битый ES-импорт в Web SPA, перехват коллбэка таймлапса в Telegram-боте, спам логов httpx, favicon)
 - Режим: FULL
-- Статус: STAGE_PASS
+- Статус: DONE
 - Итерация QA (кругов FAIL): 1 из 3
-- Ждём от пользователя: ничего (оформление документации Scribe)
+- Ждём от пользователя: задачи следующего этапа
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| scribe | docs | main | — | — |
+| — | — | — | — | — |
 
 ## Коммиты текущего этапа
 - Ветка fix/stage-8-web-and-bot создана от main (19f7552)
@@ -26,7 +26,9 @@
 - b647e2f fix(web): remove duplicate export in dialogs.js [BUG-003]
 - 0a3e4af docs(repo): update state to testing for bug-003 verification
 - 6ac2f4d docs(qa): update qa_log with stage 8.4.1 verification and mark BUG-003 fixed
+- 2673db2 chore(repo): merge fix/stage-8-web-and-bot into main
 - 1dcb680 chore(repo): bump version to 0.5.2 (tag v0.5.2)
+- b42e142 docs(repo): document stage 8.4.1 hotfix
 
 ## Последний вердикт QA
 - Вердикт: PASS (по этапу 8.4.1)
@@ -51,12 +53,9 @@
 - Этап 8.2: Фиксы Web SPA, разархивация, clean UI, прокси и логирование (принят QA, слит в main, версия 0.4.2, отчёт docs/stage_reports/stage-8.2.md)
 - Этап 8.3: Полная пересборка Web SPA с нуля по новому WEB_SPEC.md (принят QA, слит в main, версия 0.5.0, отчёт docs/stage_reports/stage-8.3.md)
 - Этап 8.4: Помощник подключения Raspberry Pi в Web SPA, bootstrap-скрипт, gv-update и install_server (принят QA, слит в main, версия 0.5.1, отчёт docs/stage_reports/stage-8.4.md)
+- Этап 8.4.1: Хотфикс багов живого теста (ES-импорт в Web SPA, коллбэк таймлапса в боте, логи httpx, favicon) (принят QA, слит в main, версия 0.5.2, отчёт docs/stage_reports/stage-8.4.1.md)
 
 ## История (последние 15 событий)
-- 2026-11-23: QA проверил этап 8.4, вердикт PASS (310 тестов, 0 дефектов)
-- 2026-11-23: Ветка stage-8/rpi-setup-and-deploy слита в main, поднята версия 0.5.1 (тег v0.5.1)
-- 2026-11-23: Scribe создал docs/stage_reports/stage-8.4.md, обновил README.md и docs/stage_reports/stage-8.md
-- 2026-11-23: Этап 8.4 окончательно закрыт (DONE)
 - 2026-11-23: Пользователь запустил хотфикс-этап 8.4.1 (ES-импорт в Web, коллбэк таймлапса в боте, логи httpx, favicon)
 - 2026-11-23: Создана ветка fix/stage-8-web-and-bot от main
 - 2026-11-23: Builder реализовал хотфикс 8.4.1 (коммит 019bdf2, 312 тестов passed), статус READY_FOR_QA
@@ -65,4 +64,5 @@
 - 2026-11-23: Builder устранил BUG-003 (коммит b647e2f, тест валидации ES-модулей passed), статус READY_FOR_QA, передано QA в режиме VERIFY
 - 2026-11-23: QA проверил этап 8.4.1 в режиме VERIFY, вердикт PASS (BUG-003 закрыт, 312 тестов passed)
 - 2026-11-23: Ветка fix/stage-8-web-and-bot слита в main, поднята версия 0.5.2 (тег v0.5.2)
-- 2026-11-23: Scribe назначен для подготовки отчёта docs/stage_reports/stage-8.4.1.md и обновления документации
+- 2026-11-23: Scribe создал docs/stage_reports/stage-8.4.1.md, обновил README.md и docs/stage_reports/stage-8.md
+- 2026-11-23: Этап 8.4.1 окончательно закрыт (DONE)
