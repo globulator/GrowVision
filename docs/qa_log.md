@@ -6,6 +6,16 @@
 ---
 
 ## 2. Исправленные дефекты (верифицировано QA)
+- **[STAGE-8.4] [web, server, scripts] Помощник подключения Raspberry Pi в Web SPA для разработчика, bootstrap-скрипт и скрипты деплоя (верифицировано QA)**
+  - **Коммиты:** `0ec13b1` (реализация) (ветка `stage-8/rpi-setup-and-deploy`)
+  - **Ключевые проверенные критерии:**
+    1. Права доступа: эндпоинты `GET /api/edge/setup/defaults` и `POST /api/edge/setup/token` доступны строго для роли `developer` (401 для анонимов, 403 для `guest`/`biologist`).
+    2. Безопасность и одноразовость токена: токен создается в in-memory хранилище (`_setup_tokens`) с TTL 600 с (10 мин); `GET /api/edge/setup/{token}` при первом обращении немедленно сжигает токен (удаляет из памяти) и возвращает bash-скрипт (`text/x-shellscript`); повторный запрос возвращает 404 Not Found; истёкший токен возвращает 404 Not Found; в БД, логах и шаблонах исключено сохранение `netbird_setup_key`; подстановка параметров в скрипт строго экранируется через `shlex.quote`.
+    3. Универсальные скрипты деплоя: `scripts/gv-update.sh` (chmod +x, единое обновление `git pull --ff-only`, селективный pip в `.venv` и перезапуск активных systemd служб) и `scripts/install_server.sh` (chmod +x, чистая установка Linux-хоста); синтаксис `bash -n scripts/gv-update.sh scripts/install_server.sh` чист; исключены реальные личные IP/пароли/ключи.
+    4. Web SPA помощник: кнопка `#btn-rpi-setup` в шапке отображается только для роли `developer` с SVG-иконкой платы и точкой статуса Edge-агента; модальное окно `#modal-rpi-setup` отображает живой статус (опрос каждые 3 с с остановкой при закрытии), форму предзаполнения URL сервера, парольное поле NetBird Setup Key с SVG-глазом видимости, генерацию одноразовой команды `curl --noproxy '*' -fsSL ... | bash` с копированием в буфер обмена (fallback на `execCommand`) и сворачиваемую памятку; 0 эмодзи (только SVG), 0 `alert/confirm/prompt` (диалоги и тосты), 0 `X-Client-Key` на фронтенде, 0 внешних CDN.
+    5. Качество и тесты: быстродействие тестов (<3 с на тест, весь набор 310 тестов пройден за ~85 с, без sleep), чистый `git status`, линтер `ruff check .` и `ruff format --check .` чистые, версия в `VERSION` сохранена (`0.5.0`).
+  - **Результат тестирования:** 310 passed (Server & E2E 143, Edge 54, Bot 62, CLI 51), ruff clean, git status clean.
+
 - **[STAGE-8.3] [web, server, clients/telegram_bot] Полная пересборка Web SPA с нуля по docs/WEB_SPEC.md (верифицировано QA)**
   - **Коммиты:** `8742557` (реализация) (ветка `stage-8/web-rebuild`)
   - **Ключевые проверенные критерии:**
