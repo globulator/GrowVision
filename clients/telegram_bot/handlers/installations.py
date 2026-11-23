@@ -641,6 +641,22 @@ async def handle_archive_prompt(callback: CallbackQuery) -> None:
             )
 
 
+@router.callback_query(F.data.startswith("inst:unarchive:"))
+async def handle_unarchive_prompt(callback: CallbackQuery) -> None:
+    await callback.answer()
+    parts = callback.data.split(":")
+    inst_id = int(parts[2])
+    kb = get_confirm_inline_keyboard("unarchive", inst_id)
+    if callback.message and isinstance(callback.message, Message):
+        with contextlib.suppress(Exception):
+            await callback.message.edit_text(
+                "♻️ <b>Восстановление установки из архива</b>\n\n"
+                "Установка снова станет активной, свет будет включён по умолчанию. "
+                "Вы уверены?",
+                reply_markup=kb,
+            )
+
+
 @router.callback_query(F.data.startswith("inst:delete:"))
 async def handle_delete_prompt(callback: CallbackQuery) -> None:
     await callback.answer()
@@ -710,6 +726,49 @@ async def handle_confirm_action(
             err = format_api_error(exc)
             if callback.message and isinstance(callback.message, Message):
                 await callback.message.edit_text(f"Ошибка архивации:\n{err}")
+
+    elif action == "unarchive":
+        try:
+            res = await api_client.unarchive_installation(user_id, inst_id)
+            warnings = res.get("warnings", [])
+            warn_text = ""
+            if warnings:
+                warn_text = "\n\n" + "\n".join(html.escape(w) for w in warnings)
+
+            msg_text = (
+                f"♻️ <b>Установка успешно восстановлена из архива!</b>{warn_text}\n\n"
+                "⚠️ Не забудьте проверить привязанные камеры и настройки GPIO-пинов."
+            )
+            quick_kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="📷 Настроить камеры",
+                            callback_data=f"inst:cameras:{inst_id}",
+                        ),
+                        InlineKeyboardButton(
+                            text="✏️ Редактировать пины",
+                            callback_data=f"inst:edit:{inst_id}",
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="📋 К карточке установки",
+                            callback_data=f"inst:view:{inst_id}",
+                        ),
+                        InlineKeyboardButton(
+                            text="⬅️ К списку установок",
+                            callback_data="inst:list",
+                        ),
+                    ],
+                ]
+            )
+            if callback.message and isinstance(callback.message, Message):
+                await callback.message.edit_text(msg_text, reply_markup=quick_kb)
+        except ApiError as exc:
+            err = format_api_error(exc)
+            if callback.message and isinstance(callback.message, Message):
+                await callback.message.edit_text(f"Ошибка разархивации:\n{err}")
 
     elif action == "delete":
         try:

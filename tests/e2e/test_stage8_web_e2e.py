@@ -38,6 +38,7 @@ def test_stage8_e2e_web_spa_flow(e2e_uvicorn_server):
         for mod in (
             "api.js",
             "app.js",
+            "dialogs.js",
             "player.js",
             "units.js",
             "relays.js",
@@ -182,6 +183,17 @@ def test_stage8_e2e_web_spa_flow(e2e_uvicorn_server):
             assert bio_sess["login"] == "Ольга Лабораторная"
             assert bio_sess["is_active"] is True
 
+            # Разработчик архивирует и разархивирует установку
+            inst_id = r_inst_dev.json()["id"]
+            r_arch = dev_web_client.post(f"/api/installations/{inst_id}/archive")
+            assert r_arch.status_code == 200
+            assert r_arch.json()["is_archived"] is True
+
+            r_unarch = dev_web_client.post(f"/api/installations/{inst_id}/unarchive")
+            assert r_unarch.status_code == 200
+            assert r_unarch.json()["is_archived"] is False
+            assert r_unarch.json()["light_state"] is True
+
             # Разработчик кикает сессию биолога
             r_kick = dev_web_client.post(
                 f"/api/auth/sessions/{bio_sess['id']}/terminate"
@@ -194,3 +206,22 @@ def test_stage8_e2e_web_spa_flow(e2e_uvicorn_server):
             json={"login": "Попытка после кика"},
         )
         assert r_bio_kicked.status_code == 401
+
+
+def test_stage8_no_alert_confirm_prompt_and_no_emojis():
+    """Проверка полного отказа от alert/confirm/prompt и отсутствия эмодзи в Web SPA."""
+    import re
+
+    web_dir = ROOT_DIR / "clients" / "web"
+    emoji_pattern = re.compile(
+        r"[\U00010000-\U0010ffff]|[\u2600-\u27bf]|[\u2300-\u23ff]|[\u2b50-\u2b55]"
+    )
+    dialog_pattern = re.compile(r"\b(alert|confirm|prompt)\s*\(")
+
+    for f in web_dir.rglob("*"):
+        if f.is_file() and f.suffix in (".js", ".html", ".css"):
+            text = f.read_text(encoding="utf-8")
+            assert not emoji_pattern.search(text), f"Обнаружен эмодзи в {f.name}"
+            assert not dialog_pattern.search(text), (
+                f"Обнаружен вызов alert/confirm/prompt в {f.name}"
+            )

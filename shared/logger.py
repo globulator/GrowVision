@@ -37,6 +37,7 @@ def setup_logger(
         for handler in logger.handlers:
             handler.setLevel(level)
 
+    logger.propagate = False
     return logger
 
 

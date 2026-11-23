@@ -182,27 +182,34 @@ export const api = {
   },
 
   async setLight(target, state) {
+    const normTarget = target === 'all' ? 'all' : Number(target);
     return request('/api/control/light/main', {
       method: 'POST',
-      body: JSON.stringify({ target: String(target), state }),
+      body: JSON.stringify({ target: normTarget, state: Boolean(state) }),
     });
   },
 
   async setFlash(target, state) {
+    const normTarget = target === 'all' ? 'all' : Number(target);
     return request('/api/control/light/flash', {
       method: 'POST',
-      body: JSON.stringify({ target: String(target), state }),
+      body: JSON.stringify({ target: normTarget, state: Boolean(state) }),
     });
   },
 
-  async testRelays() {
-    return request('/api/control/relay-test', { method: 'POST' });
+  async testRelays(target = 'all') {
+    const normTarget = target === 'all' ? 'all' : Number(target);
+    return request('/api/control/relay-test', {
+      method: 'POST',
+      body: JSON.stringify({ target: normTarget }),
+    });
   },
 
   async snap(target) {
+    const normTarget = target === 'all' ? 'all' : Number(target);
     return request('/api/control/snap', {
       method: 'POST',
-      body: JSON.stringify({ target: String(target) }),
+      body: JSON.stringify({ target: normTarget }),
     });
   },
 

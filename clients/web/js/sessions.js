@@ -2,6 +2,7 @@
 // Управление сессиями пользователей и одноразовыми инвайт-кодами (только Developer).
 
 import { api } from './api.js';
+import { showToast, showConfirm, showPrompt } from './dialogs.js';
 
 export class SessionsManager {
   constructor(containerEl, options = {}) {
@@ -22,12 +23,21 @@ export class SessionsManager {
     this.container.innerHTML = `
       <div class="section-header">
         <div class="section-title-wrap">
-          <h2 class="section-title">👥 Пользователи и сессии</h2>
+          <h2 class="section-title">
+            <svg class="icon-inline" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+            <span>Пользователи и сессии</span>
+          </h2>
           <span class="section-desc">Управление доступом биологов, генерация кодов и завершение сессий</span>
         </div>
         <div class="section-actions">
-          <button type="button" class="btn btn-primary btn-sm" id="sess-btn-create-invite">➕ Создать код для биолога</button>
-          <button type="button" class="btn btn-secondary btn-sm" id="sess-btn-refresh">🔄 Обновить</button>
+          <button type="button" class="btn btn-primary btn-sm" id="sess-btn-create-invite">
+            <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            <span>Создать код для биолога</span>
+          </button>
+          <button type="button" class="btn btn-secondary btn-sm" id="sess-btn-refresh">
+            <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+            <span>Обновить</span>
+          </button>
         </div>
       </div>
 
@@ -39,20 +49,29 @@ export class SessionsManager {
           <span class="new-code-label">Сгенерирован одноразовый код (действует 10 минут):</span>
           <div class="new-code-row">
             <code id="sess-new-code-val" class="code-badge">—</code>
-            <button type="button" class="btn btn-secondary btn-sm" id="sess-btn-copy-code">📋 Копировать</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="sess-btn-copy-code">
+              <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+              <span>Копировать</span>
+            </button>
           </div>
         </div>
       </div>
 
       <!-- Активные инвайт-коды -->
       <div class="sub-section">
-        <h3 class="sub-section-title">🎟 Активные инвайт-коды</h3>
+        <h3 class="sub-section-title">
+          <svg class="icon-inline" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2z"></path></svg>
+          <span>Активные инвайт-коды</span>
+        </h3>
         <div id="sess-invites-list" class="invites-list"></div>
       </div>
 
       <!-- Сессии пользователей -->
       <div class="sub-section">
-        <h3 class="sub-section-title">💻 Сессии пользователей (все клиенты)</h3>
+        <h3 class="sub-section-title">
+          <svg class="icon-inline" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+          <span>Сессии пользователей (все клиенты)</span>
+        </h3>
         <div class="table-responsive">
           <table class="data-table">
             <thead>
@@ -85,7 +104,7 @@ export class SessionsManager {
       const code = this.container.querySelector('#sess-new-code-val').textContent;
       if (code && code !== '—') {
         navigator.clipboard.writeText(code).then(() => {
-          window.showToast?.(`Код ${code} скопирован в буфер обмена`, 'success');
+          showToast(`Код ${code} скопирован в буфер обмена`, 'success');
         });
       }
     });
@@ -117,10 +136,10 @@ export class SessionsManager {
       codeVal.textContent = resp.code;
       codeBox.classList.remove('hidden');
 
-      window.showToast?.(`Создан код приглашения: ${resp.code}`, 'success');
+      showToast(`Создан код приглашения: ${resp.code}`, 'success');
       await this.loadData();
     } catch (err) {
-      alert('Ошибка генерации кода: ' + err.message);
+      showToast('Ошибка генерации кода: ' + err.message, 'error');
     }
   }
 
@@ -147,13 +166,20 @@ export class SessionsManager {
         `;
 
         item.querySelector('.btn-action-revoke').addEventListener('click', async () => {
-          if (!confirm(`Отозвать код ${inv.code}?`)) return;
+          const ok = await showConfirm({
+            title: 'Отзыв кода',
+            message: `Отозвать код приглашения «${inv.code}»?`,
+            confirmText: 'Отозвать',
+            danger: true,
+          });
+          if (!ok) return;
+
           try {
             await api.revokeInvite(inv.id);
-            window.showToast?.(`Код ${inv.code} отозван`, 'success');
+            showToast(`Код ${inv.code} отозван`, 'success');
             await this.loadData();
           } catch (err) {
-            alert('Ошибка отзыва кода: ' + err.message);
+            showToast('Ошибка отзыва кода: ' + err.message, 'error');
           }
         });
 
@@ -200,10 +226,14 @@ export class SessionsManager {
         <td>${lastAct}</td>
         <td>
           <div class="table-actions">
-            <button type="button" class="btn btn-secondary btn-xs btn-rename-user" title="Переименовать">✏️</button>
+            <button type="button" class="btn btn-secondary btn-xs btn-rename-user" title="Переименовать">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
+            </button>
             ${
               s.is_active
-                ? '<button type="button" class="btn btn-danger btn-xs btn-terminate-sess" title="Завершить сессию (кик)">🚫</button>'
+                ? `<button type="button" class="btn btn-danger btn-xs btn-terminate-sess" title="Завершить сессию (кик)">
+                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line></svg>
+                   </button>`
                 : ''
             }
           </div>
@@ -212,18 +242,22 @@ export class SessionsManager {
 
       // Переименование
       tr.querySelector('.btn-rename-user').addEventListener('click', async () => {
-        const newName = prompt(`Введите новое имя для пользователя «${s.login}» (сессия #${s.id}):`, s.login);
+        const newName = await showPrompt({
+          title: 'Переименование пользователя',
+          message: `Введите новое имя для пользователя «${s.login}» (сессия #${s.id}):`,
+          defaultValue: s.login,
+        });
         if (newName === null) return;
         if (!newName.trim()) {
-          alert('Имя не может быть пустым.');
+          showToast('Имя не может быть пустым.', 'warning');
           return;
         }
         try {
           await api.renameSession(s.id, newName.trim());
-          window.showToast?.('Пользователь переименован', 'success');
+          showToast('Пользователь переименован', 'success');
           await this.loadData();
         } catch (err) {
-          alert('Ошибка переименования: ' + err.message);
+          showToast('Ошибка переименования: ' + err.message, 'error');
         }
       });
 
@@ -231,13 +265,20 @@ export class SessionsManager {
       const termBtn = tr.querySelector('.btn-terminate-sess');
       if (termBtn) {
         termBtn.addEventListener('click', async () => {
-          if (!confirm(`Принудительно завершить сессию пользователя «${s.login}» (#${s.id})?`)) return;
+          const ok = await showConfirm({
+            title: 'Завершение сессии',
+            message: `Принудительно завершить сессию пользователя «${s.login}» (#${s.id})?`,
+            confirmText: 'Завершить',
+            danger: true,
+          });
+          if (!ok) return;
+
           try {
             await api.terminateSession(s.id);
-            window.showToast?.(`Сессия #${s.id} завершена`, 'success');
+            showToast(`Сессия #${s.id} завершена`, 'success');
             await this.loadData();
           } catch (err) {
-            alert('Ошибка завершения сессии: ' + err.message);
+            showToast('Ошибка завершения сессии: ' + err.message, 'error');
           }
         });
       }

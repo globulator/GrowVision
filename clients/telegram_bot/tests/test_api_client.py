@@ -1,9 +1,24 @@
 import httpx
 import pytest
 
+from clients.telegram_bot.api_client import GrowVisionApiClient
 from clients.telegram_bot.config import BotConfig
 from clients.telegram_bot.tests.conftest import create_mock_api_client
 from clients.telegram_bot.utils.errors import ApiError
+
+
+@pytest.mark.asyncio
+async def test_api_client_trust_env_false(
+    bot_config: BotConfig, monkeypatch: pytest.MonkeyPatch
+):
+    """Проверка, что httpx.AsyncClient инициализируется с trust_env=False."""
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:10808")
+    client = GrowVisionApiClient(bot_config)
+    try:
+        h_client = await client.get_client()
+        assert h_client.trust_env is False
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio

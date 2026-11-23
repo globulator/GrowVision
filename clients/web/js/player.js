@@ -2,6 +2,7 @@
 // Объединенная модалка «Галерея и таймлапс» GrowVision Web SPA.
 
 import { api } from './api.js';
+import { showToast } from './dialogs.js';
 
 export class TimelapsePlayer {
   constructor(modalEl, options = {}) {
@@ -95,10 +96,20 @@ export class TimelapsePlayer {
       });
     }
 
-    // Кнопки управления плеером
+    // Кнопки навигации плеера (4 кнопки + play/pause)
+    const firstBtn = this.modal.querySelector('#gallery-btn-first');
     const prevBtn = this.modal.querySelector('#gallery-btn-prev');
     const nextBtn = this.modal.querySelector('#gallery-btn-next');
+    const lastBtn = this.modal.querySelector('#gallery-btn-last');
     const playBtn = this.modal.querySelector('#gallery-btn-play');
+
+    if (firstBtn) {
+      firstBtn.addEventListener('click', () => {
+        this.pause();
+        this.currentFrameIndex = 0;
+        this.renderCurrentFrame();
+      });
+    }
 
     if (prevBtn) {
       prevBtn.addEventListener('click', () => {
@@ -111,6 +122,14 @@ export class TimelapsePlayer {
       nextBtn.addEventListener('click', () => {
         this.pause();
         this.step(1);
+      });
+    }
+
+    if (lastBtn) {
+      lastBtn.addEventListener('click', () => {
+        this.pause();
+        this.currentFrameIndex = Math.max(0, this.allFrames.length - 1);
+        this.renderCurrentFrame();
       });
     }
 
@@ -342,13 +361,21 @@ export class TimelapsePlayer {
     }
 
     if (timeEl) {
-      const capTime = frame.captured_at ? frame.captured_at.replace('T', ' ').replace('Z', ' UTC') : '—';
-      timeEl.textContent = `🕒 ${capTime}`;
+      let localTime = '—';
+      if (frame.captured_at) {
+        const d = new Date(frame.captured_at);
+        if (!isNaN(d.getTime())) {
+          localTime = `${d.toLocaleString('ru-RU')} (местное время)`;
+        } else {
+          localTime = frame.captured_at;
+        }
+      }
+      timeEl.innerHTML = `<svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg> <span>${escapeHtml(localTime)}</span>`;
     }
 
     if (areaEl) {
       const area = frame.area_display || (frame.total_area_cm2 !== null && frame.total_area_cm2 !== undefined ? `${frame.total_area_cm2.toFixed(1)} см²` : '—');
-      areaEl.textContent = `📐 Площадь: ${area}`;
+      areaEl.innerHTML = `<svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg> <span>Площадь: ${escapeHtml(area)}</span>`;
     }
 
     const url = this.currentLayer === 'annotated'
@@ -407,9 +434,15 @@ export class TimelapsePlayer {
 
   play() {
     if (this.allFrames.length <= 1) return;
+    if (!this.isLooping && this.currentFrameIndex >= this.allFrames.length - 1) {
+      this.currentFrameIndex = 0;
+      this.renderCurrentFrame();
+    }
     this.isPlaying = true;
     const playBtn = this.modal.querySelector('#gallery-btn-play');
-    if (playBtn) playBtn.textContent = '⏸ Пауза';
+    if (playBtn) {
+      playBtn.innerHTML = `<svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg> <span>Пауза</span>`;
+    }
 
     this.startPlaybackTimer();
   }
@@ -417,7 +450,9 @@ export class TimelapsePlayer {
   pause() {
     this.isPlaying = false;
     const playBtn = this.modal.querySelector('#gallery-btn-play');
-    if (playBtn) playBtn.textContent = '▶ Воспроизвести';
+    if (playBtn) {
+      playBtn.innerHTML = `<svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg> <span>Воспроизвести</span>`;
+    }
 
     if (this.playTimer) {
       clearInterval(this.playTimer);
@@ -446,14 +481,14 @@ export class TimelapsePlayer {
     const fps = parseInt(fpsInput?.value || '4', 10);
 
     if (isNaN(fps) || fps < 1) {
-      alert('Частота кадров (FPS) должна быть не менее 1');
+      showToast('Частота кадров (FPS) должна быть не менее 1', 'warning');
       return;
     }
 
     this.isDownloadingVideo = true;
     downloadBtn.disabled = true;
     statusEl.classList.remove('hidden');
-    statusEl.textContent = `⏳ Идёт формирование MP4 (${duration} с, ${fps} FPS)...`;
+    statusEl.textContent = `Идёт формирование MP4 (${duration} с, ${fps} FPS)...`;
 
     try {
       const blob = await api.buildVideo(this.installation.id, {
@@ -473,14 +508,14 @@ export class TimelapsePlayer {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
 
-      statusEl.textContent = '✅ Видео успешно сформировано и скачано!';
-      window.showToast?.('MP4 видео успешно скачано', 'success');
+      statusEl.textContent = 'Видео успешно сформировано и скачано!';
+      showToast('MP4 видео успешно скачано', 'success');
       setTimeout(() => {
         statusEl.classList.add('hidden');
       }, 4000);
     } catch (err) {
       statusEl.textContent = `Ошибка сборки видео: ${err.message}`;
-      alert(`Ошибка экспорта видео: ${err.message}`);
+      showToast(`Ошибка экспорта видео: ${err.message}`, 'error');
     } finally {
       this.isDownloadingVideo = false;
       downloadBtn.disabled = false;

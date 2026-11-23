@@ -1,3 +1,4 @@
+import logging
 import platform
 import threading
 import time
@@ -8,7 +9,6 @@ from edge_agent.config import EdgeConfig
 from edge_agent.hardware import HardwareManager, get_hardware_telemetry
 from edge_agent.offline_queue import flush_queue, get_queue_count, save_to_queue
 from edge_agent.vision import VisionPipeline
-from shared.logger import get_logger
 from shared.schemas import (
     CaptureMeta,
     CommandItem,
@@ -19,7 +19,7 @@ from shared.schemas import (
 )
 from shared.version import get_app_version
 
-logger = get_logger("edge_agent.orchestrator")
+logger = logging.getLogger("edge_agent.orchestrator")
 
 
 class EdgeOrchestrator:
@@ -53,6 +53,7 @@ class EdgeOrchestrator:
         self.running = threading.Event()
         self.is_scheduled_capture_running = threading.Event()
         self._flush_lock = threading.Lock()
+        self._stopped = False
 
         # Динамические настройки, получаемые от сервера
         self.capture_interval_hours = config.capture_interval_hours
@@ -76,6 +77,7 @@ class EdgeOrchestrator:
             logger.warning(
                 f"ТЕСТОВЫЙ ИНТЕРВАЛ СЪЁМКИ: {self.config.test_capture_interval_sec} с"
             )
+        self._stopped = False
         self.running.set()
 
         # Первичный Heartbeat перед запуском потоков
@@ -103,7 +105,10 @@ class EdgeOrchestrator:
         logger.info("Все фоновые циклы успешно запущены")
 
     def stop(self) -> None:
-        """Останавливает оркестратор и фоновые потоки."""
+        """Останавливает оркестратор и фоновые потоки (идемпотентно)."""
+        if self._stopped:
+            return
+        self._stopped = True
         logger.info("Остановка Edge-агента...")
         self.running.clear()
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():

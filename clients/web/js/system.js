@@ -2,6 +2,7 @@
 // Управление системными настройками (debug_mode, auto_capture, capture_delay) и мониторинг Edge-агента.
 
 import { api } from './api.js';
+import { showToast } from './dialogs.js';
 
 export class SystemManager {
   constructor(containerEl, options = {}) {
@@ -23,11 +24,17 @@ export class SystemManager {
     this.container.innerHTML = `
       <div class="section-header">
         <div class="section-title-wrap">
-          <h2 class="section-title">⚙️ Системные настройки</h2>
+          <h2 class="section-title">
+            <svg class="icon-inline" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            <span>Системные настройки</span>
+          </h2>
           <span class="section-desc">Параметры сервера, статус контроллера Raspberry Pi и телеметрия</span>
         </div>
         <div class="section-actions">
-          <button type="button" class="btn btn-secondary btn-sm" id="sys-btn-refresh">🔄 Обновить</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="sys-btn-refresh">
+            <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+            <span>Обновить</span>
+          </button>
         </div>
       </div>
 
@@ -37,7 +44,10 @@ export class SystemManager {
         <!-- Карточка статуса Edge-агента -->
         <div class="sys-card">
           <div class="sys-card-header">
-            <h3 class="sys-card-title">🍓 Raspberry Pi (Edge-агент)</h3>
+            <h3 class="sys-card-title">
+              <svg class="icon-inline" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg>
+              <span>Raspberry Pi (Edge-агент)</span>
+            </h3>
             <span id="sys-edge-status-badge" class="badge badge-secondary">—</span>
           </div>
           <div class="sys-card-body">
@@ -71,13 +81,19 @@ export class SystemManager {
         <!-- Карточка настроек сервера -->
         <div class="sys-card">
           <div class="sys-card-header">
-            <h3 class="sys-card-title">🖥 Сервер GrowVision</h3>
+            <h3 class="sys-card-title">
+              <svg class="icon-inline" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+              <span>Сервер GrowVision</span>
+            </h3>
             <span id="sys-version-badge" class="badge badge-primary">—</span>
           </div>
           <div class="sys-card-body">
             <div class="sys-toggle-item">
               <div class="sys-toggle-info">
-                <span class="sys-toggle-title">🐞 Режим отладки (debug_mode)</span>
+                <span class="sys-toggle-title">
+                  <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg>
+                  <span>Режим отладки (debug_mode)</span>
+                </span>
                 <span class="sys-toggle-desc">Вывод расширенной отладочной информации и логов</span>
               </div>
               <label class="switch">
@@ -88,7 +104,10 @@ export class SystemManager {
 
             <div class="sys-toggle-item">
               <div class="sys-toggle-info">
-                <span class="sys-toggle-title">⏰ Автосъёмка (auto_capture)</span>
+                <span class="sys-toggle-title">
+                  <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                  <span>Автосъёмка (auto_capture)</span>
+                </span>
                 <span class="sys-toggle-desc">Плановая съёмка каждые 4 часа по расписанию</span>
               </div>
               <label class="switch">
@@ -98,7 +117,10 @@ export class SystemManager {
             </div>
 
             <div class="sys-delay-setting">
-              <label for="sys-capture-delay-input" class="sys-label">⏱ Задержка перед съёмкой (свет/вспышка), сек:</label>
+              <label for="sys-capture-delay-input" class="sys-label">
+                <svg class="icon-inline" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 14 10"></polyline></svg>
+                <span>Задержка перед съёмкой (свет/вспышка), сек:</span>
+              </label>
               <div class="delay-input-row">
                 <input type="number" id="sys-capture-delay-input" class="form-input form-input-sm" min="0" max="30" step="0.5" value="1.5" />
                 <button type="button" class="btn btn-secondary btn-sm" id="sys-btn-save-delay">Сохранить</button>
@@ -118,10 +140,10 @@ export class SystemManager {
       const enabled = e.target.checked;
       try {
         await api.setDebugMode(enabled);
-        window.showToast?.(`Режим отладки ${enabled ? 'включен' : 'выключен'}`, 'success');
+        showToast(`Режим отладки ${enabled ? 'включен' : 'выключен'}`, 'success');
       } catch (err) {
         e.target.checked = !enabled;
-        alert('Ошибка изменения debug_mode: ' + err.message);
+        showToast('Ошибка изменения debug_mode: ' + err.message, 'error');
       }
     });
 
@@ -130,10 +152,10 @@ export class SystemManager {
       const enabled = e.target.checked;
       try {
         await api.setAutoCapture(enabled);
-        window.showToast?.(`Автосъёмка ${enabled ? 'включена' : 'выключена'}`, 'success');
+        showToast(`Автосъёмка ${enabled ? 'включена' : 'выключена'}`, 'success');
       } catch (err) {
         e.target.checked = !enabled;
-        alert('Ошибка изменения auto_capture: ' + err.message);
+        showToast('Ошибка изменения auto_capture: ' + err.message, 'error');
       }
     });
 
@@ -142,14 +164,14 @@ export class SystemManager {
       const input = this.container.querySelector('#sys-capture-delay-input');
       const val = parseFloat(input.value);
       if (isNaN(val) || val < 0 || val > 30) {
-        alert('Укажите корректную задержку в диапазоне от 0 до 30 секунд.');
+        showToast('Укажите корректную задержку в диапазоне от 0 до 30 секунд.', 'warning');
         return;
       }
       try {
         await api.setCaptureDelay(val);
-        window.showToast?.(`Задержка съёмки обновлена: ${val} с`, 'success');
+        showToast(`Задержка съёмки обновлена: ${val} с`, 'success');
       } catch (err) {
-        alert('Ошибка сохранения задержки: ' + err.message);
+        showToast('Ошибка сохранения задержки: ' + err.message, 'error');
       }
     });
   }

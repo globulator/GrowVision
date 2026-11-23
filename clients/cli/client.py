@@ -28,6 +28,7 @@ class APIClient:
             headers=self.headers,
             timeout=timeout,
             transport=self.transport,
+            trust_env=False,
         )
 
     def _log_request(self, method: str, url: str) -> None:
