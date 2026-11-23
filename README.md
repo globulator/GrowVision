@@ -22,12 +22,17 @@ GrowVision/
 │   └── web/                    # Веб-клиент Web SPA (чистый HTML5/CSS3/ES6, плеер, GIF-экспорт)
 ├── tests/                      # Сквозные интеграционные тесты (E2E)
 ├── requirements-dev.txt        # Общие зависимости для тестов и линтинга (pytest, ruff)
-└── VERSION                     # Источник версии проекта (0.5.0)
+└── VERSION                     # Источник версии проекта (0.5.1)
 ```
 
 ## Быстрый старт
 
-### Сервер
+### Автоматическое развёртывание и обновление (Linux)
+
+- **Первичная установка сервера:** `sudo bash scripts/install_server.sh`
+- **Универсальное обновление (сервер / RPi):** `gv-update` (или `./scripts/gv-update.sh`)
+
+### Сервер (ручной запуск)
 
 #### 1. Подготовка окружения сервера
 
@@ -43,7 +48,7 @@ cp server/.env.example server/.env
 server/.venv/bin/python -m server.main
 ```
 
-- Веб-интерфейс (Web SPA) с плеером таймлапсов, GIF-экспортом и тестовой съёмкой доступен по адресу: `http://127.0.0.1:8000/`
+- Веб-интерфейс (Web SPA) с плеером таймлапсов, GIF-экспортом, тестовой съёмкой и помощником подключения Raspberry Pi доступен по адресу: `http://127.0.0.1:8000/`
 - Документация OpenAPI (Swagger UI) доступна по адресу: `http://127.0.0.1:8000/docs`
 
 #### 3. Запуск тестов сервера и E2E
@@ -194,3 +199,4 @@ server/.venv/bin/ruff format --check .
 - [docs/stage_reports/stage-8.1.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-8.1.md) — отчёт по этапу 8.1
 - [docs/stage_reports/stage-8.2.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-8.2.md) — отчёт по этапу 8.2
 - [docs/stage_reports/stage-8.3.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-8.3.md) — отчёт по этапу 8.3
+- [docs/stage_reports/stage-8.4.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-8.4.md) — отчёт по этапу 8.4
