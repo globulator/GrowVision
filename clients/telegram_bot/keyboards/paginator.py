@@ -165,7 +165,7 @@ def build_frames_gallery_keyboard(
     )
 
     if can_build_video:
-        cb_val = f"inst:video:{inst_id}" if inst_id is not None else "frm:timelapse"
+        cb_val = f"frm:timelapse:{inst_id}" if inst_id is not None else "frm:timelapse"
         keyboard.append(
             [
                 InlineKeyboardButton(

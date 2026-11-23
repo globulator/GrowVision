@@ -6,6 +6,21 @@
 ---
 
 ## 2. Исправленные дефекты (верифицировано QA)
+- **[STAGE-8.4.1] [web, clients/telegram_bot] Хотфикс багов живого теста: согласованность ES-модулей, коллбэк таймлапса в боте, подавление спама логов httpx, favicon (верифицировано QA)**
+  - **Коммиты:** `019bdf2` (реализация), `b647e2f` (фикс [BUG-003]) (ветка `fix/stage-8-web-and-bot`)
+  - **Ключевые проверенные критерии:**
+    1. Web SPA ES-модули: устранён `SyntaxError` в `clients/web/js/rpi_setup.js` (переход на `showError`); устранён [BUG-003] (удалён дублирующий `export { showError as showErrorDialog };` в `dialogs.js`); все локальные импорты и экспорты в 9 ES-модулях строго согласованы и уникальны (подтверждено тестом `test_stage8_web_es_modules_static_import_export_validation`).
+    2. Тексты и Favicon: на шаге 2 регистрации в `clients/web/index.html` добавлено чёткое разделение срока действия кода (10 минут) и таймера повторной отправки (60 секунд); в `index.html` прописан встроенный Data URI SVG favicon ростка GrowVision (устранена ошибка 404 на `/favicon.ico`); сохранены инварианты (0 эмодзи, 0 alert/confirm/prompt, 0 X-Client-Key, 0 CDN).
+    3. Telegram-бот: в `clients/telegram_bot/keyboards/paginator.py` кнопка таймлапса отправляет `frm:timelapse:{inst_id}`; в `clients/telegram_bot/handlers/timelapse.py` обработчик зарегистрирован до навигации и отфильтрован в `handle_frames_gallery_nav` (`~F.data.startswith("frm:timelapse")`), исключая ошибку `ValueError: invalid literal for int()`; при переходе из галереи фотосообщение удаляется, исключая сбой `edit_text` на фото; unit-тест `test_frm_timelapse_callback_routing_without_value_error` пройден.
+    4. Логирование бота: в `clients/telegram_bot/main.py` для логгеров `httpx` и `httpcore` установлен уровень `logging.WARNING`, полностью устранён спам при фоновом опросе очереди кодов раз в 2 секунды.
+    5. Качество и тесты: быстродействие тестов (<3 с на тест, весь набор 312 тестов пройден за ~80 с, без sleep), чистый `git status`, линтер `ruff check .` и `ruff format --check .` чистые, версия в `VERSION` сохранена (`0.5.1`).
+  - **Результат тестирования:** 312 passed (Server & E2E 144, Edge 54, Bot 63, CLI 51), ruff clean, git status clean.
+
+- **[BUG-003]** | Критичность: `CRITICAL` | Статус: `FIXED`
+  - **Обнаружен в коммите:** `019bdf2` -> **Исправлен и подтверждён в коммите:** `b647e2f` (ветка `fix/stage-8-web-and-bot`)
+  - **Где:** `clients/web/js/dialogs.js:33` и `clients/web/js/dialogs.js:94`
+  - **Суть проблемы:** В модуле `clients/web/js/dialogs.js` дважды присутствовало объявление `export { showError as showErrorDialog };` (на строке 33 и на строке 94). По спецификации ECMAScript (§16.2.3.1 Static Semantics: Early Errors) дублирование экспортируемых идентификаторов в одном модуле вызывает `SyntaxError: Duplicate export of 'showErrorDialog'`. Из-за этого браузеры при загрузке `dialogs.js` падали с синтаксической ошибкой, и всё веб-приложение Web SPA не инициализировалось.
+  - **Результат повторной проверки:** В `clients/web/js/dialogs.js` дублирующий экспорт на строке 33 удален (оставлен один корректный экспорт в конце файла). Регрессионный тест `tests/e2e/test_stage8_web_e2e.py::test_stage8_web_es_modules_static_import_export_validation` и статический анализатор подтвердили строгую уникальность всех экспортов во всех JS-модулях Web SPA.
 - **[STAGE-8.4] [web, server, scripts] Помощник подключения Raspberry Pi в Web SPA для разработчика, bootstrap-скрипт и скрипты деплоя (верифицировано QA)**
   - **Коммиты:** `0ec13b1` (реализация) (ветка `stage-8/rpi-setup-and-deploy`)
   - **Ключевые проверенные критерии:**

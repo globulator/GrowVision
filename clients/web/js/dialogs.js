@@ -86,3 +86,6 @@ export function initDialogs() {
     }
   });
 }
+
+// Алиас для обратной совместимости
+export { showError as showErrorDialog };

@@ -350,7 +350,106 @@ async def _show_frame_in_gallery(
                 await callback.message.edit_media(media=media, reply_markup=kb)
 
 
-@router.callback_query(F.data.startswith("frm:"))
+@router.callback_query(
+    F.data.startswith("frm:timelapse") | F.data.startswith("inst:video:")
+)
+async def handle_video_installation_selected(
+    callback: CallbackQuery,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Выбор установки для видео (или переход из карточки / галереи)."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    inst_id = None
+    if parts[0] in ("inst", "frm") and len(parts) > 2 and parts[2].isdigit():
+        inst_id = int(parts[2])
+
+    if inst_id is None:
+        data = await state.get_data()
+        inst_id = data.get("inst_id")
+
+    if inst_id is None:
+        if callback.message and isinstance(callback.message, Message):
+            await callback.message.answer(
+                "Сессия просмотра устарела, выберите установку заново."
+            )
+        return
+
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    # Проверка защиты от параллельного запуска у одного пользователя
+    if user_id in _user_video_locks:
+        await callback.answer("Видео уже собирается, подождите", show_alert=True)
+        return
+
+    try:
+        inst = await api_client.get_installation(user_id, inst_id)
+        cameras = inst.get("cameras", [])
+
+        # Если в сообщении было фото из галереи, удаляем его
+        if (
+            callback.message
+            and isinstance(callback.message, Message)
+            and callback.message.photo
+        ):
+            with contextlib.suppress(Exception):
+                await callback.message.delete()
+
+        # Если привязано больше одной камеры — обязательный выбор камеры!
+        if len(cameras) > 1:
+            buttons: list[list[InlineKeyboardButton]] = []
+            for c in cameras:
+                cid = c.get("id")
+                cname = c.get("name") or f"Камера #{cid}"
+                buttons.append(
+                    [
+                        InlineKeyboardButton(
+                            text=f"📷 {cname}",
+                            callback_data=f"vid_cam:{inst_id}:{cid}",
+                        )
+                    ]
+                )
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Отмена",
+                        callback_data=f"inst:view:{inst_id}",
+                    )
+                ]
+            )
+
+            inst_title = html.escape(str(inst.get("name", "")))
+            text = (
+                f"К установке «<b>{inst_title}</b>» привязано несколько камер.\n"
+                "Выберите камеру для сборки таймлапса:"
+            )
+            kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+            if callback.message and isinstance(callback.message, Message):
+                try:
+                    await callback.message.edit_text(text, reply_markup=kb)
+                except Exception:  # noqa: BLE001
+                    await callback.message.answer(text, reply_markup=kb)
+            return
+
+        # Камера одна или нет привязанных камер -> шаг выбора длительности видео
+        selected_cam_id = cameras[0].get("id") if len(cameras) == 1 else None
+        await _prompt_video_duration(
+            callback=callback,
+            api_client=api_client,
+            inst_id=inst_id,
+            inst_name=inst.get("name", f"Установка #{inst_id}"),
+            camera_id=selected_cam_id,
+        )
+
+    except ApiError as exc:
+        err = format_api_error(exc)
+        if callback.message and isinstance(callback.message, Message):
+            await callback.message.answer(f"Не удалось подготовить видео:\n{err}")
+
+
+@router.callback_query(F.data.startswith("frm:") & ~F.data.startswith("frm:timelapse"))
 async def handle_frames_gallery_nav(
     callback: CallbackQuery,
     state: FSMContext,
@@ -470,74 +569,6 @@ async def handle_timelapse_video_menu(
         await message.answer(f"Ошибка загрузки установок:\n{err}")
 
 
-@router.callback_query(F.data.startswith("inst:video:"))
-async def handle_video_installation_selected(
-    callback: CallbackQuery,
-    api_client: GrowVisionApiClient,
-) -> None:
-    """Выбор установки для видео (или переход из карточки)."""
-    await callback.answer()
-    parts = callback.data.split(":")
-    inst_id = int(parts[2])
-    user_id = callback.from_user.id if callback.from_user else 0
-
-    # Проверка защиты от параллельного запуска у одного пользователя
-    if user_id in _user_video_locks:
-        await callback.answer("Видео уже собирается, подождите", show_alert=True)
-        return
-
-    try:
-        inst = await api_client.get_installation(user_id, inst_id)
-        cameras = inst.get("cameras", [])
-
-        # Если привязано больше одной камеры — обязательный выбор камеры!
-        if len(cameras) > 1:
-            buttons: list[list[InlineKeyboardButton]] = []
-            for c in cameras:
-                cid = c.get("id")
-                cname = c.get("name") or f"Камера #{cid}"
-                buttons.append(
-                    [
-                        InlineKeyboardButton(
-                            text=f"📷 {cname}",
-                            callback_data=f"vid_cam:{inst_id}:{cid}",
-                        )
-                    ]
-                )
-            buttons.append(
-                [
-                    InlineKeyboardButton(
-                        text="⬅️ Отмена",
-                        callback_data=f"inst:view:{inst_id}",
-                    )
-                ]
-            )
-
-            if callback.message and isinstance(callback.message, Message):
-                inst_title = html.escape(str(inst.get("name", "")))
-                await callback.message.edit_text(
-                    f"К установке «<b>{inst_title}</b>» привязано несколько камер.\n"
-                    "Выберите камеру для сборки таймлапса:",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-                )
-            return
-
-        # Камера одна или нет привязанных камер -> шаг выбора длительности видео
-        selected_cam_id = cameras[0].get("id") if len(cameras) == 1 else None
-        await _prompt_video_duration(
-            callback=callback,
-            api_client=api_client,
-            inst_id=inst_id,
-            inst_name=inst.get("name", f"Установка #{inst_id}"),
-            camera_id=selected_cam_id,
-        )
-
-    except ApiError as exc:
-        err = format_api_error(exc)
-        if callback.message and isinstance(callback.message, Message):
-            await callback.message.edit_text(f"Не удалось подготовить видео:\n{err}")
-
-
 @router.callback_query(F.data.startswith("vid_cam:"))
 async def handle_video_camera_selected(
     callback: CallbackQuery,
@@ -598,19 +629,26 @@ async def _prompt_video_duration(
 
     if total_frames == 0:
         if callback.message and isinstance(callback.message, Message):
-            await callback.message.edit_text(
-                f"В установке «{html.escape(inst_name)}» пока нет плановых кадров для сборки таймлапса.",
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="⬅️ Назад",
-                                callback_data=f"inst:view:{inst_id}",
-                            )
-                        ]
+            zero_text = f"В установке «{html.escape(inst_name)}» пока нет плановых кадров для сборки таймлапса."
+            back_kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="⬅️ Назад",
+                            callback_data=f"inst:view:{inst_id}",
+                        )
                     ]
-                ),
+                ]
             )
+            if callback.message.photo:
+                with contextlib.suppress(Exception):
+                    await callback.message.delete()
+                await callback.message.answer(zero_text, reply_markup=back_kb)
+            else:
+                try:
+                    await callback.message.edit_text(zero_text, reply_markup=back_kb)
+                except Exception:  # noqa: BLE001
+                    await callback.message.answer(zero_text, reply_markup=back_kb)
         return
 
     if total_frames == 1:
@@ -686,8 +724,15 @@ async def _prompt_video_duration(
     )
 
     if callback.message and isinstance(callback.message, Message):
-        with contextlib.suppress(Exception):
-            await callback.message.edit_text(text, reply_markup=kb)
+        if callback.message.photo:
+            with contextlib.suppress(Exception):
+                await callback.message.delete()
+            await callback.message.answer(text, reply_markup=kb)
+        else:
+            try:
+                await callback.message.edit_text(text, reply_markup=kb)
+            except Exception:  # noqa: BLE001
+                await callback.message.answer(text, reply_markup=kb)
 
 
 async def _prompt_video_fps(

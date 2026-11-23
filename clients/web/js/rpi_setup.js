@@ -2,7 +2,7 @@
 // Модуль помощника подключения Raspberry Pi (только для разработчика)
 
 import { api } from './api.js';
-import { showErrorDialog, showToast } from './dialogs.js';
+import { showError, showToast } from './dialogs.js';
 
 let pollTimer = null;
 let currentRole = 'guest';
@@ -212,7 +212,7 @@ async function handleGenerateCommand(e) {
 
   const serverUrl = serverUrlInput.value.trim();
   if (!serverUrl) {
-    showErrorDialog('Пожалуйста, укажите адрес сервера');
+    showError('Пожалуйста, укажите адрес сервера');
     return;
   }
 
@@ -246,7 +246,7 @@ async function handleGenerateCommand(e) {
 
     showToast('Команда настройки Edge успешно сформирована');
   } catch (err) {
-    showErrorDialog(err.message || 'Ошибка генерации токена установки');
+    showError(err.message || 'Ошибка генерации токена установки');
   } finally {
     if (generateBtn) {
       generateBtn.disabled = false;
@@ -290,6 +290,6 @@ async function handleCopyCommand() {
     }
     showToast('Команда скопирована в буфер обмена');
   } else {
-    showErrorDialog('Не удалось скопировать команду в буфер обмена');
+    showError('Не удалось скопировать команду в буфер обмена');
   }
 }

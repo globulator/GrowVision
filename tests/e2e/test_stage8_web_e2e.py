@@ -232,3 +232,71 @@ def test_stage8_no_alert_confirm_prompt_and_no_emojis():
             assert not dialog_pattern.search(text), (
                 f"Обнаружен вызов alert/confirm/prompt в {f.name}"
             )
+
+
+def test_stage8_web_es_modules_static_import_export_validation(e2e_uvicorn_server):
+    """Критерий Этапа 8.4.1: Статическая валидация согласованности ES-модулей Web SPA и favicon.
+
+    Проверяет, что все локальные import { ... } from './*.js' соответствуют существующим export.
+    Проверяет наличие встроенного SVG favicon в index.html.
+    """
+    import re
+
+    server_data = e2e_uvicorn_server
+    base_url = server_data["base_url"]
+
+    web_js_dir = ROOT_DIR / "clients" / "web" / "js"
+    js_files = list(web_js_dir.glob("*.js"))
+    assert len(js_files) >= 5, "В clients/web/js должно быть не менее 5 JS-модулей"
+
+    exports: dict[str, set[str]] = {}
+
+    for f in js_files:
+        content = f.read_text(encoding="utf-8")
+        fn_exp = re.findall(
+            r"export\s+(?:async\s+)?function\s+([a-zA-Z0-9_$]+)", content
+        )
+        var_exp = re.findall(r"export\s+(?:const|let|var)\s+([a-zA-Z0-9_$]+)", content)
+        block_exp_matches = re.findall(r"export\s*\{([^}]+)\}", content)
+        block_exp = []
+        for b in block_exp_matches:
+            for item in b.split(","):
+                parts = item.strip().split(" as ")
+                name = parts[-1].strip()
+                if name:
+                    block_exp.append(name)
+        all_exp_list = fn_exp + var_exp + block_exp
+        dups = [x for x in set(all_exp_list) if all_exp_list.count(x) > 1]
+        assert not dups, (
+            f"В {f.name} обнаружены дублирующиеся экспорты: {dups} (SyntaxError в ES-модулях)"
+        )
+        exports[f.name] = set(all_exp_list)
+
+    unresolved_imports = []
+    for f in js_files:
+        content = f.read_text(encoding="utf-8")
+        matches = re.findall(
+            r"import\s*\{([^}]+)\}\s*from\s*[\x27\x22]\./([a-zA-Z0-9_$-]+\.js)[\x27\x22]",
+            content,
+        )
+        for names_str, target_file in matches:
+            target_exports = exports.get(target_file, set())
+            for item in names_str.split(","):
+                raw_name = item.strip().split(" as ")[0].strip()
+                if not raw_name:
+                    continue
+                if raw_name not in target_exports:
+                    unresolved_imports.append(
+                        f"В {f.name}: невозможно импортировать '{raw_name}' из '{target_file}'"
+                    )
+
+    assert not unresolved_imports, (
+        f"Обнаружены несогласованные ES-импорты: {unresolved_imports}"
+    )
+
+    # Проверка favicon в HTML
+    with httpx.Client(base_url=base_url) as client:
+        r_index = client.get("/")
+        assert r_index.status_code == 200
+        assert 'rel="icon"' in r_index.text or "rel='icon'" in r_index.text
+        assert "data:image/svg+xml" in r_index.text
