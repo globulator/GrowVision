@@ -188,6 +188,8 @@ async def poll_and_deliver_verification_codes(
                     logger.warning(
                         f"Не удалось отправить код подтверждения #{code_id} пользователю {tg_id}: {send_err}"
                     )
+                    with contextlib.suppress(Exception):
+                        await api_client.fail_verification_code(code_id, str(send_err))
         except asyncio.CancelledError:
             break
         except Exception as exc:  # noqa: BLE001

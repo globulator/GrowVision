@@ -80,6 +80,19 @@ def init_db(target_engine: Engine | None = None) -> None:
                 )
                 conn.commit()
 
+        with contextlib.suppress(Exception):
+            res = conn.execute(
+                text("PRAGMA table_info(web_verification_codes);")
+            ).fetchall()
+            wvc_cols = {row[1] for row in res}
+            if "delivery_error" not in wvc_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE web_verification_codes ADD COLUMN delivery_error VARCHAR(255);"
+                    )
+                )
+                conn.commit()
+
         # Безопасное удаление устаревших уникальных индексов на GPIO-пины (Этап 7.4)
         with contextlib.suppress(Exception):
             conn.execute(text("DROP INDEX IF EXISTS uq_active_light_pin;"))

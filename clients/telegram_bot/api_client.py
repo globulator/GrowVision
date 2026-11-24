@@ -685,3 +685,15 @@ class GrowVisionApiClient:
             user_id=0,
             timeout=10.0,
         )
+
+    async def fail_verification_code(
+        self, code_id: int, error_message: str | None = None
+    ) -> dict[str, bool]:
+        """Подтверждение ошибки отправки кода подтверждения пользователю."""
+        return await self._request(
+            "POST",
+            f"/api/auth/web/pending-codes/{code_id}/fail",
+            json_data={"error": error_message},
+            user_id=0,
+            timeout=10.0,
+        )

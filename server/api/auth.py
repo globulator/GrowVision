@@ -23,6 +23,7 @@ from server.api.deps import (
     verify_session_cookie,
 )
 from server.config import get_settings
+from server.core.bot_info import get_telegram_bot_username
 from server.core.rate_limit import login_limiter
 from server.db.models import InviteCode, TelegramContact, User, WebVerificationCode
 
@@ -103,6 +104,14 @@ class WebRegisterVerifyRequest(BaseModel):
         if not isinstance(v, str) or not v.strip():
             raise ValueError("Код подтверждения не может быть пустым")
         return v.strip()
+
+
+class FailVerificationCodeRequest(BaseModel):
+    """Тело запроса POST /api/auth/web/pending-codes/{code_id}/fail."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    error: str | None = None
 
 
 class WebRegisterCompleteRequest(BaseModel):
@@ -510,12 +519,33 @@ def ack_verification_code(
     return {"ok": True}
 
 
+@router.post(
+    "/web/pending-codes/{code_id}/fail",
+    response_model=dict[str, bool],
+    dependencies=[Depends(verify_client_key)],
+)
+def fail_verification_code(
+    code_id: int,
+    body: FailVerificationCodeRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, bool]:
+    """Подтверждение ошибки отправки кода подтверждения Telegram-ботом."""
+    rec = (
+        db.query(WebVerificationCode).filter(WebVerificationCode.id == code_id).first()
+    )
+    if rec:
+        err_msg = (body.error or "delivery_failed").strip()
+        rec.delivery_error = err_msg[:255]
+        db.commit()
+    return {"ok": True}
+
+
 # ================== Веб-регистрация и авторизация (Web SPA) ==================
 
 
 def resolve_telegram_contact(
     telegram_input: str, db: Session
-) -> tuple[int, TelegramContact | None]:
+) -> tuple[int, TelegramContact]:
     """Резолвит ввод пользователя (@username или числовой ID) в числовой telegram_id и объект TelegramContact."""
     val = telegram_input.strip()
     if val.isdigit() or (val.startswith("-") and val[1:].isdigit()):
@@ -523,6 +553,11 @@ def resolve_telegram_contact(
         contact = (
             db.query(TelegramContact).filter(TelegramContact.telegram_id == tid).first()
         )
+        if not contact:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Пользователь с таким Telegram не найден. Пожалуйста, откройте Telegram-бота GrowVision, нажмите /start и повторите попытку.",
+            )
         return tid, contact
 
     norm_username = val.lstrip("@").strip().lower()
@@ -543,6 +578,32 @@ def resolve_telegram_id(telegram_input: str, db: Session) -> int:
     """Резолвит ввод пользователя (@username или числовой ID) в числовой telegram_id."""
     tid, _ = resolve_telegram_contact(telegram_input, db)
     return tid
+
+
+@router.get("/web/register/code-status")
+def get_verification_code_status(
+    telegram_id: int,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Проверка статуса доставки кода подтверждения для указанного пользователя."""
+    now = datetime.now(UTC)
+    rec = (
+        db.query(WebVerificationCode)
+        .filter(
+            WebVerificationCode.telegram_id == telegram_id,
+            WebVerificationCode.expires_at > now,
+            WebVerificationCode.is_verified.is_(False),
+        )
+        .order_by(WebVerificationCode.created_at.desc())
+        .first()
+    )
+    if not rec:
+        return {"status": "not_found"}
+    if rec.delivery_error:
+        return {"status": "delivery_error", "error": rec.delivery_error}
+    if rec.is_delivered:
+        return {"status": "delivered"}
+    return {"status": "pending"}
 
 
 @router.post("/web/register/start")
@@ -666,13 +727,6 @@ def auth_web_register_complete(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Неверный или просроченный код приглашения / пароль доступа",
             )
-
-    pwd = body.password.strip()
-    if len(pwd) < 4:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Пароль должен содержать не менее 4 символов",
-        )
 
     full_name = body.full_name.strip()
     if not full_name:
@@ -839,6 +893,11 @@ def auth_web_login(
         .first()
     )
     if not user:
+        if not contact:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Пользователь с таким Telegram не найден. Пожалуйста, откройте Telegram-бота GrowVision, нажмите /start и повторите попытку.",
+            )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="telegram_verification_required",
@@ -898,8 +957,7 @@ def auth_web_me(
 
     Информация о текущем веб-пользователе или статус Гость.
     """
-    settings = get_settings()
-    bot_username = settings.bot_username or "GrowVisionBot"
+    bot_username = get_telegram_bot_username()
     if gv_session:
         user = verify_session_cookie(gv_session, db)
         if user:
