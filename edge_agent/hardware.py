@@ -275,15 +275,18 @@ class HardwareManager:
             else:
                 self.set_light(light_pin, True)
 
-            total_delay = ((switch_delay_ms / 1000.0) if not same_pins else 0.0) + max(
-                0.0, float(capture_delay_sec)
-            )
-            if total_delay > 0:
-                time.sleep(total_delay)
+            # В mock-режиме исключаем искусственные задержки стабилизации и лишний прогрев
+            if self.mode != "mock":
+                total_delay = (
+                    (switch_delay_ms / 1000.0) if not same_pins else 0.0
+                ) + max(0.0, float(capture_delay_sec))
+                if total_delay > 0:
+                    time.sleep(total_delay)
 
+            effective_warmup = 0 if self.mode == "mock" else warmup_frames
             return self.capture_frame(
                 camera_hardware_id,
-                warmup_frames=warmup_frames,
+                warmup_frames=effective_warmup,
                 frame_index=frame_index,
             )
         finally:

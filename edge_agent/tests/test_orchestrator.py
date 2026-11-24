@@ -427,3 +427,32 @@ def test_orchestrator_logger_no_duplicate_handlers():
 
     assert len(orch_logger.handlers) == 0
     assert len(root_logger.handlers) > 0
+
+
+def test_stage8_9_snap_fast_mock_execution_and_poll_interval(
+    orchestrator: EdgeOrchestrator,
+    dummy_client: DummyEdgeClient,
+):
+    """Этап 8.9: Быстрое выполнение SNAP в mock-режиме (без time.sleep) и лог [SNAP] elapsed."""
+    assert orchestrator.config.command_poll_interval_sec == 0.5
+    cmd = CommandItem(
+        id=89,
+        command_type="SNAP",
+        is_global=False,
+        installation=CommandInstallation(
+            id=1,
+            light_gpio_pin=17,
+            flash_gpio_pin=27,
+            camera_hardware_ids=["mock-cam-fast"],
+        ),
+    )
+
+    t0 = time.perf_counter()
+    orchestrator.handle_command(cmd)
+    t_elapsed = time.perf_counter() - t0
+
+    assert 89 in dummy_client.results
+    res = dummy_client.results[89]
+    assert res.status == "done"
+    assert "[SNAP] elapsed=" in res.debug_log_line
+    assert t_elapsed < 1.0

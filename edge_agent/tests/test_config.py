@@ -12,8 +12,8 @@ def test_default_config():
     assert cfg.edge_api_key == ""
     assert cfg.hardware_mode == "mock"
     assert cfg.heartbeat_interval_sec == 30.0
-    assert cfg.command_poll_interval_sec == 2.0
-    assert cfg.claim_poll_interval_sec == 2.0
+    assert cfg.command_poll_interval_sec == 0.5
+    assert cfg.claim_poll_interval_sec == 0.5
     assert cfg.capture_interval_hours == 1
     assert cfg.debug_mode is False
     assert cfg.relay_active_high is True

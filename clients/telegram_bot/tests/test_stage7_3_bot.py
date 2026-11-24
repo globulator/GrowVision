@@ -281,21 +281,22 @@ async def test_timelapse_duration_preset_flow(
     api_client = create_mock_api_client(bot_config, handler)
     dp = build_dispatcher(bot_config, api_client)
 
-    # 1. Нажатие «Скачать видео» -> расчет под 30 FPS без пресетов
+    # 1. Нажатие «Скачать видео» -> честный динамический расчет (~15 FPS, минимум 1 с)
     cb_video = create_test_callback_query("inst:video:5")
     await dp.feed_update(mock_bot, Update(update_id=30, callback_query=cb_video))
     mock_bot.edit_message_text.assert_called_once()
     dur_text = mock_bot.edit_message_text.call_args[1]["text"]
     assert "Сборка таймлапса" in dur_text
     assert "Кадров для сборки: <b>20</b>" in dur_text
-    assert "30 FPS" in dur_text
+    assert "20 FPS" in dur_text
+    assert "1 с" in dur_text
     kb = mock_bot.edit_message_text.call_args[1]["reply_markup"]
-    assert "Собрать видео (30 FPS)" in kb.inline_keyboard[0][0].text
+    assert "Собрать видео (20 FPS)" in kb.inline_keyboard[0][0].text
 
-    # 2. Подтверждение сборки видео по кнопке с рассчитанной длительностью и 30 FPS
+    # 2. Подтверждение сборки видео по кнопке с рассчитанной длительностью и 20 FPS
     cb_confirm = create_test_callback_query(kb.inline_keyboard[0][0].callback_data)
     await dp.feed_update(mock_bot, Update(update_id=33, callback_query=cb_confirm))
 
     assert len(video_requests) == 1
-    assert video_requests[0]["fps"] == 30
+    assert video_requests[0]["fps"] == 20
     mock_bot.send_video.assert_called_once()

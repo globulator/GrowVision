@@ -57,7 +57,7 @@ class EdgeConfig(BaseModel):
     edge_api_key: str = Field(default="")
     hardware_mode: Literal["rpi", "mock"] = Field(default="mock")
     heartbeat_interval_sec: float = Field(default=30.0, gt=0)
-    command_poll_interval_sec: float = Field(default=2.0, gt=0)
+    command_poll_interval_sec: float = Field(default=0.5, gt=0)
     offline_queue_dir: Path = Field(default=DEFAULT_OFFLINE_QUEUE_DIR)
     model_path: Path = Field(default=DEFAULT_MODEL_PATH)
     capture_interval_hours: int = Field(default=1, gt=0)

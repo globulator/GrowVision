@@ -663,16 +663,17 @@ async def _prompt_video_duration(
         )
         return
 
-    # Расчет длительности строго под 30 FPS (Этап 8.5)
-    calc_duration = max(1.0, round(total_frames / 30.0, 1))
+    # Динамический расчет длительности и FPS согласованно с Web SPA (Этап 8.9)
+    calc_duration = max(1, round(total_frames / 15))
+    actual_fps = min(30, max(1, round(total_frames / calc_duration)))
     cam_part = str(camera_id) if camera_id is not None else "none"
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="▶️ Собрать видео (30 FPS)",
-                    callback_data=f"vid_confirm:{inst_id}:{cam_part}:{calc_duration}:30",
+                    text=f"▶️ Собрать видео ({actual_fps} FPS)",
+                    callback_data=f"vid_confirm:{inst_id}:{cam_part}:{calc_duration}:{actual_fps}",
                 )
             ],
             [
@@ -684,12 +685,17 @@ async def _prompt_video_duration(
         ]
     )
 
+    fps_note = ""
+    if total_frames / calc_duration > 30:
+        fps_note = "\n⚠️ Частота ограничена до 30 FPS (с автоматическим прореживанием)\n"
+
     text = (
         f"🎬 <b>Сборка таймлапса</b>\n\n"
         f"Установка: <b>{html.escape(inst_name)}</b>\n"
         f"Кадров для сборки: <b>{total_frames}</b>\n"
-        f"Частота: <b>30 FPS</b>\n"
-        f"Расчётная длительность: <b>{calc_duration:.1f} с</b>\n\n"
+        f"Частота: <b>{actual_fps} FPS</b>\n"
+        f"Расчётная длительность: <b>{calc_duration} с</b>\n"
+        f"{fps_note}\n"
         "Запустить сборку готового таймлапса?"
     )
 
@@ -1272,9 +1278,10 @@ async def _execute_video_pipeline(
                     with contextlib.suppress(Exception):
                         await status_msg.delete()
                 try:
+                    actual_fps_val = fps or 30
                     caption = (
                         f"🎬 <b>Таймлапс:</b> {inst_name}.\n"
-                        f"Собрано видео с частотой 30 FPS (прореживание 1 из {step} для соблюдения лимита Telegram). Прореженная версия: каждый {step}-й кадр.\n"
+                        f"Собрано видео с частотой {actual_fps_val} FPS (прореживание 1 из {step} для соблюдения лимита Telegram). Прореженная версия: каждый {step}-й кадр.\n"
                         f"<i>(Полную версию можно скачать через консольный клиент: snap video {inst_id})</i>"
                     )
                     if bot:

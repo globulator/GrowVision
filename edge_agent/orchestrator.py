@@ -388,6 +388,7 @@ class EdgeOrchestrator:
 
     def _handle_snap(self, cmd: CommandItem) -> None:
         """Обработка команды SNAP (все камеры установки, последовательность реле, загрузка кадра перед result)."""
+        snap_start = time.perf_counter()
         targets = []
         if cmd.is_global and cmd.installations:
             targets = cmd.installations
@@ -489,6 +490,12 @@ class EdgeOrchestrator:
                 f"[GPIO] Inst#{inst.id}: light=0, flash=1 -> captured {inst_captured_count} frames"
             )
 
+        elapsed_sec = time.perf_counter() - snap_start
+        logger.info(
+            f"[SNAP] Команда #{cmd.id} выполнена за {elapsed_sec:.2f} с "
+            f"(успешно: {success_count} кадр., режим: {self.config.hardware_mode})"
+        )
+        debug_log_lines.append(f"[SNAP] elapsed={elapsed_sec:.2f}s")
         combined_debug_log = "; ".join(debug_log_lines)
 
         if success_count > 0:
