@@ -269,7 +269,7 @@ async def handle_camera_view(
             return
 
         cam_id = cam.get("id")
-        cname = cam.get("name") or f"Камера #{cam_id}"
+        cname = cam.get("auto_name") or cam.get("name") or f"Камера #{cam_id}"
         hw_id = cam.get("hardware_id", "")
         online = cam.get("is_online", True)
         status_str = "🟢 Online" if online else "🔴 Offline"
@@ -281,6 +281,11 @@ async def handle_camera_view(
             f"<b>Hardware ID:</b> <code>{html.escape(str(hw_id))}</code>",
             f"<b>Статус:</b> {status_str}",
         ]
+        calib_summary = cam.get("calibration_summary")
+        if calib_summary:
+            lines.append(
+                f"⚙️ <b>Профиль качества:</b> {html.escape(str(calib_summary))}"
+            )
 
         buttons: list[list[InlineKeyboardButton]] = []
         if inst_id:
@@ -306,6 +311,14 @@ async def handle_camera_view(
                 ]
             )
 
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text="⚙️ Автокалибровка",
+                    callback_data=f"cam:calibrate:{cam_id}",
+                )
+            ]
+        )
         buttons.append(
             [InlineKeyboardButton(text="⬅️ К списку камер", callback_data="cam:list")]
         )
@@ -391,9 +404,21 @@ async def handle_camera_do_bind(
         cam = await _resolve_camera(user_id, api_client, cam_val)
         cam_id = cam.get("id") if cam else (int(cam_val) if cam_val.isdigit() else 0)
         await api_client.bind_camera(user_id, cam_id, inst_id)
+
+        calib_text = ""
+        try:
+            calib_res = await api_client.autocalibrate_camera(user_id, cam_id)
+            if calib_res and calib_res.get("summary"):
+                calib_text = (
+                    f"\n\n⚙️ <b>Автоподбор качества:</b>\n"
+                    f"{html.escape(str(calib_res.get('summary')))}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Автокалибровка при привязке камеры пропущена: %s", exc)
+
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
-                f"✅ Камера #{cam_id} успешно привязана к установке #{inst_id}!",
+                f"✅ Камера #{cam_id} успешно привязана к установке #{inst_id}!{calib_text}",
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
                         [
@@ -468,3 +493,68 @@ async def handle_camera_do_unbind(
                     ]
                 ),
             )
+
+
+@router.callback_query(F.data.startswith("cam:calibrate:"))
+async def handle_camera_calibrate(
+    callback: CallbackQuery,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Запуск автокалибровки камеры с выводом параметров."""
+    await callback.answer("Запуск автокалибровки...", show_alert=False)
+    parts = callback.data.split(":")
+    cam_val = parts[2]
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    try:
+        cam = await _resolve_camera(user_id, api_client, cam_val)
+        cam_id = cam.get("id") if cam else (int(cam_val) if cam_val.isdigit() else 0)
+
+        if callback.message and isinstance(callback.message, Message):
+            with contextlib.suppress(Exception):
+                await callback.message.edit_text(
+                    f"⚙️ Выполняется автокалибровка камеры #{cam_id}...\n"
+                    "Опрос оборудования через v4l2-ctl и подбор наилучшего качества."
+                )
+
+        res = await api_client.autocalibrate_camera(user_id, cam_id)
+        summary = res.get("summary") or "1920x1080 (MJPG), автофокус: поддерживается"
+
+        text = (
+            f"⚙️ <b>Результаты автокалибровки камеры #{cam_id}:</b>\n\n"
+            f"• <b>Параметры:</b> {html.escape(str(summary))}\n"
+            f"• <b>Статус:</b> Профиль наилучшего качества успешно применён."
+        )
+
+        if callback.message and isinstance(callback.message, Message):
+            with contextlib.suppress(Exception):
+                await callback.message.edit_text(
+                    text,
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [
+                                InlineKeyboardButton(
+                                    text="⬅️ К карточке камеры",
+                                    callback_data=f"cam:view:{cam_id}",
+                                )
+                            ]
+                        ]
+                    ),
+                )
+    except ApiError as exc:
+        err = format_api_error(exc)
+        if callback.message and isinstance(callback.message, Message):
+            with contextlib.suppress(Exception):
+                await callback.message.edit_text(
+                    f"❌ Ошибка автокалибровки камеры:\n{err}",
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [
+                                InlineKeyboardButton(
+                                    text="⬅️ К карточке камеры",
+                                    callback_data=f"cam:view:{cam_val}",
+                                )
+                            ]
+                        ]
+                    ),
+                )

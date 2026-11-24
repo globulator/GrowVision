@@ -158,4 +158,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ server_url, netbird_setup_key, hardware_mode }),
     }),
+
+  // Автокалибровка камеры (для разработчика)
+  autocalibrateCamera: (cameraId) =>
+    request(`/api/cameras/${cameraId}/autocalibrate`, { method: 'POST' }),
 };

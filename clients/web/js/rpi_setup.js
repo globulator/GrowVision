@@ -18,6 +18,13 @@ let rpiLiveText = null;
 let rpiLiveMode = null;
 let rpiLivePing = null;
 
+let rpiTelemBoard = null;
+let rpiTelemVersions = null;
+let rpiTelemCpu = null;
+let rpiTelemRam = null;
+let rpiTelemDisk = null;
+let rpiTelemQueue = null;
+
 let setupForm = null;
 let serverUrlInput = null;
 let netbirdKeyInput = null;
@@ -39,6 +46,13 @@ export function initRpiSetup() {
   rpiLiveText = document.getElementById('rpi-live-status-text');
   rpiLiveMode = document.getElementById('rpi-live-mode');
   rpiLivePing = document.getElementById('rpi-live-last-ping');
+
+  rpiTelemBoard = document.getElementById('rpi-telem-board');
+  rpiTelemVersions = document.getElementById('rpi-telem-versions');
+  rpiTelemCpu = document.getElementById('rpi-telem-cpu');
+  rpiTelemRam = document.getElementById('rpi-telem-ram');
+  rpiTelemDisk = document.getElementById('rpi-telem-disk');
+  rpiTelemQueue = document.getElementById('rpi-telem-queue');
 
   setupForm = document.getElementById('rpi-setup-form');
   serverUrlInput = document.getElementById('rpi-server-url');
@@ -129,19 +143,80 @@ function applyStatusData(statusData) {
     rpiLiveText.style.color = isOnline ? '#22c55e' : '#94a3b8';
   }
 
-  // Режим
+  // Режим (read-only бейдж)
   if (rpiLiveMode) {
     if (!isOnline) {
       rpiLiveMode.textContent = 'Режим: Не подключено';
     } else {
       const hwMode =
-        (statusData && statusData.rpi_telemetry && statusData.rpi_telemetry.hardware_mode) ||
-        'mock';
+        (statusData &&
+          statusData.rpi_telemetry &&
+          statusData.rpi_telemetry.hardware_mode) ||
+        (statusData && statusData.is_real_rpi ? 'rpi' : 'mock');
       if (hwMode === 'mock') {
-        rpiLiveMode.textContent = 'Режим: Эмулятор (mock)';
+        rpiLiveMode.textContent = 'Режим: Эмуляция (mock)';
       } else {
-        rpiLiveMode.textContent = 'Режим: Raspberry Pi (rpi)';
+        rpiLiveMode.textContent = 'Режим: Реальная плата (RPi)';
       }
+    }
+  }
+
+  // Метрики телеметрии платы
+  const telem = statusData ? statusData.rpi_telemetry : null;
+  const hw = telem && telem.hardware ? telem.hardware : null;
+  const sw = telem && telem.software ? telem.software : null;
+  const serverVer = (statusData && statusData.server_version) || '—';
+  const edgeVer = (sw && sw.edge_version) || '—';
+
+  if (rpiTelemBoard) {
+    if (isOnline && hw && hw.board_model) {
+      rpiTelemBoard.textContent = hw.board_model;
+      rpiTelemBoard.title = hw.board_model;
+    } else {
+      rpiTelemBoard.textContent = isOnline ? 'Raspberry Pi' : 'Офлайн';
+    }
+  }
+
+  if (rpiTelemVersions) {
+    rpiTelemVersions.textContent = `Агент: v${edgeVer} / Сервер: v${serverVer}`;
+    rpiTelemVersions.title = `Версия Edge: ${edgeVer}, Версия сервера: ${serverVer}`;
+  }
+
+  if (rpiTelemCpu) {
+    if (isOnline && hw && typeof hw.cpu_usage_percent !== 'undefined') {
+      const tempStr =
+        typeof hw.cpu_temp_c !== 'undefined' ? ` / ${hw.cpu_temp_c}°C` : '';
+      rpiTelemCpu.textContent = `${hw.cpu_usage_percent}%${tempStr}`;
+    } else {
+      rpiTelemCpu.textContent = '—';
+    }
+  }
+
+  if (rpiTelemRam) {
+    if (isOnline && hw && hw.ram_used_mb && hw.ram_total_mb) {
+      const pct = Math.round((hw.ram_used_mb / hw.ram_total_mb) * 100);
+      rpiTelemRam.textContent = `${hw.ram_used_mb} / ${hw.ram_total_mb} МБ (${pct}%)`;
+    } else {
+      rpiTelemRam.textContent = '—';
+    }
+  }
+
+  if (rpiTelemDisk) {
+    if (isOnline && hw && typeof hw.disk_free_gb !== 'undefined') {
+      rpiTelemDisk.textContent = `${hw.disk_free_gb} ГБ свободно`;
+    } else {
+      rpiTelemDisk.textContent = '—';
+    }
+  }
+
+  if (rpiTelemQueue) {
+    if (isOnline && telem && typeof telem.offline_queue_count !== 'undefined') {
+      const q = telem.offline_queue_count;
+      rpiTelemQueue.textContent = `${q} кадров`;
+      rpiTelemQueue.style.color = q > 0 ? '#f59e0b' : 'var(--text-main)';
+    } else {
+      rpiTelemQueue.textContent = '0 кадров';
+      rpiTelemQueue.style.color = 'var(--text-main)';
     }
   }
 
@@ -156,21 +231,6 @@ function applyStatusData(statusData) {
       }
     } else {
       rpiLivePing.textContent = 'Нет данных';
-    }
-  }
-
-  // Проверка физического наличия Raspberry Pi: если нет, блокируем переключение на rpi
-  const isRealRpi = Boolean(isOnline && statusData && statusData.is_real_rpi);
-  const rpiRadio = document.querySelector('input[name="rpi-hw-mode"][value="rpi"]');
-  const mockRadio = document.querySelector('input[name="rpi-hw-mode"][value="mock"]');
-  if (rpiRadio) {
-    if (!isRealRpi) {
-      rpiRadio.disabled = true;
-      rpiRadio.title = 'Реальное оборудование Raspberry Pi не обнаружено. Доступен только Mock-режим (эмуляция).';
-      if (mockRadio) mockRadio.checked = true;
-    } else {
-      rpiRadio.disabled = false;
-      rpiRadio.removeAttribute('title');
     }
   }
 }
@@ -251,16 +311,6 @@ async function handleGenerateCommand(e) {
   }
 
   const netbirdKey = netbirdKeyInput ? netbirdKeyInput.value.trim() : '';
-  const hwModeRadio = document.querySelector('input[name="rpi-hw-mode"]:checked');
-  const hwMode = hwModeRadio ? hwModeRadio.value : 'rpi';
-
-  if (hwMode === 'rpi' && hwModeRadio && hwModeRadio.disabled) {
-    if (errEl) {
-      errEl.textContent = 'Реальное оборудование Raspberry Pi не обнаружено. Выберите режим эмуляции (Mock).';
-      errEl.classList.remove('hidden');
-    }
-    return;
-  }
 
   if (generateBtn) {
     generateBtn.disabled = true;
@@ -271,7 +321,7 @@ async function handleGenerateCommand(e) {
     const res = await api.createEdgeSetupToken({
       server_url: serverUrl,
       netbird_setup_key: netbirdKey || null,
-      hardware_mode: hwMode,
+      hardware_mode: 'rpi',
     });
 
     const cleanServerUrl = serverUrl.replace(/\/+$/, '');

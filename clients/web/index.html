@@ -437,22 +437,56 @@
       </div>
 
       <div class="modal-body">
-        <!-- Блок живого статуса (вверху) -->
-        <div class="rpi-status-card">
-          <div class="rpi-status-row">
+        <!-- Информационная панель телеметрии Raspberry Pi -->
+        <div class="rpi-telemetry-dashboard">
+          <div class="rpi-status-header-row">
             <div class="rpi-status-indicator">
               <span id="rpi-live-dot" class="status-dot offline"></span>
               <span id="rpi-live-status-text" class="rpi-status-text">Офлайн</span>
             </div>
-            <div id="rpi-live-mode" class="rpi-mode-badge">Режим: rpi</div>
+            <div id="rpi-live-mode" class="rpi-mode-badge">Режим: Не подключено</div>
           </div>
+
+          <div class="rpi-telemetry-grid">
+            <div class="rpi-metric-card">
+              <span class="rpi-metric-label">Плата</span>
+              <span id="rpi-telem-board" class="rpi-metric-value">Нет данных</span>
+            </div>
+
+            <div class="rpi-metric-card">
+              <span class="rpi-metric-label">Версии ПО</span>
+              <span id="rpi-telem-versions" class="rpi-metric-value">Нет данных</span>
+            </div>
+
+            <div class="rpi-metric-card">
+              <span class="rpi-metric-label">CPU / Темп.</span>
+              <span id="rpi-telem-cpu" class="rpi-metric-value">Нет данных</span>
+            </div>
+
+            <div class="rpi-metric-card">
+              <span class="rpi-metric-label">Память RAM</span>
+              <span id="rpi-telem-ram" class="rpi-metric-value">Нет данных</span>
+            </div>
+
+            <div class="rpi-metric-card">
+              <span class="rpi-metric-label">Диск</span>
+              <span id="rpi-telem-disk" class="rpi-metric-value">Нет данных</span>
+            </div>
+
+            <div class="rpi-metric-card">
+              <span class="rpi-metric-label">Очередь кадров</span>
+              <span id="rpi-telem-queue" class="rpi-metric-value">0 кадров</span>
+            </div>
+          </div>
+
           <div class="rpi-status-details">
             <span class="rpi-detail-label">Последний отклик:</span>
             <span id="rpi-live-last-ping" class="rpi-detail-val">Нет данных</span>
           </div>
         </div>
 
-        <!-- Форма параметров установки -->
+        <!-- Подключение новой платы Edge -->
+        <div class="rpi-setup-section-title">Подключение новой платы Edge</div>
         <form id="rpi-setup-form" class="rpi-setup-form">
           <div class="form-group">
             <label for="rpi-server-url" class="form-label">Адрес сервера для Edge-агента</label>
@@ -472,20 +506,6 @@
               </button>
             </div>
             <span class="form-hint">Ключ не сохраняется в БД или логах сервера</span>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">Режим оборудования на плате</label>
-            <div class="radio-group">
-              <label class="radio-label">
-                <input type="radio" name="rpi-hw-mode" value="rpi" checked>
-                <span>Боевой (rpi)</span>
-              </label>
-              <label class="radio-label">
-                <input type="radio" name="rpi-hw-mode" value="mock">
-                <span>Эмулятор (mock)</span>
-              </label>
-            </div>
             <div id="rpi-setup-error" class="form-error-inline hidden"></div>
           </div>
 
@@ -494,7 +514,7 @@
               <polyline points="4 17 10 11 4 5"/>
               <line x1="12" y1="19" x2="20" y2="19"/>
             </svg>
-            <span>Получить команду</span>
+            <span>Получить команду установки</span>
           </button>
         </form>
 
