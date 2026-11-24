@@ -4,6 +4,7 @@
 import { api } from './api.js';
 import { showError, showToast } from './dialogs.js';
 import { encodeGifFromImages } from './gif_encoder.js';
+import { getPlaceholderHTML } from './placeholders.js';
 
 let currentUnit = null;
 let currentRole = 'guest';
@@ -62,8 +63,16 @@ export async function openGalleryModal(unit) {
     const framesResp = await api.getInstallationFrames(unit.id, 500);
     const frames = Array.isArray(framesResp) ? framesResp : (framesResp?.frames || []);
     if (!frames || frames.length === 0) {
-      closeGalleryModal();
-      showError('Пока пусто. Фотоальбом растения ожидает первых всходов!', 'Галерея');
+      allRawFrames = [];
+      loadedImages = [];
+      setControlsDisabled(true);
+      const box = document.getElementById('gallery-image-box');
+      if (box) {
+        box.innerHTML = getPlaceholderHTML('A');
+      }
+      const metaBox = document.getElementById('gallery-meta');
+      if (metaBox) metaBox.textContent = 'Кадры отсутствуют';
+      updateFpsAndWarnings(0);
       return;
     }
 
@@ -74,8 +83,14 @@ export async function openGalleryModal(unit) {
     updateCameraSwitcherUi();
     await loadCameraFrames();
   } catch (err) {
-    closeGalleryModal();
-    showError(err.message, 'Ошибка загрузки кадров');
+    setControlsDisabled(true);
+    const box = document.getElementById('gallery-image-box');
+    if (box) {
+      box.innerHTML = getPlaceholderHTML('C');
+    }
+    const metaBox = document.getElementById('gallery-meta');
+    if (metaBox) metaBox.textContent = 'Связь с сервером временно оборвалась';
+    updateFpsAndWarnings(0);
   }
 }
 
@@ -205,7 +220,10 @@ async function loadCameraFrames() {
           if (attempts < 2) {
             setTimeout(tryLoad, 300);
           } else {
-            // Если повтор не удался, создаем заглушку
+            // Если повтор не удался, помечаем как битый
+            img.dataset.broken = 'true';
+            img.dataset.capturedAt = frame.captured_at || '';
+            img.dataset.areaDisplay = frame.area_display || '—';
             images[idx] = img;
             resolve(img);
           }
@@ -234,16 +252,16 @@ async function loadCameraFrames() {
 
   loadedImages = images.filter((img) => img !== null);
 
-  // Инициализация длительности
+  // Инициализация длительности и FPS (~15 fps)
+  const totalCount = loadedImages.length;
   const durInput = document.getElementById('gallery-duration-input');
   if (durInput) {
-    const totalCount = loadedImages.length;
     durInput.min = '1';
-    durInput.max = String(totalCount);
-    // По умолчанию рассчитываем длительность из расчёта ~10 fps, но не менее 1 и не более totalCount
-    const defaultSec = Math.max(1, Math.min(totalCount, Math.round(totalCount / 10)));
-    durInput.value = String(defaultSec);
+    durInput.step = '1';
+    const recommendedSec = Math.max(1, Math.round(totalCount / 15));
+    durInput.value = String(recommendedSec);
   }
+  updateFpsAndWarnings(totalCount);
 
   // Открываем последний кадр на паузе
   currentFrameIndex = Math.max(0, loadedImages.length - 1);
@@ -271,6 +289,61 @@ function showLoadingPlaceholder() {
   }
 }
 
+function updateFpsAndWarnings(framesCount) {
+  const durInput = document.getElementById('gallery-duration-input');
+  const fpsValEl = document.getElementById('gallery-fps-value');
+  const fpsWarnEl = document.getElementById('gallery-fps-warning');
+  const durErrEl = document.getElementById('gallery-duration-error');
+  const downloadBtn = document.getElementById('gallery-btn-download');
+
+  if (!durInput || !fpsValEl) return false;
+
+  const rawVal = durInput.value.trim();
+  const val = Number(rawVal);
+
+  if (!rawVal || isNaN(val) || val < 1 || !Number.isInteger(val)) {
+    if (durErrEl) {
+      durErrEl.textContent = 'Длительность должна быть целым числом не меньше 1 с';
+      durErrEl.classList.remove('hidden');
+    }
+    if (fpsWarnEl) fpsWarnEl.classList.add('hidden');
+    fpsValEl.textContent = '— fps';
+    if (downloadBtn) downloadBtn.disabled = true;
+    return false;
+  }
+
+  if (durErrEl) {
+    durErrEl.textContent = '';
+    durErrEl.classList.add('hidden');
+  }
+  if (downloadBtn) downloadBtn.disabled = false;
+
+  if (framesCount <= 0) {
+    fpsValEl.textContent = '— fps';
+    if (fpsWarnEl) fpsWarnEl.classList.add('hidden');
+    return true;
+  }
+
+  const fps = framesCount / val;
+  fpsValEl.textContent = `${fps.toFixed(1)} fps`;
+
+  if (fps > 30) {
+    if (fpsWarnEl) {
+      fpsWarnEl.textContent = 'При экспорте FPS будет ограничен до 30';
+      fpsWarnEl.classList.remove('hidden');
+    }
+  } else if (val > framesCount) {
+    if (fpsWarnEl) {
+      fpsWarnEl.textContent = 'Каждый кадр удерживается дольше 1 с';
+      fpsWarnEl.classList.remove('hidden');
+    }
+  } else {
+    if (fpsWarnEl) fpsWarnEl.classList.add('hidden');
+  }
+
+  return true;
+}
+
 function renderCurrentFrame() {
   const box = document.getElementById('gallery-image-box');
   const metaBox = document.getElementById('gallery-meta');
@@ -281,11 +354,18 @@ function renderCurrentFrame() {
   if (!img) return;
 
   box.innerHTML = '';
-  const displayImg = document.createElement('img');
-  displayImg.className = 'gallery-main-img';
-  displayImg.src = img.src;
-  displayImg.alt = `Кадр ${currentFrameIndex + 1}`;
-  box.appendChild(displayImg);
+  if (img.dataset.broken === 'true') {
+    box.innerHTML = getPlaceholderHTML('D');
+  } else {
+    const displayImg = document.createElement('img');
+    displayImg.className = 'gallery-main-img';
+    displayImg.src = img.src;
+    displayImg.alt = `Кадр ${currentFrameIndex + 1}`;
+    displayImg.onerror = () => {
+      box.innerHTML = getPlaceholderHTML('D');
+    };
+    box.appendChild(displayImg);
+  }
 
   // Обновление ползунка
   if (slider) {
@@ -442,6 +522,7 @@ function goToLastFrame() {
 // Экспорт GIF (клиентский) или PNG (при 1 кадре)
 async function handleDownload() {
   if (loadedImages.length === 0 || !currentUnit) return;
+  if (!updateFpsAndWarnings(loadedImages.length)) return;
 
   const btn = document.getElementById('gallery-btn-download');
   const now = new Date();
@@ -631,15 +712,11 @@ export function initGallery() {
   const downloadBtn = document.getElementById('gallery-btn-download');
   if (downloadBtn) downloadBtn.addEventListener('click', handleDownload);
 
-  // Валидация поля длительности (fps >= 1, длительность <= totalFrames, >= 1)
+  // Валидация поля длительности и динамический расчет FPS
   const durInput = document.getElementById('gallery-duration-input');
   if (durInput) {
-    durInput.addEventListener('change', () => {
-      const total = loadedImages.length;
-      let val = parseFloat(durInput.value) || 1;
-      if (val < 1) val = 1;
-      if (total > 0 && val > total) val = total;
-      durInput.value = String(val);
+    durInput.addEventListener('input', () => {
+      updateFpsAndWarnings(loadedImages.length);
     });
   }
 

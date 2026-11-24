@@ -28,7 +28,7 @@ def is_rpi_online(db: Session) -> tuple[bool, datetime | None]:
         updated_dt = updated_dt.astimezone(UTC)
 
     diff_sec = (datetime.now(UTC) - updated_dt).total_seconds()
-    online = diff_sec <= 90.0
+    online = diff_sec <= 35.0
     return online, updated_dt
 
 

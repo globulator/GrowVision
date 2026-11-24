@@ -82,8 +82,29 @@
           <line x1="21" y1="12" x2="9" y2="12"/>
         </svg>
       </button>
+
+      <!-- Компактное inline-подтверждение выхода -->
+      <div id="header-logout-confirm" class="logout-confirm-inline hidden">
+        <span class="logout-confirm-text">Выйти? Для повторного входа потребуется код.</span>
+        <button type="button" id="header-logout-confirm-yes" class="btn btn-danger btn-xs">Да</button>
+        <button type="button" id="header-logout-confirm-no" class="btn btn-secondary btn-xs">Отмена</button>
+      </div>
     </div>
   </header>
+
+  <!-- Плашка: Сервер GrowVision недоступен (в потоке документа под шапкой) -->
+  <div id="server-offline-banner" class="server-offline-banner hidden">
+    <svg class="offline-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="1" y1="1" x2="23" y2="23"/>
+      <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/>
+      <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>
+      <path d="M10.71 5.05A16 16 0 0 1 22.58 9"/>
+      <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/>
+      <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+      <line x1="12" y1="20" x2="12.01" y2="20"/>
+    </svg>
+    <span>Сервер GrowVision недоступен. Проверьте сетевое подключение.</span>
+  </div>
 
   <!-- Основное содержимое -->
   <main class="app-main">
@@ -140,11 +161,15 @@
               </svg>
             </button>
           </div>
-          <span class="form-hint">Используйте мастер-пароль разработчика или одноразовый инвайт-код биолога. Имя синхронизируется автоматически из Telegram.</span>
+        <div class="form-hint tg-bot-hint">
+          <span>Бот для получения кода:</span>
+          <a id="login-tg-bot-link" href="https://t.me/GrowVisionBot" target="_blank" rel="noopener" class="tg-bot-link">@GrowVisionBot</a>
         </div>
+        <div id="login-form-error" class="form-error-inline hidden"></div>
 
         <div class="modal-actions">
           <button type="submit" id="login-submit-btn" class="btn btn-primary btn-block">Войти</button>
+          <button type="button" id="login-switch-to-reg" class="btn btn-secondary btn-block">Регистрация нового пользователя</button>
         </div>
       </form>
     </div>
@@ -167,9 +192,14 @@
         <!-- Шаг 1: Telegram -->
         <div id="reg-step-1" class="reg-step">
           <p class="reg-hint">Введите ваш Telegram для получения одноразового кода подтверждения:</p>
+          <div class="form-hint tg-bot-hint">
+            <span>Сначала запустите бота:</span>
+            <a id="reg-tg-bot-link" href="https://t.me/GrowVisionBot" target="_blank" rel="noopener" class="tg-bot-link">@GrowVisionBot</a>
+          </div>
           <div class="form-group">
             <label for="reg-telegram">Telegram (@username или ID)</label>
             <input type="text" id="reg-telegram" class="form-input" placeholder="@biologist или 12345678" required>
+            <div id="reg-error-step1" class="form-error-inline hidden"></div>
           </div>
           <div class="modal-actions">
             <button type="button" id="reg-btn-step1" class="btn btn-primary btn-block">Отправить код</button>
@@ -178,11 +208,11 @@
 
         <!-- Шаг 2: Код подтверждения -->
         <div id="reg-step-2" class="reg-step hidden">
-          <p class="reg-hint">Бот GrowVision отправил вам 6-значный код подтверждения в Telegram (срок действия кода — 10 минут):</p>
+          <p class="reg-hint">Бот отправил вам 6-значный код подтверждения в Telegram:</p>
           <div class="form-group">
             <label for="reg-code">Код подтверждения</label>
             <input type="text" id="reg-code" class="form-input code-input" placeholder="000000" maxlength="6" required>
-            <span class="form-hint">Код действителен 10 минут. Повторная отправка доступна через 60 секунд.</span>
+            <div id="reg-error-step2" class="form-error-inline hidden"></div>
           </div>
           <div class="modal-actions">
             <button type="button" id="reg-btn-step2" class="btn btn-primary btn-block">Подтвердить код</button>
@@ -197,25 +227,15 @@
           <div class="form-group">
             <label for="reg-fullname">Имя и Фамилия</label>
             <input type="text" id="reg-fullname" class="form-input" placeholder="Иван Иванов" required>
+            <span class="form-hint" id="reg-fullname-hint">Рекомендуемое имя из Telegram (можно изменить)</span>
           </div>
           <div class="form-group">
             <label for="reg-access-code">Код приглашения / пароль доступа</label>
             <input type="text" id="reg-access-code" class="form-input" placeholder="Инвайт-код или мастер-пароль" required>
           </div>
-          <div class="form-group password-group">
-            <label for="reg-password">Личный пароль</label>
-            <div class="password-wrapper">
-              <input type="password" id="reg-password" class="form-input" placeholder="Придумайте надёжный пароль" required autocomplete="new-password">
-              <button type="button" id="toggle-reg-password" class="btn-icon btn-eye" title="Показать/скрыть пароль" aria-label="Показать/скрыть пароль">
-                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                  <circle cx="12" cy="12" r="3"/>
-                </svg>
-              </button>
-            </div>
-          </div>
+          <div id="reg-error-step3" class="form-error-inline hidden"></div>
           <div class="modal-actions">
-            <button type="button" id="reg-btn-step3" class="btn btn-primary btn-block">Зарегистрироваться</button>
+            <button type="button" id="reg-btn-step3" class="btn btn-primary btn-block">Завершить регистрацию</button>
           </div>
         </div>
 
@@ -315,7 +335,12 @@
             <!-- Поле длительности -->
             <div class="duration-control">
               <label for="gallery-duration-input" class="duration-label">Длительность, с:</label>
-              <input type="number" id="gallery-duration-input" class="form-input duration-input" min="1" max="100" value="3">
+              <input type="number" id="gallery-duration-input" class="form-input duration-input" min="1" step="1" value="3">
+              <div id="gallery-fps-container" class="fps-container">
+                <span id="gallery-fps-value" class="fps-badge">15 fps</span>
+                <span id="gallery-fps-warning" class="fps-warning hidden"></span>
+              </div>
+              <div id="gallery-duration-error" class="form-error-inline hidden"></div>
             </div>
 
             <!-- Кнопка «Скачать» (GIF при N>=2 / PNG при N=1) -->
@@ -460,6 +485,7 @@
                 <span>Эмулятор (mock)</span>
               </label>
             </div>
+            <div id="rpi-setup-error" class="form-error-inline hidden"></div>
           </div>
 
           <button type="submit" id="rpi-btn-generate" class="btn btn-primary btn-block">
@@ -562,20 +588,6 @@
         </div>
       </div>
     </div>
-  </div>
-
-  <!-- Плашка: Сервер GrowVision недоступен -->
-  <div id="server-offline-banner" class="server-offline-banner hidden">
-    <svg class="offline-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-      <line x1="1" y1="1" x2="23" y2="23"/>
-      <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/>
-      <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>
-      <path d="M10.71 5.05A16 16 0 0 1 22.58 9"/>
-      <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/>
-      <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
-      <line x1="12" y1="20" x2="12.01" y2="20"/>
-    </svg>
-    <span>Сервер GrowVision недоступен. Проверьте сетевое подключение.</span>
   </div>
 
   <!-- Контейнер всплывающих тостов -->

@@ -378,3 +378,113 @@ def test_stage8_brand_logo_and_favicon_validation():
     favicon_root = ET.fromstring(decoded_svg)
     assert favicon_root.tag.endswith("svg")
     assert favicon_root.attrib.get("viewBox") == "0 0 120 90"
+
+
+def test_stage8_7_ux_polish_and_realtime_verification(e2e_uvicorn_server):
+    """Верификация критериев Этапа 8.7:
+
+    1. Обязательное подтверждение кодом из Telegram для незарегистрированных (403 telegram_verification_required).
+    2. Рекомендованное имя пользователя из TelegramContact на /api/auth/web/register/start.
+    3. bot_username в /api/version и /api/auth/web/me.
+    4. Рамочный баннер сети в потоке под header, прижатый к низу футер (min-height: 100vh) и инлайн-ошибки.
+    5. Поле длительности таймлапса и расчет FPS.
+    6. Тематические заглушки категорий A, B, C, D без эмодзи.
+    """
+    server_data = e2e_uvicorn_server
+    base_url = server_data["base_url"]
+    dev_pass = server_data["dev_pass"]
+    client_key = server_data["client_key"]
+
+    with httpx.Client(base_url=base_url) as client:
+        # 1. Проверка версии и bot_username
+        r_ver = client.get("/api/version")
+        assert r_ver.status_code == 200
+        ver_data = r_ver.json()
+        assert "server_version" in ver_data
+        assert "bot_username" in ver_data
+
+        r_me = client.get("/api/auth/web/me")
+        assert r_me.status_code == 200
+        assert "bot_username" in r_me.json()
+
+        # 2. Попытка входа незарегистрированного пользователя -> 403 telegram_verification_required
+        r_sync = client.post(
+            "/api/auth/telegram/contact",
+            headers={"X-Client-Key": client_key},
+            json={
+                "telegram_id": 1234567890,
+                "username": "unregistered_test_user",
+                "first_name": "Иван",
+                "last_name": "Петров",
+            },
+        )
+        assert r_sync.status_code == 200
+
+        r_login_unreg = client.post(
+            "/api/auth/web/login",
+            json={
+                "telegram": "@unregistered_test_user",
+                "code": dev_pass,
+            },
+        )
+        assert r_login_unreg.status_code == 403
+        assert "telegram_verification_required" in r_login_unreg.json()["detail"]
+
+        # 3. Старт регистрации возвращает recommended_name
+        r_reg_start = client.post(
+            "/api/auth/web/register/start",
+            json={"telegram": "@unregistered_test_user"},
+        )
+        assert r_reg_start.status_code == 200
+        reg_data = r_reg_start.json()
+        assert reg_data["telegram_id"] == 1234567890
+        assert reg_data["recommended_name"] == "Иван Петров"
+
+    # 4. Проверка разметки и стилей Web SPA
+    index_html = (ROOT_DIR / "clients" / "web" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    style_css = (ROOT_DIR / "clients" / "web" / "style.css").read_text(encoding="utf-8")
+    placeholders_js = (
+        ROOT_DIR / "clients" / "web" / "js" / "placeholders.js"
+    ).read_text(encoding="utf-8")
+
+    # Баннер в потоке под header
+    header_idx = index_html.find("</header>")
+    banner_idx = index_html.find('id="server-offline-banner"')
+    main_idx = index_html.find("<main")
+    assert header_idx != -1 and banner_idx != -1 and main_idx != -1
+    assert header_idx < banner_idx < main_idx, (
+        "Баннер должен находиться в потоке документа между </header> и <main>"
+    )
+
+    # Инлайн-подтверждение выхода в шапке
+    assert 'id="header-logout-confirm"' in index_html
+    assert 'id="header-logout-confirm-yes"' in index_html
+    assert 'id="header-logout-confirm-no"' in index_html
+
+    # Галерея: длительность и FPS
+    assert 'id="gallery-duration-input"' in index_html
+    assert 'id="gallery-fps-value"' in index_html
+
+    # Инлайн-ошибки форм
+    assert 'id="login-form-error"' in index_html
+    assert 'id="reg-error-step1"' in index_html
+    assert 'id="reg-error-step2"' in index_html
+    assert 'id="reg-error-step3"' in index_html
+
+    # Стили: flex и min-height: 100vh для body, flex: 1 для main
+    assert "min-height: 100vh" in style_css
+    assert "display: flex" in style_css
+    assert "flex-direction: column" in style_css
+    assert "flex: 1" in style_css
+    assert "1px solid #ef4444" in style_css
+
+    # Тематические заглушки: наличие всех 4 категорий и отсутствие эмодзи
+    assert "PLACEHOLDERS" in placeholders_js
+    assert "A:" in placeholders_js
+    assert "B:" in placeholders_js
+    assert "C:" in placeholders_js
+    assert "D:" in placeholders_js
+    assert "getRandomLoadingPhrase" in placeholders_js
+    assert "Ждём, когда растение улыбнётся" in placeholders_js

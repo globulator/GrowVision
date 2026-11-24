@@ -131,13 +131,23 @@ function applyStatusData(statusData) {
 
   // Режим
   if (rpiLiveMode) {
-    const mode = (statusData && statusData.rpi_telemetry && statusData.rpi_telemetry.hardware_mode) || 'rpi';
-    rpiLiveMode.textContent = `Режим: ${mode}`;
+    if (!isOnline) {
+      rpiLiveMode.textContent = 'Режим: Не подключено';
+    } else {
+      const hwMode =
+        (statusData && statusData.rpi_telemetry && statusData.rpi_telemetry.hardware_mode) ||
+        'mock';
+      if (hwMode === 'mock') {
+        rpiLiveMode.textContent = 'Режим: Эмулятор (mock)';
+      } else {
+        rpiLiveMode.textContent = 'Режим: Raspberry Pi (rpi)';
+      }
+    }
   }
 
   // Время отклика
   if (rpiLivePing) {
-    if (statusData && statusData.rpi_last_heartbeat_at) {
+    if (isOnline && statusData && statusData.rpi_last_heartbeat_at) {
       try {
         const d = new Date(statusData.rpi_last_heartbeat_at);
         rpiLivePing.textContent = d.toLocaleString('ru-RU');
@@ -150,7 +160,7 @@ function applyStatusData(statusData) {
   }
 
   // Проверка физического наличия Raspberry Pi: если нет, блокируем переключение на rpi
-  const isRealRpi = Boolean(statusData && statusData.is_real_rpi);
+  const isRealRpi = Boolean(isOnline && statusData && statusData.is_real_rpi);
   const rpiRadio = document.querySelector('input[name="rpi-hw-mode"][value="rpi"]');
   const mockRadio = document.querySelector('input[name="rpi-hw-mode"][value="mock"]');
   if (rpiRadio) {
@@ -225,9 +235,18 @@ async function handleGenerateCommand(e) {
   e.preventDefault();
   if (!serverUrlInput) return;
 
+  const errEl = document.getElementById('rpi-setup-error');
+  if (errEl) {
+    errEl.textContent = '';
+    errEl.classList.add('hidden');
+  }
+
   const serverUrl = serverUrlInput.value.trim();
   if (!serverUrl) {
-    showError('Пожалуйста, укажите адрес сервера');
+    if (errEl) {
+      errEl.textContent = 'Пожалуйста, укажите адрес сервера';
+      errEl.classList.remove('hidden');
+    }
     return;
   }
 
@@ -236,10 +255,10 @@ async function handleGenerateCommand(e) {
   const hwMode = hwModeRadio ? hwModeRadio.value : 'rpi';
 
   if (hwMode === 'rpi' && hwModeRadio && hwModeRadio.disabled) {
-    showError(
-      'Реальное оборудование Raspberry Pi не обнаружено. Выберите режим эмуляции (Mock).',
-      'Оборудование RPi'
-    );
+    if (errEl) {
+      errEl.textContent = 'Реальное оборудование Raspberry Pi не обнаружено. Выберите режим эмуляции (Mock).';
+      errEl.classList.remove('hidden');
+    }
     return;
   }
 
@@ -269,7 +288,10 @@ async function handleGenerateCommand(e) {
 
     showToast('Команда настройки Edge успешно сформирована');
   } catch (err) {
-    showError(err.message || 'Ошибка генерации токена установки');
+    if (errEl) {
+      errEl.textContent = err.message || 'Ошибка генерации токена установки';
+      errEl.classList.remove('hidden');
+    }
   } finally {
     if (generateBtn) {
       generateBtn.disabled = false;
@@ -313,6 +335,6 @@ async function handleCopyCommand() {
     }
     showToast('Команда скопирована в буфер обмена');
   } else {
-    showError('Не удалось скопировать команду в буфер обмена');
+    showToast('Не удалось скопировать команду в буфер обмена');
   }
 }

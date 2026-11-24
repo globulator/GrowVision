@@ -23,6 +23,7 @@ class Settings(BaseModel):
     repo_url: str | None = Field(default=None, alias="REPO_URL")
     edge_server_url: str | None = Field(default=None, alias="EDGE_SERVER_URL")
     mock_mode: bool = Field(default=False, alias="MOCK_MODE")
+    bot_username: str | None = Field(default=None, alias="BOT_USERNAME")
 
 
 def load_settings(env_path: Path | str | None = None) -> Settings:

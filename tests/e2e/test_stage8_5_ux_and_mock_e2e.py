@@ -97,7 +97,28 @@ def test_unified_web_login_and_name_sync(test_setup):
 
     client = TestClient(app)
 
-    # Вход биолога по @username и коду инвайта
+    # 1. Попытка входа незарегистрированного пользователя -> 403 telegram_verification_required (Этап 8.7)
+    r_unreg = client.post(
+        "/api/auth/web/login",
+        json={"telegram": "@biologist_elena", "code": BIO_INVITE},
+    )
+    assert r_unreg.status_code == 403
+    assert "telegram_verification_required" in r_unreg.json()["detail"]
+
+    # 2. Создаем зарегистрированную запись пользователя (например, после завершения регистрации)
+    db_u = session_factory()
+    user_bio = User(
+        client_type="web",
+        external_id=str(tg_id),
+        login="",
+        role="biologist",
+        is_active=True,
+    )
+    db_u.add(user_bio)
+    db_u.commit()
+    db_u.close()
+
+    # 3. Вход зарегистрированного биолога по @username и коду инвайта
     r_bio = client.post(
         "/api/auth/web/login",
         json={"telegram": "@biologist_elena", "code": BIO_INVITE},
