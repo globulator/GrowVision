@@ -8,6 +8,7 @@ logger = get_logger("edge_agent.vision")
 
 CV2_AVAILABLE = False
 ORT_AVAILABLE = False
+PIL_AVAILABLE = False
 
 try:
     import cv2  # type: ignore
@@ -25,6 +26,39 @@ try:
 except ImportError:
     ort = None  # type: ignore
 
+try:
+    from PIL import Image, ImageDraw, ImageFont  # type: ignore
+
+    PIL_AVAILABLE = True
+except ImportError:
+    Image = None  # type: ignore
+    ImageDraw = None  # type: ignore
+    ImageFont = None  # type: ignore
+
+
+CANDIDATE_FONTS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+]
+
+
+def _get_pil_font(size: int) -> Any:
+    """Возвращает FreeType TTF-шрифт с поддержкой кириллицы или безопасный default fallback."""
+    if not PIL_AVAILABLE or ImageFont is None:
+        return None
+    for font_path in CANDIDATE_FONTS:
+        if Path(font_path).is_file():
+            try:
+                return ImageFont.truetype(font_path, size)
+            except Exception:  # noqa: BLE001, S112
+                continue
+    try:
+        return ImageFont.load_default()
+    except Exception:  # noqa: BLE001
+        return None
+
 
 def draw_cv_annotations(
     img: Any,
@@ -38,9 +72,9 @@ def draw_cv_annotations(
 ) -> Any:
     """Накладывает улучшенную CV-разметку:
 
-    - Линейка слева и снизу в см (при калибровке ArUco) или px, яркий фиолетовый BGR (240, 32, 160);
+    - Линейка слева и снизу в см (при калибровке ArUco) или px, яркий фиолетовый (BGR: 240, 32, 160);
     - Красная точка в центре каждого найденного растения;
-    - Метаданные в углах кадра с адаптивным масштабированием от min(w, h);
+    - Метаданные в углах кадра с поддержкой кириллицы через Pillow TTF-шрифты;
     - Тонкая тёмная обводка ко всем элементам.
     """
     if not CV2_AVAILABLE or img is None:
@@ -53,36 +87,12 @@ def draw_cv_annotations(
     font_scale = max(0.5, scale_ref / 1000.0)
     thickness = max(2, round(scale_ref / 400.0))
     outline_thickness = thickness + 2
-    font = cv2.FONT_HERSHEY_SIMPLEX
 
+    # BGR цвета для OpenCV
     COLOR_PURPLE = (240, 32, 160)  # Яркий фиолетовый (BGR)
     COLOR_RED = (0, 0, 255)  # Красный
     COLOR_GREEN = (0, 220, 0)  # Зеленый контур
     COLOR_DARK = (15, 15, 15)  # Темная обводка
-    COLOR_WHITE = (255, 255, 255)
-    COLOR_YELLOW = (0, 235, 235)
-
-    def draw_text_with_outline(text_str: str, pos: tuple[int, int], color=COLOR_WHITE):
-        cv2.putText(
-            annotated,
-            text_str,
-            pos,
-            font,
-            font_scale,
-            COLOR_DARK,
-            outline_thickness,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            annotated,
-            text_str,
-            pos,
-            font,
-            font_scale,
-            color,
-            thickness,
-            cv2.LINE_AA,
-        )
 
     # Расчет масштабного коэффициента калибровки ArUco
     px_per_cm: float | None = None
@@ -99,7 +109,10 @@ def draw_cv_annotations(
     else:
         area_str = f"{round(total_area_px)} px"
 
-    # Обработка каждого обнаруженного растения
+    # Списки для отрисовки меток линеек: (lx, ly1, ly2, h_val_str, bx1, bx2, ly_bot, w_val_str, tick_len)
+    rulers_info: list[tuple[int, int, int, str, int, int, int, str, int]] = []
+
+    # Геометрическая обработка каждого обнаруженного растения
     for cnt, _ in contours_with_area:
         # 1. Контур с темной обводкой
         cv2.drawContours(
@@ -151,9 +164,6 @@ def draw_cv_annotations(
             )
 
         h_val_str = f"{bh / px_per_cm:.1f} см" if px_per_cm else f"{bh} px"
-        draw_text_with_outline(
-            h_val_str, (max(5, lx - 55), (ly1 + ly2) // 2), color=COLOR_PURPLE
-        )
 
         # Линейка снизу (горизонтальная)
         bx1, bx2 = bx, bx + bw
@@ -194,37 +204,227 @@ def draw_cv_annotations(
             )
 
         w_val_str = f"{bw / px_per_cm:.1f} см" if px_per_cm else f"{bw} px"
-        draw_text_with_outline(
-            w_val_str,
-            ((bx1 + bx2) // 2 - 25, min(h - 6, ly_bot + 18)),
-            color=COLOR_PURPLE,
+
+        rulers_info.append(
+            (lx, ly1, ly2, h_val_str, bx1, bx2, ly_bot, w_val_str, tick_len)
         )
 
-    # 4. Метаданные в углах кадра
-    margin = max(12, int(scale_ref * 0.025))
-    line_h = max(18, int(font_scale * 30))
+    # 4. Отрисовка текста (Pillow с поддержкой TTF кириллицы либо cv2 fallback)
+    if PIL_AVAILABLE and Image is not None and ImageDraw is not None:
+        pil_img = Image.fromarray(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(pil_img)
 
-    cur_y = margin + line_h
-    if inst_name:
-        draw_text_with_outline(f"Установка: {inst_name}", (margin, cur_y))
-        cur_y += line_h
-    if culture_name:
-        draw_text_with_outline(f"Культура: {culture_name}", (margin, cur_y))
+        # Цвета в формате RGB
+        RGB_PURPLE = (160, 32, 240)  # Фиолетовый
+        RGB_WHITE = (255, 255, 255)
+        RGB_YELLOW = (235, 235, 0)
+        RGB_DARK = (15, 15, 15)
 
-    cur_y = margin + line_h
-    if camera_name:
-        text_cam = f"Камера: {camera_name}"
-        (tw, _), _ = cv2.getTextSize(text_cam, font, font_scale, thickness)
-        draw_text_with_outline(text_cam, (w - margin - tw, cur_y))
-        cur_y += line_h
-    if captured_at:
-        text_time = f"Время: {captured_at}"
-        (tw, _), _ = cv2.getTextSize(text_time, font, font_scale, thickness)
-        draw_text_with_outline(text_time, (w - margin - tw, cur_y))
+        font_size = max(13, round(scale_ref / 45.0))
+        stroke_w = max(1, round(font_size / 10.0))
+        main_font = _get_pil_font(font_size)
 
-    text_area = f"Площадь: {area_str}"
-    (tw, _), _ = cv2.getTextSize(text_area, font, font_scale, thickness)
-    draw_text_with_outline(text_area, (w - margin - tw, h - margin), color=COLOR_YELLOW)
+        ruler_font_size = max(11, round(font_size * 0.85))
+        ruler_stroke_w = max(1, round(ruler_font_size / 10.0))
+        ruler_font = _get_pil_font(ruler_font_size)
+
+        # Текст на линейках
+        for (
+            lx,
+            ly1,
+            ly2,
+            h_val_str,
+            bx1,
+            bx2,
+            ly_bot,
+            w_val_str,
+            tick_len,
+        ) in rulers_info:
+            # Вертикальная линейка (слева)
+            bbox_h = draw.textbbox(
+                (0, 0), h_val_str, font=ruler_font, stroke_width=ruler_stroke_w
+            )
+            tw_h = bbox_h[2] - bbox_h[0]
+            th_h = bbox_h[3] - bbox_h[1]
+            pos_x_h = max(5, lx - tw_h - tick_len - 4)
+            pos_y_h = max(2, (ly1 + ly2) // 2 - th_h // 2)
+            draw.text(
+                (pos_x_h, pos_y_h),
+                h_val_str,
+                font=ruler_font,
+                fill=RGB_PURPLE,
+                stroke_width=ruler_stroke_w,
+                stroke_fill=RGB_DARK,
+            )
+
+            # Горизонтальная линейка (снизу)
+            bbox_w = draw.textbbox(
+                (0, 0), w_val_str, font=ruler_font, stroke_width=ruler_stroke_w
+            )
+            tw_w = bbox_w[2] - bbox_w[0]
+            th_w = bbox_w[3] - bbox_w[1]
+            pos_x_w = (bx1 + bx2) // 2 - tw_w // 2
+            pos_y_w = min(h - th_w - 5, ly_bot + tick_len + 4)
+            draw.text(
+                (pos_x_w, pos_y_w),
+                w_val_str,
+                font=ruler_font,
+                fill=RGB_PURPLE,
+                stroke_width=ruler_stroke_w,
+                stroke_fill=RGB_DARK,
+            )
+
+        # Метаданные в углах кадра
+        margin = max(12, int(scale_ref * 0.025))
+        line_spacing = max(4, round(font_size * 0.3))
+        line_h = font_size + line_spacing
+
+        # Слева сверху (Установка, Культура)
+        cur_y = margin
+        if inst_name:
+            draw.text(
+                (margin, cur_y),
+                f"Установка: {inst_name}",
+                font=main_font,
+                fill=RGB_WHITE,
+                stroke_width=stroke_w,
+                stroke_fill=RGB_DARK,
+            )
+            cur_y += line_h
+        if culture_name:
+            draw.text(
+                (margin, cur_y),
+                f"Культура: {culture_name}",
+                font=main_font,
+                fill=RGB_WHITE,
+                stroke_width=stroke_w,
+                stroke_fill=RGB_DARK,
+            )
+
+        # Справа сверху (Камера, Время)
+        cur_y = margin
+        if camera_name:
+            text_cam = f"Камера: {camera_name}"
+            bbox = draw.textbbox(
+                (0, 0), text_cam, font=main_font, stroke_width=stroke_w
+            )
+            tw = bbox[2] - bbox[0]
+            draw.text(
+                (w - margin - tw, cur_y),
+                text_cam,
+                font=main_font,
+                fill=RGB_WHITE,
+                stroke_width=stroke_w,
+                stroke_fill=RGB_DARK,
+            )
+            cur_y += line_h
+        if captured_at:
+            text_time = f"Время: {captured_at}"
+            bbox = draw.textbbox(
+                (0, 0), text_time, font=main_font, stroke_width=stroke_w
+            )
+            tw = bbox[2] - bbox[0]
+            draw.text(
+                (w - margin - tw, cur_y),
+                text_time,
+                font=main_font,
+                fill=RGB_WHITE,
+                stroke_width=stroke_w,
+                stroke_fill=RGB_DARK,
+            )
+
+        # Справа снизу (Площадь: ...)
+        text_area = f"Площадь: {area_str}"
+        bbox = draw.textbbox((0, 0), text_area, font=main_font, stroke_width=stroke_w)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        draw.text(
+            (w - margin - tw, h - margin - th),
+            text_area,
+            font=main_font,
+            fill=RGB_YELLOW,
+            stroke_width=stroke_w,
+            stroke_fill=RGB_DARK,
+        )
+
+        annotated = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+    else:
+        # Fallback на cv2.putText при отсутствии Pillow
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        COLOR_WHITE = (255, 255, 255)
+        COLOR_YELLOW = (0, 235, 235)
+
+        def draw_text_with_outline(
+            text_str: str, pos: tuple[int, int], color=COLOR_WHITE
+        ):
+            cv2.putText(
+                annotated,
+                text_str,
+                pos,
+                font,
+                font_scale,
+                COLOR_DARK,
+                outline_thickness,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                annotated,
+                text_str,
+                pos,
+                font,
+                font_scale,
+                color,
+                thickness,
+                cv2.LINE_AA,
+            )
+
+        for (
+            lx,
+            ly1,
+            ly2,
+            h_val_str,
+            bx1,
+            bx2,
+            ly_bot,
+            w_val_str,
+            _,
+        ) in rulers_info:
+            draw_text_with_outline(
+                h_val_str, (max(5, lx - 55), (ly1 + ly2) // 2), color=COLOR_PURPLE
+            )
+            draw_text_with_outline(
+                w_val_str,
+                ((bx1 + bx2) // 2 - 25, min(h - 6, ly_bot + 18)),
+                color=COLOR_PURPLE,
+            )
+
+        margin = max(12, int(scale_ref * 0.025))
+        line_h = max(18, int(font_scale * 30))
+
+        cur_y = margin + line_h
+        if inst_name:
+            draw_text_with_outline(f"Установка: {inst_name}", (margin, cur_y))
+            cur_y += line_h
+        if culture_name:
+            draw_text_with_outline(f"Культура: {culture_name}", (margin, cur_y))
+
+        cur_y = margin + line_h
+        if camera_name:
+            text_cam = f"Камера: {camera_name}"
+            (tw, _), _ = cv2.getTextSize(text_cam, font, font_scale, thickness)
+            draw_text_with_outline(text_cam, (w - margin - tw, cur_y))
+            cur_y += line_h
+        if captured_at:
+            text_time = f"Время: {captured_at}"
+            (tw, _), _ = cv2.getTextSize(text_time, font, font_scale, thickness)
+            draw_text_with_outline(text_time, (w - margin - tw, cur_y))
+
+        text_area = f"Площадь: {area_str}"
+        (tw, _), _ = cv2.getTextSize(text_area, font, font_scale, thickness)
+        draw_text_with_outline(
+            text_area, (w - margin - tw, h - margin), color=COLOR_YELLOW
+        )
 
     return annotated
 
@@ -391,11 +591,14 @@ class VisionPipeline:
                 bin_mask_full, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
 
+            # Адаптивный порог минимальной площади от разрешения кадра: max(150.0, (w * h) * 0.0005)
+            min_area = max(150.0, float(w * h) * 0.0005)
+
             # Сортировка контуров по площади (убывание)
             valid_contours_with_area = []
             for cnt in raw_contours:
                 area = float(cv2.contourArea(cnt))
-                if area > 50.0:  # Фильтрация шума
+                if area >= min_area:  # Фильтрация шума
                     valid_contours_with_area.append((cnt, area))
 
             valid_contours_with_area.sort(key=lambda x: x[1], reverse=True)
@@ -465,10 +668,20 @@ class VisionPipeline:
             if img is None:
                 return image_bytes, []
 
+            h, w = img.shape[:2]
+            # Адаптивный порог минимальной площади от разрешения кадра: max(150.0, (w * h) * 0.0005)
+            min_area = max(150.0, float(w * h) * 0.0005)
+
             hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-            lower_green = np.array([35, 40, 40], dtype=np.uint8)
+            # Повышен порог насыщенности S (65 вместо 40), чтобы слабо-зелёный серый фон не сливался в контур
+            lower_green = np.array([30, 65, 40], dtype=np.uint8)
             upper_green = np.array([85, 255, 255], dtype=np.uint8)
             mask = cv2.inRange(hsv, lower_green, upper_green)
+
+            # Морфологическая очистка: удаление мелкого шума (OPEN) и закрытие разрывов в листьях (CLOSE)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
 
             raw_contours, _ = cv2.findContours(
                 mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -477,7 +690,7 @@ class VisionPipeline:
             valid_contours_with_area = []
             for cnt in raw_contours:
                 area = float(cv2.contourArea(cnt))
-                if area > 50.0:  # Фильтрация шума
+                if area >= min_area:  # Фильтрация шума адаптивным порогом
                     valid_contours_with_area.append((cnt, area))
 
             valid_contours_with_area.sort(key=lambda x: x[1], reverse=True)

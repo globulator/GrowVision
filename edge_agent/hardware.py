@@ -158,6 +158,33 @@ def probe_camera_capabilities(
     )
 
 
+def apply_power_line_frequency_50hz(dev_path: str) -> bool:
+    """Устанавливает подавление мерцания частоты сети 50 Гц (power_line_frequency=1).
+
+    Безопасно игнорирует ошибки, если контрол не поддерживается устройством или драйвером.
+    """
+    try:
+        res = subprocess.run(
+            ["v4l2-ctl", "-d", dev_path, "-c", "power_line_frequency=1"],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=False,
+        )
+        if res.returncode == 0:
+            logger.debug(f"[CAM] Установлена частота сети 50 Гц для {dev_path}")
+            return True
+        logger.debug(
+            f"[CAM] v4l2-ctl power_line_frequency=1 для {dev_path} код {res.returncode}: {res.stderr.strip()}"
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            f"[CAM] Не удалось установить power_line_frequency=1 для {dev_path}: {exc}"
+        )
+        return False
+
+
 class HardwareManager:
     """Менеджер аппаратного обеспечения (GPIO, камеры, телеметрия)."""
 
@@ -362,6 +389,12 @@ class HardwareManager:
 
     def calibrate_camera(self, camera_hardware_id: str) -> CameraProfile:
         """Выполняет автокалибровку камеры, обновляет кэш и возвращает профиль."""
+        if self.mode != "mock":
+            cam_by_id_file = self.v4l_by_id_dir / camera_hardware_id
+            if cam_by_id_file.exists():
+                real_dev_path = os.path.realpath(str(cam_by_id_file))
+                apply_power_line_frequency_50hz(real_dev_path)
+
         profile = self.get_camera_profile(camera_hardware_id, force_refresh=True)
         logger.info(
             f"[CAM] Автокалибровка камеры {camera_hardware_id} завершена: {profile.summary_text()}"
@@ -404,6 +437,7 @@ class HardwareManager:
             )
 
         real_dev_path = os.path.realpath(str(cam_by_id_file))
+        apply_power_line_frequency_50hz(real_dev_path)
         profile = self.get_camera_profile(camera_hardware_id)
         logger.debug(
             f"Открытие камеры {camera_hardware_id} по пути {real_dev_path} (профиль: {profile.summary_text()})"
