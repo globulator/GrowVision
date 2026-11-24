@@ -318,6 +318,12 @@ class VisionPipeline:
 
         Возвращает кортеж (annotated_image_bytes, measurements).
         """
+        if not CV2_AVAILABLE:
+            logger.error(
+                "OpenCV недоступен. Сегментация невозможна, возврат сырого кадра."
+            )
+            return image_bytes, []
+
         # 1. Mock-режим: настоящая сегментация по цветовому порогу HSV
         if self.mock_mode:
             return self._segment_plants_hsv(
@@ -330,14 +336,21 @@ class VisionPipeline:
                 captured_at=captured_at,
             )
 
-        # 2. Боевой режим без модели / без cv2 / без сессии:
-        # СТРОГО: measurements=[], annotated_image = сырой кадр, лог ERROR!
-        if not CV2_AVAILABLE or not self._model_loaded or self._session is None:
-            logger.error(
-                "Инференс модели недоступен (модель не загружена или отсутствует OpenCV). "
-                "Замеры не производятся, аннотированный кадр равен оригиналу."
+        # 2. Боевой режим без загруженной ONNX модели / сессии:
+        # При отсутствии .onnx-модели в боевом режиме (mock_mode=False) использовать _segment_plants_hsv как фолбэк
+        if not self._model_loaded or self._session is None:
+            logger.warning(
+                "ONNX-модель не загружена в боевом режиме. Применяется fallback-сегментация по HSV."
             )
-            return image_bytes, []
+            return self._segment_plants_hsv(
+                image_bytes,
+                aruco_area_px=aruco_area_px,
+                aruco_size_mm=aruco_size_mm,
+                inst_name=inst_name,
+                culture_name=culture_name,
+                camera_name=camera_name,
+                captured_at=captured_at,
+            )
 
         try:
             nparr = np.frombuffer(image_bytes, np.uint8)
@@ -419,8 +432,18 @@ class VisionPipeline:
             return annotated_bytes, measurements
 
         except Exception as e:  # noqa: BLE001
-            logger.error(f"Ошибка сегментации модели: {e}. Возврат сырого кадра.")
-            return image_bytes, []
+            logger.warning(
+                f"Ошибка инференса ONNX-модели: {e}. Применяется fallback-сегментация по HSV."
+            )
+            return self._segment_plants_hsv(
+                image_bytes,
+                aruco_area_px=aruco_area_px,
+                aruco_size_mm=aruco_size_mm,
+                inst_name=inst_name,
+                culture_name=culture_name,
+                camera_name=camera_name,
+                captured_at=captured_at,
+            )
 
     def _segment_plants_hsv(
         self,
@@ -493,7 +516,7 @@ class VisionPipeline:
             return annotated_bytes, measurements
 
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"Ошибка при HSV-сегментации в mock-режиме: {exc}")
+            logger.warning(f"Ошибка при HSV-сегментации: {exc}")
             return image_bytes, []
 
     def _generate_fallback_annotated(self, image_bytes: bytes) -> bytes:

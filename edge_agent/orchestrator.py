@@ -271,6 +271,8 @@ class EdgeOrchestrator:
                 self._handle_relay_test(cmd)
             elif cmd_type == "SCAN_CAMERAS":
                 self._handle_scan_cameras(cmd)
+            elif cmd_type == "AUTOCALIBRATE_CAMERA":
+                self._handle_autocalibrate_camera(cmd)
             elif cmd_type == "SNAP":
                 self._handle_snap(cmd)
             else:
@@ -383,6 +385,49 @@ class EdgeOrchestrator:
                 result_message=f"Обнаружено камер: {len(scanned)}",
                 scanned_cameras=scanned,
                 debug_log_line=f"[CAM] scan_cameras -> found {len(scanned)}: {hw_ids}",
+            ),
+        )
+
+    def _handle_autocalibrate_camera(self, cmd: CommandItem) -> None:
+        """Обработка команды AUTOCALIBRATE_CAMERA."""
+        cam_hw_id = None
+        if cmd.payload and isinstance(cmd.payload, dict):
+            cam_hw_id = cmd.payload.get("camera_hardware_id")
+
+        if not cam_hw_id and cmd.installation and cmd.installation.camera_hardware_ids:
+            cam_hw_id = cmd.installation.camera_hardware_ids[0]
+
+        if not cam_hw_id:
+            detected = self.hardware.scan_cameras(
+                v4l_by_id_dir=self.config.v4l_by_id_dir,
+                sys_dir=self.config.sys_dir,
+            )
+            if detected:
+                cam_hw_id = detected[0].hardware_id
+
+        if not cam_hw_id:
+            self.client.send_command_result(
+                cmd.id,
+                CommandResult(
+                    status="error",
+                    result_message="Камера для калибровки не найдена или не указана",
+                ),
+            )
+            return
+
+        profile = self.hardware.calibrate_camera(cam_hw_id)
+        af_text = "поддерживается" if profile.has_autofocus else "нет"
+        msg = (
+            f"Калибровка {cam_hw_id}: "
+            f"{profile.max_width}x{profile.max_height} ({profile.pixel_format}), "
+            f"автофокус: {af_text}"
+        )
+        self.client.send_command_result(
+            cmd.id,
+            CommandResult(
+                status="done",
+                result_message=msg,
+                debug_log_line=f"[CAM] AUTOCALIBRATE_CAMERA {cam_hw_id} -> {profile.summary_text()}",
             ),
         )
 

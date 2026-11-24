@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 from server.api.deps import format_utc_z, get_db, require_role
 from server.core.state import app_state
 from server.core.system_status import check_rpi_online, is_debug_mode
-from server.db.models import Camera, EdgeCommand, Installation, User
+from server.db.models import Camera, EdgeCommand, Installation, SystemSetting, User
 
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
 
@@ -23,9 +24,9 @@ class CameraBindRequest(BaseModel):
     installation_id: int | None = None
 
 
-def serialize_camera(cam: Camera) -> dict[str, Any]:
+def serialize_camera(cam: Camera, db: Session | None = None) -> dict[str, Any]:
     """Формирует представление камеры по API_CONTRACT.md п. 4.3."""
-    return {
+    res = {
         "id": cam.id,
         "hardware_id": cam.hardware_id,
         "auto_name": cam.auto_name,
@@ -34,6 +35,15 @@ def serialize_camera(cam: Camera) -> dict[str, Any]:
         "installation_id": cam.installation_id,
         "installation_name": cam.installation.name if cam.installation else None,
     }
+    if db is not None:
+        setting = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == f"camera_profile_{cam.hardware_id}")
+            .first()
+        )
+        if setting and setting.value:
+            res["calibration_summary"] = setting.value
+    return res
 
 
 @router.post("/scan", response_model=dict[str, Any])
@@ -164,7 +174,7 @@ def list_cameras(
     Список всех камер с информацией о подключении и привязке к установкам.
     """
     cameras = db.query(Camera).order_by(Camera.id.asc()).all()
-    return [serialize_camera(cam) for cam in cameras]
+    return [serialize_camera(cam, db) for cam in cameras]
 
 
 @router.post("/{camera_id}/bind", response_model=dict[str, Any])
@@ -206,4 +216,101 @@ def bind_camera(
     db.commit()
     db.refresh(cam)
 
-    return serialize_camera(cam)
+    return serialize_camera(cam, db)
+
+
+@router.post("/{camera_id}/autocalibrate", response_model=dict[str, Any])
+async def autocalibrate_camera(
+    camera_id: int,
+    current_user: Annotated[User, Depends(require_role("developer"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """4.3. POST /api/cameras/{camera_id}/autocalibrate (Developer).
+
+    Запуск автокалибровки камеры на Raspberry Pi с ожиданием ответа до 10 с.
+    """
+    check_rpi_online(db)
+
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Камера не найдена",
+        )
+
+    is_global = cam.installation_id is None
+    cmd = EdgeCommand(
+        command_type="AUTOCALIBRATE_CAMERA",
+        installation_id=cam.installation_id,
+        is_global=is_global,
+        payload=json.dumps({"camera_hardware_id": cam.hardware_id}),
+        status="pending",
+    )
+    db.add(cmd)
+    db.commit()
+    db.refresh(cmd)
+
+    start_time = time.monotonic()
+    finished_cmd = None
+    while time.monotonic() - start_time < 10.0:
+        await asyncio.sleep(0.05)
+        db.expire_all()
+        check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
+        if not check_cmd:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Команда не найдена",
+            )
+        if check_cmd.status == "timeout":
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="Превышено время ожидания ответа Raspberry Pi",
+            )
+        if check_cmd.status in ("done", "error"):
+            finished_cmd = check_cmd
+            break
+
+    if not finished_cmd:
+        db.expire_all()
+        check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
+        if check_cmd and check_cmd.status == "pending":
+            check_cmd.status = "timeout"
+            db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Превышено время ожидания ответа Raspberry Pi",
+        )
+
+    if finished_cmd.status == "error":
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=finished_cmd.result_message or "Ошибка автокалибровки камеры",
+        )
+
+    summary = finished_cmd.result_message or "Калибровка выполнена успешно"
+
+    # Сохраняем сводку профиля в SystemSetting
+    setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_profile_{cam.hardware_id}")
+        .first()
+    )
+    if setting:
+        setting.value = summary
+        setting.updated_at = datetime.now(UTC)
+    else:
+        db.add(
+            SystemSetting(
+                key=f"camera_profile_{cam.hardware_id}",
+                value=summary,
+                updated_at=datetime.now(UTC),
+            )
+        )
+    db.commit()
+
+    return {
+        "status": "done",
+        "camera_id": cam.id,
+        "hardware_id": cam.hardware_id,
+        "summary": summary,
+    }

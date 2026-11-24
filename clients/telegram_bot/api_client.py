@@ -364,6 +364,18 @@ class GrowVisionApiClient:
             timeout=15.0,
         )
 
+    async def autocalibrate_camera(
+        self, user_id: int, camera_id: int
+    ) -> dict[str, Any]:
+        """Автокалибровка и автоподбор лучшего качества камеры (Developer)."""
+        return await self._request(
+            "POST",
+            f"/api/cameras/{camera_id}/autocalibrate",
+            user_id=user_id,
+            timeout=15.0,
+            is_control_command=True,
+        )
+
     # ------------------ 5. Управление (свет, реле, снимок) ------------------
 
     @staticmethod

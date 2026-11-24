@@ -1,9 +1,12 @@
 import contextlib
 import os
 import platform
+import re
 import shutil
+import subprocess
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +30,132 @@ MOCK_JPEG_FRAME = (
     b"\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b"
     b"\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xbf\x80\xff\xd9"
 )
+
+
+@dataclass
+class CameraProfile:
+    """Аппаратный профиль возможностей видеокамеры."""
+
+    hardware_id: str
+    max_width: int = 1920
+    max_height: int = 1080
+    pixel_format: str = "MJPG"
+    has_autofocus: bool = False
+    formats_summary: list[dict[str, Any]] = field(default_factory=list)
+
+    def summary_text(self) -> str:
+        af_text = "поддерживается" if self.has_autofocus else "нет"
+        return f"{self.max_width}x{self.max_height} ({self.pixel_format}), автофокус: {af_text}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "hardware_id": self.hardware_id,
+            "max_width": self.max_width,
+            "max_height": self.max_height,
+            "pixel_format": self.pixel_format,
+            "has_autofocus": self.has_autofocus,
+            "summary": self.summary_text(),
+            "formats_summary": self.formats_summary,
+        }
+
+
+def probe_camera_capabilities(
+    dev_path: str,
+    hardware_id: str = "",
+) -> CameraProfile:
+    """Опрашивает возможности камеры через v4l2-ctl (--list-formats-ext, --all).
+
+    Безопасный фолбэк на дефолты (1920x1080, MJPG) при любых ошибках.
+    """
+    max_width = 1920
+    max_height = 1080
+    pixel_format = "MJPG"
+    has_autofocus = False
+    formats_summary: list[dict[str, Any]] = []
+
+    # 1. Опрос форматов и максимального разрешения
+    try:
+        res = subprocess.run(
+            ["v4l2-ctl", "-d", dev_path, "--list-formats-ext"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout:
+            current_fmt = None
+            fmt_sizes: dict[str, list[tuple[int, int]]] = {}
+            for line in res.stdout.splitlines():
+                fmt_match = re.search(r"\[\d+\]:\s*'([A-Z0-9]{4})'", line)
+                if fmt_match:
+                    current_fmt = fmt_match.group(1)
+                    if current_fmt not in fmt_sizes:
+                        fmt_sizes[current_fmt] = []
+                    continue
+                size_match = re.search(r"Size:\s+Discrete\s+(\d+)x(\d+)", line)
+                if size_match and current_fmt:
+                    w = int(size_match.group(1))
+                    h = int(size_match.group(2))
+                    fmt_sizes[current_fmt].append((w, h))
+
+            if fmt_sizes:
+                for fmt, sizes in fmt_sizes.items():
+                    formats_summary.append(
+                        {
+                            "format": fmt,
+                            "resolutions": [f"{w}x{h}" for w, h in sizes],
+                        }
+                    )
+
+                # Выбираем лучший кодек: приоритет MJPG, затем YUYV, затем любой
+                chosen_fmt = None
+                if fmt_sizes.get("MJPG"):
+                    chosen_fmt = "MJPG"
+                elif fmt_sizes.get("YUYV"):
+                    chosen_fmt = "YUYV"
+                elif fmt_sizes:
+                    chosen_fmt = next(iter(fmt_sizes.keys()))
+
+                if chosen_fmt and fmt_sizes[chosen_fmt]:
+                    pixel_format = chosen_fmt
+                    best_w, best_h = max(
+                        fmt_sizes[chosen_fmt], key=lambda wh: wh[0] * wh[1]
+                    )
+                    max_width = best_w
+                    max_height = best_h
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            f"Не удалось выполнить v4l2-ctl --list-formats-ext для {dev_path}: {exc}"
+        )
+
+    # 2. Опрос автофокуса через v4l2-ctl --all
+    try:
+        res_ctrls = subprocess.run(
+            ["v4l2-ctl", "-d", dev_path, "--all"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        if res_ctrls.returncode == 0 and res_ctrls.stdout:
+            out_lower = res_ctrls.stdout.lower()
+            if (
+                "focus_auto" in out_lower
+                or "focus_absolute" in out_lower
+                or "focus" in out_lower
+            ):
+                has_autofocus = True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"Не удалось выполнить v4l2-ctl --all для {dev_path}: {exc}")
+
+    return CameraProfile(
+        hardware_id=hardware_id,
+        max_width=max_width,
+        max_height=max_height,
+        pixel_format=pixel_format,
+        has_autofocus=has_autofocus,
+        formats_summary=formats_summary,
+    )
 
 
 class HardwareManager:
@@ -55,6 +184,7 @@ class HardwareManager:
         self._gpio_devices: dict[int, Any] = {}
         self._mock_pins: dict[int, bool] = {}
         self._mock_frame_counter: int = 0
+        self._camera_profiles: dict[str, CameraProfile] = {}
 
         if self.mode == "rpi":
             try:
@@ -186,13 +316,65 @@ class HardwareManager:
 
         return cameras
 
+    def get_camera_profile(
+        self,
+        camera_hardware_id: str,
+        force_refresh: bool = False,
+    ) -> CameraProfile:
+        """Возвращает кэшированный профиль камеры или опрашивает её возможности."""
+        if not force_refresh and camera_hardware_id in self._camera_profiles:
+            return self._camera_profiles[camera_hardware_id]
+
+        if self.mode == "mock":
+            profile = CameraProfile(
+                hardware_id=camera_hardware_id,
+                max_width=1920,
+                max_height=1080,
+                pixel_format="MJPG",
+                has_autofocus=True,
+                formats_summary=[
+                    {
+                        "format": "MJPG",
+                        "resolutions": ["1920x1080", "1280x720", "640x480"],
+                    },
+                    {
+                        "format": "YUYV",
+                        "resolutions": ["1920x1080", "640x480"],
+                    },
+                ],
+            )
+            self._camera_profiles[camera_hardware_id] = profile
+            return profile
+
+        # Режим rpi:
+        cam_by_id_file = self.v4l_by_id_dir / camera_hardware_id
+        if not cam_by_id_file.exists():
+            profile = CameraProfile(hardware_id=camera_hardware_id)
+            self._camera_profiles[camera_hardware_id] = profile
+            return profile
+
+        real_dev_path = os.path.realpath(str(cam_by_id_file))
+        profile = probe_camera_capabilities(
+            real_dev_path, hardware_id=camera_hardware_id
+        )
+        self._camera_profiles[camera_hardware_id] = profile
+        return profile
+
+    def calibrate_camera(self, camera_hardware_id: str) -> CameraProfile:
+        """Выполняет автокалибровку камеры, обновляет кэш и возвращает профиль."""
+        profile = self.get_camera_profile(camera_hardware_id, force_refresh=True)
+        logger.info(
+            f"[CAM] Автокалибровка камеры {camera_hardware_id} завершена: {profile.summary_text()}"
+        )
+        return profile
+
     def capture_frame(
         self,
         camera_hardware_id: str,
         warmup_frames: int = 5,
         frame_index: int | None = None,
     ) -> bytes:
-        """Захватывает сырой кадр с указанной камеры (с прогревом)."""
+        """Захватывает сырой кадр с указанной камеры (с прогревом и автоподбором качества)."""
         if self.mode == "mock":
             from edge_agent.synthetic import generate_synthetic_frame
 
@@ -208,6 +390,7 @@ class HardwareManager:
         # В режиме RPi строгая проверка OpenCV
         try:
             import cv2  # type: ignore
+            import numpy as np  # type: ignore
         except ImportError as exc:
             raise RuntimeError(
                 "В режиме HARDWARE_MODE=rpi необходима библиотека opencv-python-headless для захвата кадров."
@@ -221,26 +404,91 @@ class HardwareManager:
             )
 
         real_dev_path = os.path.realpath(str(cam_by_id_file))
-        logger.debug(f"Открытие камеры {camera_hardware_id} по пути {real_dev_path}")
+        profile = self.get_camera_profile(camera_hardware_id)
+        logger.debug(
+            f"Открытие камеры {camera_hardware_id} по пути {real_dev_path} (профиль: {profile.summary_text()})"
+        )
 
-        cap = cv2.VideoCapture(real_dev_path)
-        if not cap.isOpened():
+        # До 3 повторов открытия устройства при ошибке
+        cap = None
+        for attempt in range(1, 4):
+            cap = cv2.VideoCapture(real_dev_path, cv2.CAP_V4L2)
+            if cap.isOpened():
+                break
+            logger.warning(
+                f"Попытка {attempt}/3 открыть видеоустройство {real_dev_path} не удалась, повтор..."
+            )
+            time.sleep(0.3)
+
+        if cap is None or not cap.isOpened():
             raise RuntimeError(
-                f"Не удалось открыть видеоустройство {real_dev_path} ({camera_hardware_id})"
+                f"Не удалось открыть видеоустройство {real_dev_path} ({camera_hardware_id}) после 3 попыток"
             )
 
         try:
-            # Прогрев камеры: считываем и отбрасываем первые N кадров
-            for _ in range(max(0, warmup_frames)):
-                cap.read()
+            # Настройка свойств захвата
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            if profile.pixel_format == "MJPG":
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            elif profile.pixel_format == "YUYV":
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
 
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                raise RuntimeError(
-                    f"Не удалось прочитать целевой кадр с камеры {camera_hardware_id}"
-                )
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(profile.max_width))
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(profile.max_height))
 
-            success, enc_frame = cv2.imencode(".jpg", frame)
+            # Умный прогрев: чтение кадров до стабилизации яркости (|luma(t) - luma(t-1)| < 1.5 на 2-3 кадрах подряд)
+            start_warmup = time.time()
+            initial_luma: float | None = None
+            final_luma: float | None = None
+            stable_frames = 0
+            warmup_frames_read = 0
+            prev_luma: float | None = None
+            target_frame = None
+            warmup_timeout = 3.5
+
+            while (time.time() - start_warmup) < warmup_timeout:
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    continue
+                warmup_frames_read += 1
+                target_frame = frame
+
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                curr_luma = float(np.mean(gray))
+
+                if initial_luma is None:
+                    initial_luma = curr_luma
+                final_luma = curr_luma
+
+                if prev_luma is not None:
+                    diff = abs(curr_luma - prev_luma)
+                    if diff < 1.5:
+                        stable_frames += 1
+                        if stable_frames >= 2:
+                            break
+                    else:
+                        stable_frames = 0
+                prev_luma = curr_luma
+
+            if target_frame is None:
+                ret, target_frame = cap.read()
+                if not ret or target_frame is None:
+                    raise RuntimeError(
+                        f"Не удалось прочитать целевой кадр с камеры {camera_hardware_id}"
+                    )
+
+            actual_h, actual_w = target_frame.shape[:2]
+            elapsed = time.time() - start_warmup
+
+            # Логирование параметров в формате [SNAP]
+            logger.info(
+                f"[SNAP] Камера: {camera_hardware_id}, Разрешение: {actual_w}x{actual_h}, "
+                f"Кодек: {profile.pixel_format}, Прогревочных кадров: {warmup_frames_read}, "
+                f"Luma: {initial_luma if initial_luma is not None else 0.0:.1f} -> "
+                f"{final_luma if final_luma is not None else 0.0:.1f}, Время: {elapsed:.2f} с"
+            )
+
+            success, enc_frame = cv2.imencode(".jpg", target_frame)
             if not success:
                 raise RuntimeError("Ошибка кодирования кадра в JPEG")
             return enc_frame.tobytes()
@@ -263,8 +511,8 @@ class HardwareManager:
         - Если пины разные:
           1. Выключение основного света (light=0).
           2. Включение вспышки (flash=1).
-          3. Задержка стабилизации света (switch_delay_ms) плюс capture_delay_sec.
-          4. Захват кадра с прогревом (warmup_frames).
+          3. Базовая пауза (0.5-1.0 с) плюс capture_delay_sec.
+          4. Захват кадра с автоподбором и умным прогревом.
           5. Гарантированный возврат в исходное состояние (light=1, flash=0) в finally.
         """
         same_pins = light_pin == flash_pin
@@ -275,11 +523,12 @@ class HardwareManager:
             else:
                 self.set_light(light_pin, True)
 
-            # В mock-режиме исключаем искусственные задержки стабилизации и лишний прогрев
+            # В mock-режиме исключаем искусственные задержки стабилизации
             if self.mode != "mock":
-                total_delay = (
-                    (switch_delay_ms / 1000.0) if not same_pins else 0.0
-                ) + max(0.0, float(capture_delay_sec))
+                switch_pause = (
+                    max(0.5, switch_delay_ms / 1000.0) if not same_pins else 0.5
+                )
+                total_delay = switch_pause + max(0.0, float(capture_delay_sec))
                 if total_delay > 0:
                     time.sleep(total_delay)
 
@@ -307,12 +556,21 @@ def get_hardware_telemetry(gpio_mode: str = "mock") -> HeartbeatHardware:
     """Сбор аппаратной телеметрии хоста."""
     # 1. Модель платы
     board_model = "Raspberry Pi 5 Model B Rev 1.0 (Mock)"
-    model_path = Path("/proc/device-tree/model")
-    if model_path.exists():
-        with contextlib.suppress(Exception):
-            raw_model = model_path.read_text(encoding="utf-8").strip("\x00\n ")
-            if raw_model:
-                board_model = raw_model
+    model_paths = [
+        Path("/proc/device-tree/model"),
+        Path("/sys/firmware/devicetree/base/model"),
+    ]
+    detected_model = None
+    for mp in model_paths:
+        if mp.exists():
+            with contextlib.suppress(Exception):
+                raw_model = mp.read_text(encoding="utf-8").strip("\x00\n ")
+                if raw_model:
+                    detected_model = raw_model
+                    break
+
+    if detected_model:
+        board_model = detected_model
     elif gpio_mode == "rpi":
         board_model = f"Linux ({platform.machine()})"
 
