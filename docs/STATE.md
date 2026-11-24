@@ -4,30 +4,25 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 8.10
-- Название этапа: Стабилизация съёмки RPi (автоподбор качества, умный прогрев, HSV-сегментация без ONNX, автокалибровка камеры в боте) и инфо-панель RPi в Web
-- Режим: FULL
-- Статус: DONE
+- Текущий этап: 9.1
+- Название этапа: Исправление кириллицы на CV-разметке, фильтрация шума/серого фона в HSV-сегментации и 50 Гц для V4L2-камер
+- Режим: FAST
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: задачи следующего этапа
+- Ждём от пользователя: ничего (проводится тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| qa | fast | stage-9/fix-vision-cyrillic-and-50hz | docs/tasks/stage-9-1-fix-vision-cyrillic-and-50hz-qa.md | — |
 
 ## Коммиты текущего этапа
-- Ветка stage-8/rpi-camera-vision-and-ui создана от main (01a510a)
-- 92371a7 feat(stage-8.10): RPi camera profiling, vision HSV fallback and UI telemetry dashboard
-- 870009b docs(repo): prepare task cards and update state for stage 8.10
-- 1b6d685 docs(qa): update qa_log with stage 8.10 verification
-- b8fe868 chore(repo): merge stage-8/rpi-camera-vision-and-ui into main
-- b30d521 chore(repo): bump version to 0.6.5 (tag v0.6.5)
-- 6ba33d5 docs(repo): document stage 8.10 rpi camera vision and ui
+- Ветка stage-9/fix-vision-cyrillic-and-50hz создана от main (2adc3e0)
+- 59b6547 feat(edge): fix vision cyrillic annotations, improve hsv segmentation, and set 50hz frequency
 
 ## Последний вердикт QA
-- Вердикт: PASS (по этапу 8.10)
+- Вердикт: —
 - Открытые дефекты (ID): —
 - Отложенные (DEFERRED, ID): —
 
@@ -58,10 +53,6 @@
 - Этап 8.10: Стабилизация съёмки RPi (автоподбор качества, умный прогрев, HSV-сегментация без ONNX, автокалибровка камеры в боте) и инфо-панель RPi в Web (принят QA, слит в main, версия 0.6.5, отчёт docs/stage_reports/stage-8.10.md)
 
 ## История (последние 15 событий)
-- 2026-11-24: QA проверил этап 8.9, вердикт PASS (274 теста, 0 дефектов)
-- 2026-11-24: Ветка stage-8/fix-gallery-fps-snap слита в main
-- 2026-11-24: Поднята версия 0.6.4 (тег v0.6.4)
-- 2026-11-24: Scribe оформил docs/stage_reports/stage-8.9.md, обновил stage-8.md и README.md (коммит c011472)
 - 2026-11-24: Этап 8.9 закрыт (DONE)
 - 2026-11-24: Запущен этап 8.10 (стабилизация съёмки RPi, HSV без ONNX, автокалибровка в боте, инфо-панель RPi в Web, режим FULL)
 - 2026-11-24: Создана ветка stage-8/rpi-camera-vision-and-ui от main
@@ -72,3 +63,8 @@
 - 2026-11-24: Поднята версия 0.6.5 (тег v0.6.5)
 - 2026-11-24: Scribe оформил docs/stage_reports/stage-8.10.md, обновил stage-8.md и README.md (коммит 6ba33d5)
 - 2026-11-24: Этап 8.10 закрыт (DONE)
+- 2026-11-24: Запущен этап 9.1 (кириллица в CV через Pillow, HSV фильтрация шума/фона, 50 Гц для V4L2-камер, режим FAST)
+- 2026-11-24: Создана ветка stage-9/fix-vision-cyrillic-and-50hz от main
+- 2026-11-24: Подготовлена карточка docs/tasks/stage-9-1-fix-vision-cyrillic-and-50hz-builder.md, статус BUILDING
+- 2026-11-24: Builder реализовал этап 9.1 (коммит 59b6547), статус READY_FOR_QA
+- 2026-11-24: Подготовлена карточка docs/tasks/stage-9-1-fix-vision-cyrillic-and-50hz-qa.md, статус TESTING, задача передана QA
