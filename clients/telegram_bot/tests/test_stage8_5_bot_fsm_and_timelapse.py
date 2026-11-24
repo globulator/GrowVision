@@ -128,11 +128,55 @@ async def test_timelapse_calculated_strictly_for_30_fps(
     text = call_kwargs["text"]
     kb = call_kwargs["reply_markup"]
 
-    assert "30 FPS" in text
-    assert "3.0 с" in text
+    assert "15 FPS" in text
+    assert "6 с" in text
 
     btn_texts = [btn.text for row in kb.inline_keyboard for btn in row]
-    assert any("30 FPS" in t for t in btn_texts)
+    assert any("15 FPS" in t for t in btn_texts)
     assert not any(t == "10 сек" for t in btn_texts)
     assert not any(t == "15 сек" for t in btn_texts)
     assert not any(t == "30 сек" for t in btn_texts)
+
+
+@pytest.mark.asyncio
+async def test_stage8_9_bot_fps_4_frames(bot_config: BotConfig, mock_bot):
+    """Этап 8.9: При 4 кадрах бот рассчитывает 1 с и 4 FPS (а не 30 FPS)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/installations/2":
+            return httpx.Response(200, json={"id": 2, "name": "Установка 4 кадра"})
+        if path == "/api/timelapse/2/frames":
+            frames = [
+                {"id": i, "captured_at": "2026-11-24T10:00:00Z"} for i in range(4)
+            ]
+            return httpx.Response(200, json={"frames": frames})
+        return httpx.Response(404)
+
+    api_client = create_mock_api_client(bot_config, handler)
+    dp = build_dispatcher(bot_config, api_client)
+
+    cb = create_test_callback_query("inst:video:2")
+    await dp.feed_update(mock_bot, Update(update_id=204, callback_query=cb))
+
+    call_kwargs = (
+        mock_bot.edit_message_text.call_args[1]
+        if mock_bot.edit_message_text.called
+        else mock_bot.send_message.call_args[1]
+    )
+    text = call_kwargs["text"]
+    kb = call_kwargs["reply_markup"]
+
+    assert "Кадров для сборки: <b>4</b>" in text
+    assert "Частота: <b>4 FPS</b>" in text
+    assert "Расчётная длительность: <b>1 с</b>" in text
+
+    btn_texts = [btn.text for row in kb.inline_keyboard for btn in row]
+    assert any("4 FPS" in t for t in btn_texts)
+    # Проверяем callback_data
+    assert any(
+        "vid_confirm:2:none:1:4" in btn.callback_data
+        for row in kb.inline_keyboard
+        for btn in row
+        if btn.callback_data
+    )

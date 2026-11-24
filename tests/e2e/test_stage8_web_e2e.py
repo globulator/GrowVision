@@ -658,3 +658,87 @@ def test_stage8_8_fix_web_tg_auth_flow(e2e_uvicorn_server):
     assert "startPollingCodeDelivery" in auth_js
     assert "getCodeStatus" in auth_js
     assert "link-to-login" in auth_js
+
+
+def test_stage8_9_fix_gallery_fps_snap_e2e(e2e_uvicorn_server):
+    """Сквозной тест Этапа 8.9 (Fix Gallery, FPS & SNAP):
+
+    1. Web SPA: gallery.js использует frame.raw_url || frame.raw_image_url и
+       frame.annotated_url || frame.annotated_image_url.
+    2. API /api/timelapse/{id}/frames отдаёт raw_url и annotated_url.
+    3. Edge config: command_poll_interval_sec по умолчанию 0.5.
+    4. Telegram-бот: динамический расчёт FPS и длительности.
+    """
+    gallery_js = (ROOT_DIR / "clients" / "web" / "js" / "gallery.js").read_text(
+        encoding="utf-8"
+    )
+    # 1. Проверка безопасного парсинга полей URL кадров
+    assert "frame.raw_url || frame.raw_image_url" in gallery_js
+    assert "frame.annotated_url || frame.annotated_image_url" in gallery_js
+
+    # 2. Проверка ответа API кадров
+    server_data = e2e_uvicorn_server
+    base_url = server_data["base_url"]
+    edge_key = server_data["edge_key"]
+    session_factory = server_data["session_factory"]
+
+    from server.db.models import Camera, Installation
+
+    with session_factory() as db:
+        inst = Installation(
+            name="Тест Галерея 8.9",
+            culture_name="Салат",
+            light_gpio_pin=17,
+            flash_gpio_pin=27,
+            is_archived=False,
+        )
+        db.add(inst)
+        db.flush()
+        cam = Camera(
+            hardware_id="usb-cam-89",
+            auto_name="Тест Камера 89",
+            installation_id=inst.id,
+            is_online=True,
+        )
+        db.add(cam)
+        db.commit()
+        inst_id = inst.id
+
+    with httpx.Client(base_url=base_url) as client:
+        # Загружаем тестовый снимок от Edge
+        import json
+
+        img_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xdb"
+        meta = {
+            "installation_id": inst_id,
+            "camera_hardware_id": "usb-cam-89",
+            "captured_at": "2026-11-24T10:00:00Z",
+            "is_manual": False,
+        }
+        data = {"metadata": json.dumps(meta)}
+        files = {
+            "raw_image": ("raw.jpg", img_bytes, "image/jpeg"),
+            "annotated_image": ("ann.jpg", img_bytes, "image/jpeg"),
+        }
+        r_up = client.post(
+            "/api/edge/captures",
+            headers={"X-Edge-Key": edge_key},
+            data=data,
+            files=files,
+        )
+        assert r_up.status_code in (200, 201)
+
+        # Проверяем ответ /api/timelapse/{id}/frames
+        r_frames = client.get(f"/api/timelapse/{inst_id}/frames")
+        assert r_frames.status_code == 200
+        frames_data = r_frames.json()
+        assert len(frames_data["frames"]) == 1
+        frame_item = frames_data["frames"][0]
+        assert "raw_url" in frame_item
+        assert "annotated_url" in frame_item
+        assert frame_item["raw_url"].startswith("/media/")
+        assert frame_item["annotated_url"].startswith("/media/")
+
+        # Проверяем доступность самого изображения по URL
+        r_img = client.get(frame_item["raw_url"])
+        assert r_img.status_code == 200

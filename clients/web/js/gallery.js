@@ -195,10 +195,9 @@ async function loadCameraFrames() {
   async function loadOne(idx) {
     if (thisLoadId !== currentLoadId) return; // отмена
     const frame = filtered[idx];
-    const url =
-      currentLayer === 'ann' && frame.annotated_image_url
-        ? frame.annotated_image_url
-        : frame.raw_image_url;
+    const rawUrl = frame.raw_url || frame.raw_image_url || '';
+    const annUrl = frame.annotated_url || frame.annotated_image_url || '';
+    const url = currentLayer === 'ann' && annUrl ? annUrl : (rawUrl || annUrl);
 
     return new Promise((resolve) => {
       let attempts = 0;
