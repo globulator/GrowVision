@@ -488,3 +488,173 @@ def test_stage8_7_ux_polish_and_realtime_verification(e2e_uvicorn_server):
     assert "D:" in placeholders_js
     assert "getRandomLoadingPhrase" in placeholders_js
     assert "Ждём, когда растение улыбнётся" in placeholders_js
+
+
+def test_stage8_8_fix_web_tg_auth_flow(e2e_uvicorn_server):
+    """Сквозной тест Этапа 8.8 (Fix Web TG Auth):
+
+    1. Удаление проверки личного пароля в register/complete:
+       - Регистрация без передачи пароля завершается успешно (HTTP 200).
+    2. Передача реального bot_username с сервера (GET /api/version, GET /api/auth/web/me).
+    3. Проверка /start и для числового TG ID:
+       - Несуществующий в TelegramContact числовой ID возвращает 400 с текстом о /start.
+    4. Отслеживание статуса доставки кода (pending-codes/{id}/fail и register/code-status).
+    5. Корректность разметки и стилей Web SPA:
+       - Закрытый .password-group в index.html.
+       - Классы .reg-step, .reg-step.hidden, #modal-register.hidden в style.css.
+       - Отсутствие эмодзи во всех файлах Web SPA.
+    """
+    server_data = e2e_uvicorn_server
+    base_url = server_data["base_url"]
+    dev_pass = server_data["dev_pass"]
+    client_key = server_data["client_key"]
+
+    with httpx.Client(base_url=base_url) as client:
+        # 1. Проверка bot_username
+        r_ver = client.get("/api/version")
+        assert r_ver.status_code == 200
+        assert r_ver.json()["bot_username"]
+
+        r_me = client.get("/api/auth/web/me")
+        assert r_me.status_code == 200
+        assert r_me.json()["bot_username"]
+
+        # 2. Неизвестный числовой TG ID -> 400 с требованием запустить /start
+        unknown_tid = 9988776655
+        r_fail_reg = client.post(
+            "/api/auth/web/register/start",
+            json={"telegram": str(unknown_tid)},
+        )
+        assert r_fail_reg.status_code == 400
+        assert "/start" in r_fail_reg.json()["detail"]
+
+        r_fail_login = client.post(
+            "/api/auth/web/login",
+            json={"telegram": str(unknown_tid), "code": dev_pass},
+        )
+        assert r_fail_login.status_code == 400
+        assert "/start" in r_fail_login.json()["detail"]
+
+        # 3. Синхронизация контакта от бота (пользователь нажал /start)
+        valid_tid = 7711223344
+        r_sync = client.post(
+            "/api/auth/telegram/contact",
+            headers={"X-Client-Key": client_key},
+            json={
+                "telegram_id": valid_tid,
+                "username": "bio_seamless_user",
+                "first_name": "Анна",
+                "last_name": "Смирнова",
+            },
+        )
+        assert r_sync.status_code == 200
+
+        # 4. Старт регистрации: создается код подтверждения
+        r_start = client.post(
+            "/api/auth/web/register/start",
+            json={"telegram": str(valid_tid)},
+        )
+        assert r_start.status_code == 200
+        start_data = r_start.json()
+        assert start_data["telegram_id"] == valid_tid
+        assert start_data["recommended_name"] == "Анна Смирнова"
+
+        # 5. Проверка статуса доставки: изначально pending
+        r_status_pending = client.get(
+            f"/api/auth/web/register/code-status?telegram_id={valid_tid}"
+        )
+        assert r_status_pending.status_code == 200
+        assert r_status_pending.json()["status"] == "pending"
+
+        # Получаем очередь кодов от лица бота
+        r_pending = client.get(
+            "/api/auth/web/pending-codes",
+            headers={"X-Client-Key": client_key},
+        )
+        assert r_pending.status_code == 200
+        codes_list = r_pending.json()
+        target_code_item = next(
+            (c for c in codes_list if c["telegram_id"] == valid_tid), None
+        )
+        assert target_code_item is not None
+        code_id = target_code_item["id"]
+        code_val = target_code_item["code"]
+
+        # 6. Имитация ошибки отправки ботом (например, бот заблокирован пользователем)
+        r_fail_delivery = client.post(
+            f"/api/auth/web/pending-codes/{code_id}/fail",
+            headers={"X-Client-Key": client_key},
+            json={"error": "Forbidden: bot was blocked by the user"},
+        )
+        assert r_fail_delivery.status_code == 200
+        assert r_fail_delivery.json()["ok"] is True
+
+        # Проверяем, что эндпоинт статуса сообщает об ошибке доставки
+        r_status_err = client.get(
+            f"/api/auth/web/register/code-status?telegram_id={valid_tid}"
+        )
+        assert r_status_err.status_code == 200
+        err_data = r_status_err.json()
+        assert err_data["status"] == "delivery_error"
+        assert "Forbidden: bot was blocked by the user" in err_data["error"]
+
+        # 7. Подтверждаем код
+        r_verify = client.post(
+            "/api/auth/web/register/verify",
+            json={"telegram_id": valid_tid, "code": code_val},
+        )
+        assert r_verify.status_code == 200
+        assert r_verify.json()["status"] == "verified"
+
+        # 8. Завершаем регистрацию БЕЗ пароля (password=None / отсутствует)
+        r_complete = client.post(
+            "/api/auth/web/register/complete",
+            json={
+                "telegram_id": valid_tid,
+                "verification_code": code_val,
+                "full_name": "Анна Смирнова",
+                "access_code": dev_pass,
+            },
+        )
+        assert r_complete.status_code == 200
+        complete_data = r_complete.json()
+        assert complete_data["login"] == "Анна Смирнова"
+        assert complete_data["role"] == "developer"
+        assert "gv_session" in client.cookies
+
+        # 9. Проверяем /api/auth/web/me после авторизации
+        r_me_auth = client.get("/api/auth/web/me")
+        assert r_me_auth.status_code == 200
+        me_data = r_me_auth.json()
+        assert me_data["authenticated"] is True
+        assert me_data["login"] == "Анна Смирнова"
+        assert me_data["role"] == "developer"
+
+    # 10. Проверка структуры Web SPA файлов
+    index_html = (ROOT_DIR / "clients" / "web" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    style_css = (ROOT_DIR / "clients" / "web" / "style.css").read_text(encoding="utf-8")
+    auth_js = (ROOT_DIR / "clients" / "web" / "js" / "auth.js").read_text(
+        encoding="utf-8"
+    )
+
+    # Проверка закрытия password-group в index.html
+    assert 'class="form-group password-group">' in index_html
+    pw_group_idx = index_html.find('class="form-group password-group">')
+    hint_idx = index_html.find('class="form-hint tg-bot-hint">')
+    assert pw_group_idx != -1 and hint_idx != -1
+    pw_snippet = index_html[pw_group_idx:hint_idx]
+    assert pw_snippet.count("</div>") >= 2, (
+        "Блок password-group должен быть закрыт до form-hint tg-bot-hint"
+    )
+
+    # Проверка стилей шагов регистрации в style.css
+    assert ".reg-step" in style_css
+    assert ".reg-step.hidden" in style_css
+    assert "#modal-register.hidden" in style_css
+
+    # Проверка бесшовного перехода и поллинга в auth.js
+    assert "startPollingCodeDelivery" in auth_js
+    assert "getCodeStatus" in auth_js
+    assert "link-to-login" in auth_js

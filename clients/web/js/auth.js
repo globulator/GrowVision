@@ -13,8 +13,10 @@ const registerState = {
   telegram_id: null,
   recommended_name: '',
   code: '',
+  access_code: '',
   timerInterval: null,
   timerSeconds: 0,
+  pollInterval: null,
 };
 
 export function setAuthSuccessHandler(fn) {
@@ -31,6 +33,50 @@ function setInlineError(elementId, msg) {
     el.textContent = '';
     el.classList.add('hidden');
   }
+}
+
+function stopPollingCodeDelivery() {
+  if (registerState.pollInterval) {
+    clearInterval(registerState.pollInterval);
+    registerState.pollInterval = null;
+  }
+}
+
+function startPollingCodeDelivery(telegramId) {
+  stopPollingCodeDelivery();
+  if (!telegramId) return;
+
+  let attempts = 0;
+  const maxAttempts = 10;
+
+  registerState.pollInterval = setInterval(async () => {
+    attempts++;
+    if (attempts > maxAttempts || registerState.step !== 2) {
+      stopPollingCodeDelivery();
+      return;
+    }
+
+    try {
+      const res = await api.getCodeStatus(telegramId);
+      if (registerState.step !== 2) {
+        stopPollingCodeDelivery();
+        return;
+      }
+
+      if (res && res.status === 'delivery_error') {
+        stopPollingCodeDelivery();
+        const errDetail = res.error || 'ошибка доставки';
+        setInlineError(
+          'reg-error-step2',
+          `Не удалось доставить код в Telegram (${errDetail}). Убедитесь, что бот запущен (@GrowVisionBot) и не заблокирован.`
+        );
+      } else if (res && res.status === 'delivered') {
+        stopPollingCodeDelivery();
+      }
+    } catch (_) {
+      // Игнорируем сетевые ошибки фонового опроса
+    }
+  }, 2000);
 }
 
 export function updateBotLinks(botUsername) {
@@ -76,7 +122,7 @@ export function closeLoginModal() {
 }
 
 // Открытие модалки регистрации
-export function openRegisterModal(initialTelegram = '') {
+export function openRegisterModal(initialTelegram = '', initialStep = 1) {
   closeLoginModal();
   const modal = document.getElementById('modal-register');
   if (!modal) return;
@@ -85,16 +131,13 @@ export function openRegisterModal(initialTelegram = '') {
   setInlineError('reg-error-step2', '');
   setInlineError('reg-error-step3', '');
 
-  setRegisterStep(1);
+  setRegisterStep(initialStep);
   modal.classList.remove('hidden');
   document.body.classList.add('modal-open');
 
   const firstInput = document.getElementById('reg-telegram');
-  if (firstInput) {
-    if (initialTelegram) {
-      firstInput.value = initialTelegram;
-    }
-    setTimeout(() => firstInput.focus(), 50);
+  if (firstInput && initialTelegram) {
+    firstInput.value = initialTelegram;
   }
 }
 
@@ -106,11 +149,13 @@ export function closeRegisterModal() {
   }
   clearInterval(registerState.timerInterval);
   registerState.timerInterval = null;
+  stopPollingCodeDelivery();
   registerState.step = 1;
   registerState.telegram = '';
   registerState.telegram_id = null;
   registerState.recommended_name = '';
   registerState.code = '';
+  registerState.access_code = '';
   setInlineError('reg-error-step1', '');
   setInlineError('reg-error-step2', '');
   setInlineError('reg-error-step3', '');
@@ -140,6 +185,10 @@ function setRegisterStep(step) {
         el.value = registerState.recommended_name;
       }
       setTimeout(() => el.focus(), 50);
+    }
+    const accessEl = document.getElementById('reg-access-code');
+    if (accessEl && registerState.access_code) {
+      accessEl.value = registerState.access_code;
     }
   }
 }
@@ -188,6 +237,7 @@ async function handleRegisterStep1() {
     showToast('Код подтверждения отправлен в Telegram');
     setRegisterStep(2);
     startResendTimer();
+    startPollingCodeDelivery(res.telegram_id);
   } catch (err) {
     setInlineError('reg-error-step1', err.message || 'Ошибка отправки кода');
   } finally {
@@ -211,6 +261,7 @@ async function handleRegisterStep2() {
   try {
     await api.registerVerify(registerState.telegram_id, codeVal);
     registerState.code = codeVal;
+    stopPollingCodeDelivery();
     showToast('Код успешно подтверждён');
     setRegisterStep(3);
   } catch (err) {
@@ -286,18 +337,31 @@ async function handleLoginFormSubmit(e) {
       authSuccessCallback(res);
     }
   } catch (err) {
-    // Если пользователь не зарегистрирован в системе — перенаправляем на регистрацию с верификацией
+    // Если пользователь не зарегистрирован в системе — бесшовный переход на верификацию и шаг 2
     if (
       err.status === 403 ||
       (typeof err.message === 'string' &&
         (err.message.includes('telegram_verification_required') ||
           err.message.includes('not_registered')))
     ) {
-      openRegisterModal(telegram);
-      setInlineError(
-        'reg-error-step1',
-        'Вы ещё не зарегистрированы. Подтвердите ваш аккаунт кодом из Telegram.'
-      );
+      try {
+        const startRes = await api.registerStart(telegram);
+        closeLoginModal();
+        registerState.telegram = telegram;
+        registerState.telegram_id = startRes.telegram_id;
+        registerState.recommended_name = startRes.recommended_name || '';
+        registerState.access_code = accessCode;
+
+        openRegisterModal(telegram, 2);
+        showToast('Код подтверждения отправлен в Telegram');
+        startResendTimer();
+        startPollingCodeDelivery(startRes.telegram_id);
+      } catch (startErr) {
+        setInlineError(
+          'login-form-error',
+          startErr.message || 'Ошибка отправки кода подтверждения в Telegram'
+        );
+      }
       return;
     }
     setInlineError('login-form-error', err.message || 'Ошибка входа');
@@ -332,6 +396,16 @@ export function initAuth() {
       const loginTg = document.getElementById('login-telegram');
       const val = loginTg ? loginTg.value.trim() : '';
       openRegisterModal(val);
+    });
+  }
+
+  // Переход на вход из модалки регистрации
+  const linkToLogin = document.getElementById('link-to-login');
+  if (linkToLogin) {
+    linkToLogin.addEventListener('click', (e) => {
+      e.preventDefault();
+      closeRegisterModal();
+      openLoginModal();
     });
   }
 

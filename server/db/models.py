@@ -350,3 +350,4 @@ class WebVerificationCode(Base):
     verified_at = Column(DateTime(timezone=True), nullable=True)
     is_delivered = Column(Boolean, nullable=False, default=False)
     delivered_at = Column(DateTime(timezone=True), nullable=True)
+    delivery_error = Column(String(255), nullable=True)

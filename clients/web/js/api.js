@@ -98,6 +98,9 @@ export const api = {
       body: JSON.stringify({ telegram }),
     }),
 
+  getCodeStatus: (telegramId) =>
+    request(`/api/auth/web/register/code-status?telegram_id=${encodeURIComponent(telegramId)}`),
+
   registerVerify: (telegram_id, code) =>
     request('/api/auth/web/register/verify', {
       method: 'POST',

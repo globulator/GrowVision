@@ -6,6 +6,16 @@
 ---
 
 ## 2. Исправленные дефекты (верифицировано QA)
+- **[STAGE-8.8] [web, server, telegram_bot] Исправление сквозной авторизации Web ↔ Telegram, удаление личного пароля и статус доставки (верифицировано QA)**
+  - **Коммиты:** `ff9b3c6` (реализация) (ветка `stage-8/fix-web-tg-auth`)
+  - **Ключевые проверенные критерии:**
+    1. Удаление проверки личного пароля: завершение веб-регистрации через `POST /api/auth/web/register/complete` успешно проходит без передачи поля `password` и без ошибки валидации (схема `WebRegisterCompleteRequest: password = None`). Личные пароли веб-клиента упразднены, доступ регулируется Telegram и мастер-паролем / инвайт-кодами.
+    2. Реальный `bot_username`: в `server/core/bot_info.py` реализован запрос к Telegram API `getMe` по `TELEGRAM_BOT_TOKEN` с кешированием в памяти и безопасным fallback (`BOT_USERNAME` / `"GrowVisionBot"`). Эндпоинты `GET /api/version` и `GET /api/auth/web/me` возвращают актуальный username бота, ссылки `https://t.me/<bot_username>` в Web SPA корректно используют это значение.
+    3. Бесшовный вход и регистрация: в `clients/web/index.html` закрыт тег `.password-group`, в `clients/web/style.css` добавлены явные стили видимости `.reg-step`, `.reg-step.hidden` и `#modal-register.hidden`. При возврате 403 `telegram_verification_required` из формы входа автоматически вызывается `api.registerStart`, сохраняется введенный `accessCode`, открывается модалка сразу на Шаге 2 (ввод кода), а на Шаге 3 предзаполняются `recommended_name` и сохранённый код доступа. Подключена ссылка `#link-to-login` для возврата к форме входа.
+    4. Отслеживание статуса доставки и валидация `/start`: для неизвестных числовых Telegram ID (без записи в `TelegramContact`) сервер возвращает HTTP 400 с понятным требованием открыть бота и нажать `/start`. В модель `WebVerificationCode` добавлена колонка `delivery_error`, добавлены эндпоинты `POST /api/auth/web/pending-codes/{id}/fail` и `GET /api/auth/web/register/code-status`. Telegram-бот при сбое отправки кода фиксирует ошибку на сервере, а Web SPA на Шаге 2 опрашивает статус и выводит предупреждение.
+    5. Качество и тесты: быстродействие тестов (<3 с на тест, без sleep), чистый `git status`, линтер `ruff check .` и `ruff format --check .` чистые, 0 Unicode-эмодзи, 0 `window.alert`/`confirm`/`prompt`.
+  - **Результат тестирования:** 271 passed (`server/tests`: 74, `clients/telegram_bot/tests`: 66, `edge_agent/tests`: 55, `tests/e2e`: 76), ruff clean, git status clean.
+
 - **[STAGE-8.7] [web, server, edge_agent] UX-полировка, безопасная авторизация, галерея, адаптивные заглушки и real-time мониторинг (верифицировано QA)**
   - **Коммиты:** `2a7df59` (реализация) (ветка `stage-8/ux-polish-and-realtime`)
   - **Ключевые проверенные критерии:**

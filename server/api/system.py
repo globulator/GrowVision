@@ -15,7 +15,7 @@ from server.api.deps import (
     get_db,
     require_role,
 )
-from server.config import get_settings
+from server.core.bot_info import get_telegram_bot_username
 from server.core.system_status import is_rpi_online
 from server.db.models import SystemSetting, User
 from shared.version import get_app_version
@@ -41,10 +41,9 @@ def get_version(
 
     Публичный эндпоинт версии сервера для всех клиентов.
     """
-    settings = get_settings()
     return {
         "server_version": get_app_version(),
-        "bot_username": settings.bot_username or "GrowVisionBot",
+        "bot_username": get_telegram_bot_username(),
     }
 
 

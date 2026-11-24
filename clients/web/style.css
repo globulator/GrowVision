@@ -486,6 +486,18 @@ button {
   margin-bottom: 16px;
 }
 
+.reg-step {
+  display: block;
+}
+
+.reg-step.hidden {
+  display: none !important;
+}
+
+#modal-register.hidden {
+  display: none !important;
+}
+
 .modal-actions {
   display: flex;
   flex-direction: column;

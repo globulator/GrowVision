@@ -4,31 +4,25 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 8.7
-- Название этапа: Исправление багов живого теста v0.6.1 (Telegram Web Auth, галерея, мягкая обработка ошибок, RPi mock auto, баннер, футер, поллинг)
-- Режим: FULL
-- Статус: DONE
+- Текущий этап: 8.8
+- Название этапа: Исправление сквозной авторизации и регистрации Web ↔ Telegram
+- Режим: FAST
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: задачи следующего этапа
+- Ждём от пользователя: ничего (проводится тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| qa | fast | stage-8/fix-web-tg-auth | docs/tasks/stage-8-8-fix-web-tg-auth-qa.md | — |
 
 ## Коммиты текущего этапа
-- Ветка stage-8/ux-polish-and-realtime создана от main (760bb67)
-- 7780aa5 docs(repo): prepare task card and update state for stage 8.7
-- 2a7df59 feat(stage-8.7): ux polish, telegram verification, real frames gallery, adaptive placeholders, realtime polling
-- a06a035 docs(repo): update state to testing for stage 8.7
-- 94695f9 docs(qa): update qa_log with stage 8.7 verification
-- a18f254 chore(repo): merge stage-8/ux-polish-and-realtime into main
-- a48d171 chore(repo): bump version to 0.6.2 (tag v0.6.2)
-- 0afa737 docs(repo): document stage 8.7 ux polish and realtime
+- Ветка stage-8/fix-web-tg-auth создана от main (6b77089)
+- ff9b3c6 feat(stage-8.8): fix web tg auth, remove password check, seamless verification flow, bot username and delivery status
 
 ## Последний вердикт QA
-- Вердикт: PASS (по этапу 8.7)
+- Вердикт: —
 - Открытые дефекты (ID): —
 - Отложенные (DEFERRED, ID): —
 
@@ -56,7 +50,6 @@
 - Этап 8.7: Исправление багов живого теста v0.6.1 (Telegram Web Auth, галерея, мягкая обработка ошибок, RPi mock auto, баннер, футер, поллинг) (принят QA, слит в main, версия 0.6.2, отчёт docs/stage_reports/stage-8.7.md)
 
 ## История (последние 15 событий)
-- 2026-11-24: QA проверил этап 8.6 с 1:1 логотипом, вердикт PASS (320 тестов, 0 дефектов)
 - 2026-11-24: Ветка stage-8/brand-logo слита в main, тег v0.6.1 обновлён
 - 2026-11-24: Scribe обновил отчёт docs/stage_reports/stage-8.6.md и документацию (коммит fe15eb7)
 - 2026-11-24: Этап 8.6 закрыт (DONE)
@@ -70,3 +63,5 @@
 - 2026-11-24: Поднята версия 0.6.2 (тег v0.6.2)
 - 2026-11-24: Scribe оформил docs/stage_reports/stage-8.7.md, обновил stage-8.md и README.md (коммит 0afa737)
 - 2026-11-24: Этап 8.7 закрыт (DONE)
+- 2026-11-24: Builder реализовал этап 8.8 (коммит ff9b3c6), статус READY_FOR_QA
+- 2026-11-24: Подготовлена карточка docs/tasks/stage-8-8-fix-web-tg-auth-qa.md, статус TESTING, задача передана QA

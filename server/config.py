@@ -24,6 +24,7 @@ class Settings(BaseModel):
     edge_server_url: str | None = Field(default=None, alias="EDGE_SERVER_URL")
     mock_mode: bool = Field(default=False, alias="MOCK_MODE")
     bot_username: str | None = Field(default=None, alias="BOT_USERNAME")
+    telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
 
 
 def load_settings(env_path: Path | str | None = None) -> Settings:
