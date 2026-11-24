@@ -4,30 +4,25 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 8.9
-- Название этапа: Исправление отображения кадров в Web-галерее, расчёт FPS в боте и ускорение SNAP в Edge-агенте
-- Режим: FAST
-- Статус: DONE
+- Текущий этап: 8.10
+- Название этапа: Стабилизация съёмки RPi (автоподбор качества, умный прогрев, HSV-сегментация без ONNX, автокалибровка камеры в боте) и инфо-панель RPi в Web
+- Режим: FULL
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: задачи следующего этапа
+- Ждём от пользователя: ничего (проводится тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| qa | full | stage-8/rpi-camera-vision-and-ui | docs/tasks/stage-8-10-rpi-camera-vision-and-ui-qa.md | — |
 
 ## Коммиты текущего этапа
-- Ветка stage-8/fix-gallery-fps-snap создана от main (f6e8298)
-- ca80d0b feat(stage-8.9): fix gallery frame urls, dynamic fps calculation, fast mock snap and 0.5s poll interval
-- e14b325 docs(repo): prepare task card and update state for stage 8.9
-- 22a0435 docs(qa): update qa_log with stage 8.9 verification
-- 0fecb96 chore(repo): merge stage-8/fix-gallery-fps-snap into main
-- 0ddb98a chore(repo): bump version to 0.6.4 (tag v0.6.4)
-- c011472 docs(repo): document stage 8.9 fix gallery fps snap
+- Ветка stage-8/rpi-camera-vision-and-ui создана от main (01a510a)
+- 92371a7 feat(stage-8.10): RPi camera profiling, vision HSV fallback and UI telemetry dashboard
 
 ## Последний вердикт QA
-- Вердикт: PASS (по этапу 8.9)
+- Вердикт: —
 - Открытые дефекты (ID): —
 - Отложенные (DEFERRED, ID): —
 
@@ -57,10 +52,6 @@
 - Этап 8.9: Исправление отображения кадров в Web-галерее, расчёт FPS в боте и ускорение SNAP в Edge-агенте (принят QA, слит в main, версия 0.6.4, отчёт docs/stage_reports/stage-8.9.md)
 
 ## История (последние 15 событий)
-- 2026-11-24: QA проверил этап 8.8, вердикт PASS (271 тест, 0 дефектов)
-- 2026-11-24: Ветка stage-8/fix-web-tg-auth слита в main, поднята версия 0.6.3 (тег v0.6.3)
-- 2026-11-24: Scribe оформил docs/stage_reports/stage-8.8.md, обновил stage-8.md и README.md (коммит 05b7f3a)
-- 2026-11-24: Этап 8.8 закрыт (DONE)
 - 2026-11-24: Запущен этап 8.9 (исправление Web-галереи, FPS в боте, ускорение SNAP в Edge-агенте, режим FAST)
 - 2026-11-24: Создана ветка stage-8/fix-gallery-fps-snap от main
 - 2026-11-24: Builder реализовал этап 8.9 (коммит ca80d0b), статус READY_FOR_QA
@@ -70,3 +61,7 @@
 - 2026-11-24: Поднята версия 0.6.4 (тег v0.6.4)
 - 2026-11-24: Scribe оформил docs/stage_reports/stage-8.9.md, обновил stage-8.md и README.md (коммит c011472)
 - 2026-11-24: Этап 8.9 закрыт (DONE)
+- 2026-11-24: Запущен этап 8.10 (стабилизация съёмки RPi, HSV без ONNX, автокалибровка в боте, инфо-панель RPi в Web, режим FULL)
+- 2026-11-24: Создана ветка stage-8/rpi-camera-vision-and-ui от main
+- 2026-11-24: Builder реализовал этап 8.10 (коммит 92371a7), статус READY_FOR_QA
+- 2026-11-24: Подготовлена карточка docs/tasks/stage-8-10-rpi-camera-vision-and-ui-qa.md, статус TESTING, задача передана QA
