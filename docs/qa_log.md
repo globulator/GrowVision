@@ -6,6 +6,15 @@
 ---
 
 ## 2. Исправленные дефекты (верифицировано QA)
+- **[STAGE-8.9] [web, telegram_bot, edge_agent] Исправление галереи Web SPA, согласованный расчёт FPS таймлапса и оптимизация SNAP (верифицировано QA)**
+  - **Коммиты:** `ca80d0b` (реализация) (ветка `stage-8/fix-gallery-fps-snap`)
+  - **Ключевые проверенные критерии:**
+    1. Web-галерея (`clients/web/js/gallery.js`): в функции `loadOne` чтение URL кадров переведено на безопасный fallback (`frame.raw_url || frame.raw_image_url` и `frame.annotated_url || frame.annotated_image_url`). Кадры гарантированно загружаются и отрисовываются в основном элементе `<img>` галереи.
+    2. Telegram-бот (`clients/telegram_bot/handlers/timelapse.py`): полностью убран хардкод 30 FPS. Реализован динамический расчет `calc_duration = max(1, round(total_frames / 15))` и `actual_fps = min(30, max(1, round(total_frames / calc_duration)))`. Для 4 кадров корректно выводится 4 FPS за 1 с на кнопке `▶️ Собрать видео (4 FPS)`, в `callback_data` и подписи к видео; при `total_frames / calc_duration > 30` выводится предупреждение об автопрореживании.
+    3. Edge-агент (`edge_agent/`): `command_poll_interval_sec` по умолчанию снижен с 2.0 до 0.5 с. В mock-режиме исключены искусственные задержки `time.sleep` и прогрев камеры (`warmup_frames=0`). В `_handle_snap` замеряется точное время выполнения (`[SNAP] elapsed={elapsed_sec:.2f}s`) с быстрым выполнением (< 1 с).
+    4. Качество и тесты: быстродействие тестов (<3 с на тест, без sleep), чистый `git status`, линтер `ruff check .` и `ruff format --check .` чистые, 0 Unicode-эмодзи в clients/web/.
+  - **Результат тестирования:** 274 passed (`server/tests`: 74, `clients/telegram_bot/tests`: 67, `edge_agent/tests`: 56, `tests/e2e`: 77), ruff clean, git status clean.
+
 - **[STAGE-8.8] [web, server, telegram_bot] Исправление сквозной авторизации Web ↔ Telegram, удаление личного пароля и статус доставки (верифицировано QA)**
   - **Коммиты:** `ff9b3c6` (реализация) (ветка `stage-8/fix-web-tg-auth`)
   - **Ключевые проверенные критерии:**
