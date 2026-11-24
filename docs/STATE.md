@@ -7,18 +7,20 @@
 - Текущий этап: 8.7
 - Название этапа: Исправление багов живого теста v0.6.1 (Telegram Web Auth, галерея, мягкая обработка ошибок, RPi mock auto, баннер, футер, поллинг)
 - Режим: FULL
-- Статус: BUILDING
+- Статус: TESTING
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (Builder выполняет реализацию)
+- Ждём от пользователя: ничего (проводится тестирование QA)
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| builder | full | stage-8/ux-polish-and-realtime | docs/tasks/stage-8-7-ux-polish-and-realtime-builder.md | — |
+| qa | full | stage-8/ux-polish-and-realtime | docs/tasks/stage-8-7-ux-polish-and-realtime-qa.md | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-8/ux-polish-and-realtime создана от main (760bb67)
+- 7780aa5 docs(repo): prepare task card and update state for stage 8.7
+- 2a7df59 feat(stage-8.7): ux polish, telegram verification, real frames gallery, adaptive placeholders, realtime polling
 
 ## Последний вердикт QA
 - Вердикт: —
@@ -48,10 +50,6 @@
 - Этап 8.6: Интеграция квадратного 1:1 SVG-логотипа GrowVision в шапку Web SPA и favicon (принят QA, слит в main, версия 0.6.1, отчёт docs/stage_reports/stage-8.6.md)
 
 ## История (последние 15 событий)
-- 2026-11-24: QA проверил этап 8.6, вердикт PASS (320 тестов, 0 дефектов)
-- 2026-11-24: Ветка stage-8/brand-logo слита в main, поднята версия 0.6.1 (тег v0.6.1)
-- 2026-11-24: Scribe создал docs/stage_reports/stage-8.6.md, обновил README.md и docs/stage_reports/stage-8.md
-- 2026-11-24: Этап 8.6 закрыт (DONE)
 - 2026-11-24: Пользователь обновил ассеты логотипа до 1:1 (коммит edd8560) и перезапустил этап 8.6
 - 2026-11-24: Ветка stage-8/brand-logo пересоздана от main (edd8560)
 - 2026-11-24: Builder реализовал этап 8.6 (коммит 7a79d1c), статус READY_FOR_QA
@@ -63,3 +61,5 @@
 - 2026-11-24: Запущен этап 8.7 (исправление багов живого теста v0.6.1, режим FULL)
 - 2026-11-24: Создана ветка stage-8/ux-polish-and-realtime от main
 - 2026-11-24: Подготовлена карточка docs/tasks/stage-8-7-ux-polish-and-realtime-builder.md, статус BUILDING
+- 2026-11-24: Builder реализовал этап 8.7 (коммит 2a7df59), статус READY_FOR_QA
+- 2026-11-24: Подготовлена карточка docs/tasks/stage-8-7-ux-polish-and-realtime-qa.md, статус TESTING, задача передана QA
