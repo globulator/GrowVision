@@ -22,7 +22,7 @@ GrowVision/
 │   └── web/                    # Веб-клиент Web SPA (чистый HTML5/CSS3/ES6, плеер, GIF-экспорт)
 ├── tests/                      # Сквозные интеграционные тесты (E2E)
 ├── requirements-dev.txt        # Общие зависимости для тестов и линтинга (pytest, ruff)
-└── VERSION                     # Источник версии проекта (0.6.2)
+└── VERSION                     # Источник версии проекта (0.6.3)
 ```
 
 ## Быстрый старт
@@ -204,3 +204,4 @@ server/.venv/bin/ruff format --check .
 - [docs/stage_reports/stage-8.5.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-8.5.md) — отчёт по этапу 8.5
 - [docs/stage_reports/stage-8.6.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-8.6.md) — отчёт по этапу 8.6
 - [docs/stage_reports/stage-8.7.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-8.7.md) — отчёт по этапу 8.7
+- [docs/stage_reports/stage-8.8.md](file:///home/mcperchik/study/GrowVision/docs/stage_reports/stage-8.8.md) — отчёт по этапу 8.8
