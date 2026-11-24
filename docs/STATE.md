@@ -7,22 +7,27 @@
 - Текущий этап: 8.9
 - Название этапа: Исправление отображения кадров в Web-галерее, расчёт FPS в боте и ускорение SNAP в Edge-агенте
 - Режим: FAST
-- Статус: TESTING
+- Статус: DONE
 - Итерация QA (кругов FAIL): 0 из 3
-- Ждём от пользователя: ничего (проводится тестирование QA)
+- Ждём от пользователя: задачи следующего этапа
 
 ## Активные агенты
 
 | Агент | Компонент | Ветка | Карточка | Последний отчёт |
 |---|---|---|---|---|
-| qa | fast | stage-8/fix-gallery-fps-snap | docs/tasks/stage-8-9-fix-gallery-fps-snap-qa.md | — |
+| — | — | — | — | — |
 
 ## Коммиты текущего этапа
 - Ветка stage-8/fix-gallery-fps-snap создана от main (f6e8298)
 - ca80d0b feat(stage-8.9): fix gallery frame urls, dynamic fps calculation, fast mock snap and 0.5s poll interval
+- e14b325 docs(repo): prepare task card and update state for stage 8.9
+- 22a0435 docs(qa): update qa_log with stage 8.9 verification
+- 0fecb96 chore(repo): merge stage-8/fix-gallery-fps-snap into main
+- 0ddb98a chore(repo): bump version to 0.6.4 (tag v0.6.4)
+- c011472 docs(repo): document stage 8.9 fix gallery fps snap
 
 ## Последний вердикт QA
-- Вердикт: —
+- Вердикт: PASS (по этапу 8.9)
 - Открытые дефекты (ID): —
 - Отложенные (DEFERRED, ID): —
 
@@ -49,19 +54,19 @@
 - Этап 8.6: Интеграция квадратного 1:1 SVG-логотипа GrowVision в шапку Web SPA и favicon (принят QA, слит в main, версия 0.6.1, отчёт docs/stage_reports/stage-8.6.md)
 - Этап 8.7: Исправление багов живого теста v0.6.1 (Telegram Web Auth, галерея, мягкая обработка ошибок, RPi mock auto, баннер, футер, поллинг) (принят QA, слит в main, версия 0.6.2, отчёт docs/stage_reports/stage-8.7.md)
 - Этап 8.8: Исправление сквозной авторизации и регистрации Web ↔ Telegram (принят QA, слит в main, версия 0.6.3, отчёт docs/stage_reports/stage-8.8.md)
+- Этап 8.9: Исправление отображения кадров в Web-галерее, расчёт FPS в боте и ускорение SNAP в Edge-агенте (принят QA, слит в main, версия 0.6.4, отчёт docs/stage_reports/stage-8.9.md)
 
 ## История (последние 15 событий)
-- 2026-11-24: Этап 8.7 закрыт (DONE)
-- 2026-11-24: Запущен этап 8.8 (исправление сквозной авторизации Web ↔ Telegram, режим FAST)
-- 2026-11-24: Создана ветка stage-8/fix-web-tg-auth от main
-- 2026-11-24: Builder реализовал этап 8.8 (коммит ff9b3c6), статус READY_FOR_QA
-- 2026-11-24: Подготовлена карточка docs/tasks/stage-8-8-fix-web-tg-auth-qa.md, статус TESTING, задача передана QA
 - 2026-11-24: QA проверил этап 8.8, вердикт PASS (271 тест, 0 дефектов)
 - 2026-11-24: Ветка stage-8/fix-web-tg-auth слита в main, поднята версия 0.6.3 (тег v0.6.3)
 - 2026-11-24: Scribe оформил docs/stage_reports/stage-8.8.md, обновил stage-8.md и README.md (коммит 05b7f3a)
 - 2026-11-24: Этап 8.8 закрыт (DONE)
 - 2026-11-24: Запущен этап 8.9 (исправление Web-галереи, FPS в боте, ускорение SNAP в Edge-агенте, режим FAST)
 - 2026-11-24: Создана ветка stage-8/fix-gallery-fps-snap от main
-- 2026-11-24: Подготовлена карточка docs/tasks/stage-8-9-fix-gallery-fps-snap-builder.md, статус BUILDING
 - 2026-11-24: Builder реализовал этап 8.9 (коммит ca80d0b), статус READY_FOR_QA
 - 2026-11-24: Подготовлена карточка docs/tasks/stage-8-9-fix-gallery-fps-snap-qa.md, статус TESTING, задача передана QA
+- 2026-11-24: QA проверил этап 8.9, вердикт PASS (274 теста, 0 дефектов)
+- 2026-11-24: Ветка stage-8/fix-gallery-fps-snap слита в main
+- 2026-11-24: Поднята версия 0.6.4 (тег v0.6.4)
+- 2026-11-24: Scribe оформил docs/stage_reports/stage-8.9.md, обновил stage-8.md и README.md (коммит c011472)
+- 2026-11-24: Этап 8.9 закрыт (DONE)
