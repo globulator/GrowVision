@@ -2,7 +2,7 @@
 // Отображение активных установок, карточек, превью и кнопок действий
 
 import { api } from './api.js';
-import { showError } from './dialogs.js';
+import { getPlaceholderHTML } from './placeholders.js';
 
 let currentRole = 'guest';
 let onOpenGalleryCallback = null;
@@ -115,11 +115,11 @@ export async function loadAndRenderUnits() {
         img.loading = 'lazy';
         img.src = `${frameUrl}?t=${cacheBuster}`;
         img.onerror = () => {
-          previewWrapper.innerHTML = createErrorFramesSvg();
+          previewWrapper.innerHTML = getPlaceholderHTML('D');
         };
         previewWrapper.appendChild(img);
       } else {
-        previewWrapper.innerHTML = createNoFramesSvg();
+        previewWrapper.innerHTML = getPlaceholderHTML('A');
       }
 
       card.appendChild(previewWrapper);
@@ -192,8 +192,14 @@ export async function loadAndRenderUnits() {
 
       container.appendChild(card);
     });
-  } catch (err) {
-    showError(err.message, 'Ошибка загрузки установок');
+  } catch (_err) {
+    if (container && (!container.children || container.children.length === 0)) {
+      container.innerHTML = `
+        <div class="empty-state glass-panel">
+          ${getPlaceholderHTML('C')}
+        </div>
+      `;
+    }
   } finally {
     if (refreshBtn) {
       setTimeout(() => refreshBtn.classList.remove('rotating'), 400);

@@ -114,9 +114,9 @@ class WebRegisterCompleteRequest(BaseModel):
     verification_code: str
     full_name: str
     access_code: str
-    password: str
+    password: str | None = None
 
-    @field_validator("full_name", "access_code", "password", "verification_code")
+    @field_validator("full_name", "access_code", "verification_code")
     @classmethod
     def validate_non_empty(cls, v: str, info: ValidationInfo) -> str:
         if not isinstance(v, str) or not v.strip():
@@ -164,6 +164,7 @@ class WebMeResponse(BaseModel):
     role: str
     login: str | None = None
     external_id: str | None = None
+    bot_username: str | None = None
 
 
 class MeResponse(BaseModel):
@@ -512,11 +513,17 @@ def ack_verification_code(
 # ================== Веб-регистрация и авторизация (Web SPA) ==================
 
 
-def resolve_telegram_id(telegram_input: str, db: Session) -> int:
-    """Резолвит ввод пользователя (@username или числовой ID) в числовой telegram_id."""
+def resolve_telegram_contact(
+    telegram_input: str, db: Session
+) -> tuple[int, TelegramContact | None]:
+    """Резолвит ввод пользователя (@username или числовой ID) в числовой telegram_id и объект TelegramContact."""
     val = telegram_input.strip()
     if val.isdigit() or (val.startswith("-") and val[1:].isdigit()):
-        return int(val)
+        tid = int(val)
+        contact = (
+            db.query(TelegramContact).filter(TelegramContact.telegram_id == tid).first()
+        )
+        return tid, contact
 
     norm_username = val.lstrip("@").strip().lower()
     contact = (
@@ -529,7 +536,13 @@ def resolve_telegram_id(telegram_input: str, db: Session) -> int:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Пользователь с таким Telegram не найден. Пожалуйста, откройте Telegram-бота GrowVision, нажмите /start и повторите попытку.",
         )
-    return contact.telegram_id
+    return contact.telegram_id, contact
+
+
+def resolve_telegram_id(telegram_input: str, db: Session) -> int:
+    """Резолвит ввод пользователя (@username или числовой ID) в числовой telegram_id."""
+    tid, _ = resolve_telegram_contact(telegram_input, db)
+    return tid
 
 
 @router.post("/web/register/start")
@@ -538,7 +551,15 @@ def auth_web_register_start(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
     """Шаг 1 регистрации: валидация Telegram пользователя и отправка 6-значного кода."""
-    telegram_id = resolve_telegram_id(body.telegram, db)
+    telegram_id, contact = resolve_telegram_contact(body.telegram, db)
+
+    recommended_name: str | None = None
+    if contact:
+        parts = [p for p in (contact.first_name, contact.last_name) if p and p.strip()]
+        if parts:
+            recommended_name = " ".join(parts).strip()
+        elif contact.username:
+            recommended_name = f"@{contact.username}"
 
     now = datetime.now(UTC)
     expires = now + timedelta(minutes=10)
@@ -558,6 +579,7 @@ def auth_web_register_start(
     return {
         "status": "code_sent",
         "telegram_id": telegram_id,
+        "recommended_name": recommended_name,
         "expires_in": 600,
     }
 
@@ -807,7 +829,7 @@ def auth_web_login(
         else:
             full_name = f"User {telegram_id}"
 
-    # 4. Создание или обновление сессии пользователя в таблице users
+    # 4. Проверка существования сессии пользователя в таблице users
     user = (
         db.query(User)
         .filter(
@@ -817,24 +839,17 @@ def auth_web_login(
         .first()
     )
     if not user:
-        user = User(
-            client_type="web",
-            external_id=ext_id,
-            login=full_name,
-            role=role,
-            is_active=True,
-            authorized_at=now,
-            last_active_at=now,
-            logged_out_at=None,
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="telegram_verification_required",
         )
-        db.add(user)
-        db.flush()
-    else:
-        user.login = full_name  # Автосинхронизация имени из Telegram
-        user.role = role
-        user.is_active = True
-        user.logged_out_at = None
-        user.last_active_at = now
+
+    if not user.login:
+        user.login = full_name
+    user.role = role
+    user.is_active = True
+    user.logged_out_at = None
+    user.last_active_at = now
 
     if matched_invite:
         matched_invite.used_at = now
@@ -883,6 +898,8 @@ def auth_web_me(
 
     Информация о текущем веб-пользователе или статус Гость.
     """
+    settings = get_settings()
+    bot_username = settings.bot_username or "GrowVisionBot"
     if gv_session:
         user = verify_session_cookie(gv_session, db)
         if user:
@@ -891,8 +908,11 @@ def auth_web_me(
                 role=user.role,
                 login=user.login,
                 external_id=user.external_id,
+                bot_username=bot_username,
             )
-    return WebMeResponse(authenticated=False, role="guest", login=None)
+    return WebMeResponse(
+        authenticated=False, role="guest", login=None, bot_username=bot_username
+    )
 
 
 # ================== Управление приглашениями (Developer) ==================

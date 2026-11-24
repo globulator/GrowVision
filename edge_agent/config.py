@@ -23,21 +23,28 @@ def resolve_path(p: str | Path) -> Path:
 
 def is_raspberry_pi() -> bool:
     """Определяет, запущено ли приложение на физической плате Raspberry Pi."""
+    has_model = False
     with contextlib.suppress(OSError):
         model_path = Path("/proc/device-tree/model")
         if model_path.exists():
             content = model_path.read_text(encoding="utf-8", errors="ignore").lower()
             if "raspberry pi" in content:
-                return True
+                has_model = True
 
-    with contextlib.suppress(OSError):
-        fw_path = Path("/sys/firmware/devicetree/base/model")
-        if fw_path.exists():
-            content = fw_path.read_text(encoding="utf-8", errors="ignore").lower()
-            if "raspberry pi" in content:
-                return True
+    if not has_model:
+        with contextlib.suppress(OSError):
+            fw_path = Path("/sys/firmware/devicetree/base/model")
+            if fw_path.exists():
+                content = fw_path.read_text(encoding="utf-8", errors="ignore").lower()
+                if "raspberry pi" in content:
+                    has_model = True
 
-    return any(Path(p).exists() for p in ["/dev/gpiomem", "/dev/gpiochip0"])
+    if not has_model:
+        return False
+
+    import importlib.util
+
+    return importlib.util.find_spec("gpiozero") is not None
 
 
 resolve_repo_path = resolve_path

@@ -1,4 +1,5 @@
 import contextlib
+import importlib.util
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from server.api.deps import (
     get_db,
     require_role,
 )
+from server.config import get_settings
 from server.core.system_status import is_rpi_online
 from server.db.models import SystemSetting, User
 from shared.version import get_app_version
@@ -31,34 +33,43 @@ class SystemSettingsPatch(BaseModel):
     capture_delay_sec: float | None = Field(default=None, ge=0.0, le=30.0)
 
 
-@router.get("/api/version", response_model=dict[str, str])
+@router.get("/api/version", response_model=dict[str, Any])
 def get_version(
     _client_user: Annotated[Any, Depends(get_current_user_optional)],
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """4.6. GET /api/version.
 
     Публичный эндпоинт версии сервера для всех клиентов.
     """
-    return {"server_version": get_app_version()}
+    settings = get_settings()
+    return {
+        "server_version": get_app_version(),
+        "bot_username": settings.bot_username or "GrowVisionBot",
+    }
 
 
 def is_raspberry_pi() -> bool:
     """Определяет, запущено ли приложение на физической плате Raspberry Pi."""
+    has_model = False
     with contextlib.suppress(OSError):
         model_p = Path("/proc/device-tree/model")
         if model_p.exists():
             content = model_p.read_text(encoding="utf-8", errors="ignore").lower()
             if "raspberry pi" in content:
-                return True
+                has_model = True
 
-    with contextlib.suppress(OSError):
-        fw_p = Path("/sys/firmware/devicetree/base/model")
-        if fw_p.exists():
-            content = fw_p.read_text(encoding="utf-8", errors="ignore").lower()
-            if "raspberry pi" in content:
-                return True
+    if not has_model:
+        with contextlib.suppress(OSError):
+            fw_p = Path("/sys/firmware/devicetree/base/model")
+            if fw_p.exists():
+                content = fw_p.read_text(encoding="utf-8", errors="ignore").lower()
+                if "raspberry pi" in content:
+                    has_model = True
 
-    return any(Path(p).exists() for p in ["/dev/gpiomem", "/dev/gpiochip0"])
+    if not has_model:
+        return False
+
+    return importlib.util.find_spec("gpiozero") is not None
 
 
 @router.get("/api/system/status", response_model=dict[str, Any])
@@ -111,16 +122,30 @@ def get_system_status(
         float(delay_setting.value) if delay_setting and delay_setting.value else 1.5
     )
 
-    real_rpi = is_raspberry_pi()
+    real_rpi = False
+    if online and (
+        (
+            rpi_telemetry
+            and isinstance(rpi_telemetry, dict)
+            and (
+                rpi_telemetry.get("hardware_mode") == "rpi"
+                or rpi_telemetry.get("is_raspberry_pi")
+            )
+        )
+        or is_raspberry_pi()
+    ):
+        real_rpi = True
+
     if (
         rpi_telemetry
         and isinstance(rpi_telemetry, dict)
-        and (
-            rpi_telemetry.get("hardware_mode") == "rpi"
-            or rpi_telemetry.get("is_raspberry_pi")
-        )
+        and "hardware_mode" not in rpi_telemetry
     ):
-        real_rpi = True
+        hw_info = rpi_telemetry.get("hardware")
+        if isinstance(hw_info, dict) and hw_info.get("gpio_mode"):
+            rpi_telemetry["hardware_mode"] = hw_info["gpio_mode"]
+        else:
+            rpi_telemetry["hardware_mode"] = "rpi" if real_rpi else "mock"
 
     return {
         "server_version": get_app_version(),

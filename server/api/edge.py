@@ -85,7 +85,11 @@ def edge_heartbeat(
         .filter(SystemSetting.key == "rpi_last_telemetry")
         .first()
     )
-    payload_json = hb.model_dump_json()
+    payload_dict = hb.model_dump()
+    hw_mode = getattr(hb.hardware, "gpio_mode", "mock")
+    payload_dict["hardware_mode"] = hw_mode
+    payload_dict["is_raspberry_pi"] = hw_mode == "rpi"
+    payload_json = json.dumps(payload_dict)
     if telemetry_setting:
         telemetry_setting.value = payload_json
         telemetry_setting.updated_at = now

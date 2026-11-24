@@ -2,8 +2,12 @@
 // Главная точка входа Web SPA GrowVision
 
 import { api, setUnauthorizedHandler } from './api.js';
-import { initAuth, openLoginModal, setAuthSuccessHandler } from './auth.js';
-import { initDialogs, showConfirm, showError, showToast } from './dialogs.js';
+import {
+  initAuth,
+  setAuthSuccessHandler,
+  updateBotLinks,
+} from './auth.js';
+import { initDialogs, showError, showToast } from './dialogs.js';
 import {
   closeGalleryModal,
   initGallery,
@@ -25,6 +29,7 @@ import {
 } from './units.js';
 
 let currentUser = null; // { authenticated: bool, role: 'guest'|'biologist'|'developer', login: string|null }
+let backgroundPollingTimer = null;
 
 // Обновление отображения роли, имени и кнопок в шапке
 function updateHeaderUi() {
@@ -32,6 +37,7 @@ function updateHeaderUi() {
   const userNameEl = document.getElementById('header-user-name');
   const loginBtn = document.getElementById('header-btn-login');
   const logoutBtn = document.getElementById('header-btn-logout');
+  const logoutConfirm = document.getElementById('header-logout-confirm');
   const devSlot = document.getElementById('header-dev-slot');
 
   const role = currentUser ? currentUser.role : 'guest';
@@ -62,8 +68,11 @@ function updateHeaderUi() {
   if (logoutBtn) {
     logoutBtn.classList.toggle('hidden', role === 'guest');
   }
+  if (logoutConfirm) {
+    logoutConfirm.classList.add('hidden');
+  }
 
-  // Слот для разработчика (Подключить RPi - задел на след. этап)
+  // Слот для разработчика
   if (devSlot) {
     devSlot.classList.toggle('hidden', role !== 'developer');
   }
@@ -78,16 +87,26 @@ function applyRole(role) {
   updateHeaderUi();
 }
 
-// Обработка выхода из системы
-async function handleLogout() {
-  const confirmed = await showConfirm(
-    'Вы уверены, что хотите выйти из системы?',
-    'Выход из профиля',
-    'Выйти',
-    'Отмена'
-  );
-  if (!confirmed) return;
+// Показ компактного inline-подтверждения выхода в шапке
+function showLogoutConfirm() {
+  const confirmBox = document.getElementById('header-logout-confirm');
+  const logoutBtn = document.getElementById('header-btn-logout');
+  if (confirmBox) confirmBox.classList.remove('hidden');
+  if (logoutBtn) logoutBtn.classList.add('hidden');
+}
 
+function hideLogoutConfirm() {
+  const confirmBox = document.getElementById('header-logout-confirm');
+  const logoutBtn = document.getElementById('header-btn-logout');
+  if (confirmBox) confirmBox.classList.add('hidden');
+  if (logoutBtn && currentUser && currentUser.role !== 'guest') {
+    logoutBtn.classList.remove('hidden');
+  }
+}
+
+// Обработка подтверждённого выхода из системы
+async function performLogout() {
+  hideLogoutConfirm();
   try {
     await api.logout();
     currentUser = { authenticated: false, role: 'guest', login: null };
@@ -113,19 +132,23 @@ function handleSessionExpired() {
   }
 }
 
-// Загрузка версии сервера для подвала
+// Загрузка версии сервера для подвала и ссылки на бота
 async function loadFooterVersion() {
   const footerEl = document.getElementById('footer-version');
-  if (!footerEl) return;
 
   try {
     const v = await api.getVersion();
     if (v && v.server_version) {
-      footerEl.textContent = `GrowVision v${v.server_version}`;
-      footerEl.classList.remove('hidden');
+      if (footerEl) {
+        footerEl.textContent = `GrowVision v${v.server_version}`;
+        footerEl.classList.remove('hidden');
+      }
+    }
+    if (v && v.bot_username) {
+      updateBotLinks(v.bot_username);
     }
   } catch (_) {
-    footerEl.classList.add('hidden');
+    if (footerEl) footerEl.classList.add('hidden');
   }
 }
 
@@ -135,13 +158,52 @@ async function initSession() {
     const me = await api.getMe();
     if (me && me.authenticated) {
       currentUser = me;
+      if (me.bot_username) {
+        updateBotLinks(me.bot_username);
+      }
     } else {
       currentUser = { authenticated: false, role: 'guest', login: null };
+      if (me && me.bot_username) {
+        updateBotLinks(me.bot_username);
+      }
     }
   } catch (_) {
     currentUser = { authenticated: false, role: 'guest', login: null };
   }
   applyRole(currentUser.role);
+}
+
+// Фоновый опрос каждые 5 с (с проверкой document.hidden)
+async function pollBackground() {
+  if (document.hidden) return;
+
+  // 1. Проверка сессии
+  try {
+    const me = await api.getMe();
+    if (me) {
+      if (me.bot_username) {
+        updateBotLinks(me.bot_username);
+      }
+      const wasAuth = currentUser && currentUser.authenticated;
+      const wasRole = currentUser && currentUser.role;
+      if (me.authenticated !== wasAuth || (me.authenticated && me.role !== wasRole)) {
+        currentUser = me.authenticated ? me : { authenticated: false, role: 'guest', login: null };
+        applyRole(currentUser.role);
+      }
+    }
+  } catch (_) {
+    // Сетевая ошибка отрабатывается в api.js
+  }
+
+  // 2. Список активных установок
+  try {
+    await loadAndRenderUnits();
+  } catch (_) {}
+}
+
+function startBackgroundPolling() {
+  if (backgroundPollingTimer) clearInterval(backgroundPollingTimer);
+  backgroundPollingTimer = setInterval(pollBackground, 5000);
 }
 
 // Запуск приложения
@@ -172,12 +234,24 @@ async function bootstrap() {
 
   const logoutBtn = document.getElementById('header-btn-logout');
   if (logoutBtn) {
-    logoutBtn.addEventListener('click', handleLogout);
+    logoutBtn.addEventListener('click', showLogoutConfirm);
+  }
+
+  const confirmYesBtn = document.getElementById('header-logout-confirm-yes');
+  if (confirmYesBtn) {
+    confirmYesBtn.addEventListener('click', performLogout);
+  }
+
+  const confirmNoBtn = document.getElementById('header-logout-confirm-no');
+  if (confirmNoBtn) {
+    confirmNoBtn.addEventListener('click', hideLogoutConfirm);
   }
 
   await initSession();
   await loadAndRenderUnits();
   await loadFooterVersion();
+
+  startBackgroundPolling();
 }
 
 window.addEventListener('DOMContentLoaded', bootstrap);

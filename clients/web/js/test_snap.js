@@ -2,7 +2,8 @@
 // Модальное окно тестового снимка с фиксом передачи target и слоями
 
 import { api } from './api.js';
-import { showError, showToast } from './dialogs.js';
+import { showToast } from './dialogs.js';
+import { getPlaceholderHTML, getRandomLoadingPhrase } from './placeholders.js';
 
 let currentUnit = null;
 let currentRole = 'guest';
@@ -61,6 +62,7 @@ async function triggerSnap() {
   if (downloadBtn) downloadBtn.disabled = true;
 
   if (previewBox) {
+    const loadingPhrase = getRandomLoadingPhrase();
     previewBox.innerHTML = `
       <div class="snap-loading-placeholder plant-lifecycle-spinner">
         <svg viewBox="0 0 64 64" width="56" height="56" class="plant-cycle-svg" aria-hidden="true">
@@ -71,11 +73,11 @@ async function triggerSnap() {
           <path class="plant-leaf-right" d="M32 30 Q44 26 44 16 Q34 18 32 26" fill="#059669"/>
           <path class="plant-top-leaf" d="M32 24 Q32 10 32 8 Q36 14 32 24" fill="#34d399"/>
         </svg>
-        <span class="placeholder-text">Выполнение снимка Edge-агентом...</span>
+        <span class="placeholder-text placeholder-caption">${loadingPhrase}</span>
       </div>
     `;
   }
-  if (metaBox) metaBox.textContent = 'Ожидание ответа...';
+  if (metaBox) metaBox.textContent = 'Ожидание ответа от камеры...';
 
   try {
     // Внимание: target передается строго как целое число Number(unit.id)
@@ -84,7 +86,7 @@ async function triggerSnap() {
       throw new Error(res.result_message || 'Ошибка выполнения снимка Edge-агентом');
     }
 
-    const cap = (res.captures && res.captures[0]) ? res.captures[0] : res;
+    const cap = res.captures && res.captures[0] ? res.captures[0] : res;
     currentSnapData = {
       ...res,
       ...cap,
@@ -99,17 +101,17 @@ async function triggerSnap() {
     if (resnapBtn) resnapBtn.disabled = false;
     if (downloadBtn) downloadBtn.disabled = false;
   } catch (err) {
-    showError(err.message, 'Ошибка съёмки');
+    // Мягкая обработка: не закрывать модалку, не показывать showError попап
+    const isNetworkErr =
+      err.status === 0 ||
+      (typeof err.message === 'string' &&
+        (err.message.includes('недоступен') || err.message.includes('fetch') || err.message.includes('NetworkError')));
+
     if (previewBox) {
-      previewBox.innerHTML = `
-        <div class="snap-loading-placeholder snap-error-placeholder">
-          <svg class="placeholder-icon" viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-            <line x1="1" y1="1" x2="23" y2="23"/>
-          </svg>
-          <span class="placeholder-text error-text">Камера стесняется или недоступна. Проверьте подключение оборудования.</span>
-        </div>
-      `;
+      previewBox.innerHTML = getPlaceholderHTML(isNetworkErr ? 'C' : 'B');
+    }
+    if (metaBox) {
+      metaBox.textContent = isNetworkErr ? 'Связь с сервером оборвалась' : 'Камера или плата недоступна';
     }
     if (resnapBtn) resnapBtn.disabled = false;
   }
@@ -132,6 +134,9 @@ function renderSnapImage() {
   img.className = 'snap-result-img';
   img.src = `${url}?t=${Date.now()}`;
   img.alt = 'Тестовый снимок';
+  img.onerror = () => {
+    previewBox.innerHTML = getPlaceholderHTML('D');
+  };
   previewBox.appendChild(img);
 
   // Метаданные: локальное время браузера и площадь

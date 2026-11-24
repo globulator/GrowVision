@@ -44,6 +44,12 @@ async function request(url, options = {}) {
     }
 
     if (!response.ok) {
+      if (response.status >= 502 && response.status <= 504) {
+        const offlineBanner = document.getElementById('server-offline-banner');
+        if (offlineBanner) {
+          offlineBanner.classList.remove('hidden');
+        }
+      }
       let detail = `Ошибка HTTP ${response.status}`;
       try {
         const errJson = await response.json();
