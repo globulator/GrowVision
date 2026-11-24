@@ -1,3 +1,4 @@
+import contextlib
 import time
 from typing import Any
 
@@ -176,3 +177,28 @@ class EdgeAPIClient:
         except Exception as exc:  # noqa: BLE001
             logger.error(f"Неожиданная ошибка при выгрузке кадра: {exc}")
             return 0, {"error": str(exc)}
+
+    def send_live_frame(
+        self,
+        hardware_id: str,
+        frame_bytes: bytes,
+        frame_timestamp: float | None = None,
+        is_paused: bool = False,
+        resolution: str = "1280x720",
+    ) -> dict[str, Any] | None:
+        """Отправляет свежий кадр Live-стрима: POST /api/edge/cameras/{hardware_id}/live-frame."""
+        url = f"/api/edge/cameras/{hardware_id}/live-frame"
+        headers = {
+            "Content-Type": "image/jpeg",
+            "X-Timestamp": str(frame_timestamp or time.time()),
+            "X-Paused": "1" if is_paused else "0",
+            "X-Resolution": resolution,
+        }
+        with (
+            contextlib.suppress(Exception),
+            self._create_client(timeout=1.5) as client,
+        ):
+            resp = client.post(url, content=frame_bytes, headers=headers)
+            if resp.status_code == 200:
+                return resp.json()
+        return None

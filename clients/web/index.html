@@ -65,6 +65,14 @@
         </button>
       </div>
 
+      <!-- Кнопка «Камеры» для авторизованных пользователей -->
+      <button id="btn-cameras-menu" class="btn-icon btn-cameras-badge hidden" title="Камеры" aria-label="Камеры">
+        <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+          <circle cx="12" cy="13" r="4"/>
+        </svg>
+      </button>
+
       <!-- Кнопка «Войти» (только SVG для Гостя) -->
       <button id="header-btn-login" class="btn-icon" title="Войти в систему" aria-label="Войти в систему">
         <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
@@ -584,6 +592,82 @@
         <div class="modal-actions">
           <button type="button" id="modal-error-ok-btn" class="btn btn-primary btn-block">ОК</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модалка: Список камер -->
+  <div id="modal-cameras-menu" class="modal-backdrop hidden">
+    <div class="modal-window modal-window-medium glass-panel">
+      <div class="modal-header">
+        <h3 class="modal-title">Камеры системы</h3>
+        <button id="modal-cameras-menu-close" class="btn-icon modal-close" title="Закрыть" aria-label="Закрыть">
+          <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div id="cameras-list-container" class="cameras-list-container"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модалка: Live-режим камеры -->
+  <div id="modal-camera-live" class="modal-backdrop hidden">
+    <div class="modal-window modal-window-large live-modal-window glass-panel">
+      <div class="modal-header live-modal-header">
+        <h3 id="live-modal-title" class="modal-title">Live-стрим</h3>
+        <div class="live-header-actions">
+          <button id="btn-toggle-camera-settings" class="btn btn-secondary btn-settings-toggle" title="Настройки камеры">
+            <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            <span>Настройки</span>
+          </button>
+          <button id="modal-camera-live-close" class="btn-icon modal-close" title="Закрыть" aria-label="Закрыть">
+            <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="live-viewport-container">
+        <img id="live-stream-img" class="live-stream-video" alt="Прямой эфир с камеры">
+
+        <!-- Оверлей при паузе -->
+        <div id="live-paused-overlay" class="live-paused-overlay hidden">
+          <svg class="icon-svg pause-overlay-icon" viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="6" y="4" width="4" height="16" fill="currentColor"/>
+            <rect x="14" y="4" width="4" height="16" fill="currentColor"/>
+          </svg>
+          <span class="pause-overlay-text">Стрим на паузе</span>
+        </div>
+
+        <!-- Выдвижная полупрозрачная панель настроек в стиле камеры смартфона -->
+        <div id="live-settings-drawer" class="live-settings-drawer hidden glass-panel">
+          <div id="live-settings-content" class="live-settings-content"></div>
+        </div>
+      </div>
+
+      <!-- Нижняя панель под видео -->
+      <div class="live-footer-bar">
+        <div class="live-telemetry-stats">
+          <span class="live-stat-badge">FPS: <strong id="live-fps">0.0</strong></span>
+          <span class="live-stat-badge">Задержка: <strong id="live-latency">0</strong> мс</span>
+          <span class="live-stat-badge">Разрешение: <strong id="live-res">1280x720</strong></span>
+        </div>
+        <button id="btn-live-download-snapshot" class="btn btn-secondary btn-snap-download" type="button">
+          <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+          <span>Скачать тестовый снимок</span>
+        </button>
       </div>
     </div>
   </div>

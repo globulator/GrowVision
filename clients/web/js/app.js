@@ -22,6 +22,13 @@ import {
 } from './test_snap.js';
 import { initRpiSetup, updateRpiRole } from './rpi_setup.js';
 import {
+  initCameras,
+  updateCamerasRole,
+  openLiveModal,
+  closeCamerasModal,
+  closeLiveModal,
+} from './cameras.js';
+import {
   initUnits,
   loadAndRenderUnits,
   setUnitActionHandlers,
@@ -84,6 +91,7 @@ function applyRole(role) {
   setGalleryRole(role);
   setTestSnapRole(role);
   updateRpiRole(role);
+  updateCamerasRole(role);
   updateHeaderUi();
 }
 
@@ -113,6 +121,8 @@ async function performLogout() {
     applyRole('guest');
     closeGalleryModal();
     closeTestSnapModal();
+    closeCamerasModal();
+    closeLiveModal();
     await loadAndRenderUnits();
     showToast('Вы вышли из системы');
   } catch (err) {
@@ -127,6 +137,8 @@ function handleSessionExpired() {
     applyRole('guest');
     closeGalleryModal();
     closeTestSnapModal();
+    closeCamerasModal();
+    closeLiveModal();
     loadAndRenderUnits();
     showError('Сессия завершена. Войдите снова.', 'Сессия');
   }
@@ -214,6 +226,7 @@ async function bootstrap() {
   initGallery();
   initTestSnap();
   initRpiSetup();
+  initCameras();
 
   setUnauthorizedHandler(handleSessionExpired);
 
@@ -230,6 +243,11 @@ async function bootstrap() {
   setUnitActionHandlers({
     onOpenGallery: (unit) => openGalleryModal(unit),
     onOpenTestSnap: (unit) => openTestSnapModal(unit),
+    onOpenLive: (unit) => {
+      if (unit.cameras && unit.cameras.length > 0) {
+        openLiveModal(unit.cameras[0]);
+      }
+    },
   });
 
   const logoutBtn = document.getElementById('header-btn-logout');

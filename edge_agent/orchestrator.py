@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from edge_agent.client import EdgeAPIClient
 from edge_agent.config import EdgeConfig
 from edge_agent.hardware import HardwareManager, get_hardware_telemetry
+from edge_agent.live_stream import LiveStreamManager
 from edge_agent.offline_queue import flush_queue, get_queue_count, save_to_queue
 from edge_agent.vision import VisionPipeline
 from shared.schemas import (
@@ -48,6 +49,11 @@ class EdgeOrchestrator:
         self.vision = vision or VisionPipeline(
             model_path=config.model_path,
             mock_mode=(config.hardware_mode == "mock"),
+        )
+        self.live_stream = LiveStreamManager(
+            mode=config.hardware_mode,
+            v4l_by_id_dir=config.v4l_by_id_dir,
+            client=self.client,
         )
 
         self.running = threading.Event()
@@ -117,6 +123,7 @@ class EdgeOrchestrator:
             self._command_thread.join(timeout=2.0)
         if self._scheduler_thread and self._scheduler_thread.is_alive():
             self._scheduler_thread.join(timeout=2.0)
+        self.live_stream.stop()
         self.hardware.cleanup()
         logger.info("Edge-агент остановлен")
 
@@ -275,6 +282,12 @@ class EdgeOrchestrator:
                 self._handle_autocalibrate_camera(cmd)
             elif cmd_type == "SNAP":
                 self._handle_snap(cmd)
+            elif cmd_type == "START_LIVE":
+                self._handle_start_live(cmd)
+            elif cmd_type == "STOP_LIVE":
+                self._handle_stop_live(cmd)
+            elif cmd_type == "SET_CAMERA_CONTROLS":
+                self._handle_set_camera_controls(cmd)
             else:
                 self.client.send_command_result(
                     cmd.id,
@@ -431,6 +444,85 @@ class EdgeOrchestrator:
             ),
         )
 
+    def _handle_start_live(self, cmd: CommandItem) -> None:
+        """Обработка команды START_LIVE."""
+        payload = cmd.payload or {}
+        hw_id = payload.get("camera_hardware_id")
+        w = int(payload.get("width", 1280))
+        h = int(payload.get("height", 720))
+        fmt = payload.get("pixel_format", "MJPG")
+        if not hw_id:
+            self.client.send_command_result(
+                cmd.id,
+                CommandResult(
+                    status="error",
+                    result_message="Не указан camera_hardware_id",
+                ),
+            )
+            return
+
+        success = self.live_stream.start(hw_id, width=w, height=h, pixel_format=fmt)
+        st = "done" if success else "error"
+        msg = (
+            f"Live-стрим запущен для {hw_id}"
+            if success
+            else "Ошибка запуска Live-стрима"
+        )
+        self.client.send_command_result(
+            cmd.id,
+            CommandResult(status=st, result_message=msg),
+        )
+
+    def _handle_stop_live(self, cmd: CommandItem) -> None:
+        """Обработка команды STOP_LIVE."""
+        self.live_stream.stop()
+        self.client.send_command_result(
+            cmd.id,
+            CommandResult(status="done", result_message="Live-стрим остановлен"),
+        )
+
+    def _handle_set_camera_controls(self, cmd: CommandItem) -> None:
+        """Обработка команды SET_CAMERA_CONTROLS."""
+        payload = cmd.payload or {}
+        hw_id = payload.get("camera_hardware_id")
+        controls = payload.get("controls") or {}
+        fmt = payload.get("format")
+        res = payload.get("resolution")
+        rgb = payload.get("rgb")
+
+        if rgb and isinstance(rgb, dict):
+            r = float(rgb.get("r", 1.0))
+            g = float(rgb.get("g", 1.0))
+            b = float(rgb.get("b", 1.0))
+            self.live_stream.set_rgb_gains(r, g, b)
+
+        from edge_agent.camera_controls import set_v4l2_control
+
+        dev_path = f"/dev/v4l/by-id/{hw_id}" if hw_id else "/dev/video0"
+        is_mock = self.config.hardware_mode == "mock"
+        for cname, cval in controls.items():
+            set_v4l2_control(dev_path, cname, cval, mock_mode=is_mock)
+
+        if (
+            (fmt or res)
+            and self.live_stream.is_running
+            and self.live_stream.active_camera_id == hw_id
+        ):
+            w, h = self.live_stream.current_width, self.live_stream.current_height
+            if res and "x" in res:
+                parts = res.split("x")
+                w, h = int(parts[0]), int(parts[1])
+            cur_fmt = fmt or self.live_stream.current_format
+            self.live_stream.start(hw_id, width=w, height=h, pixel_format=cur_fmt)
+
+        self.client.send_command_result(
+            cmd.id,
+            CommandResult(
+                status="done",
+                result_message="Настройки камеры успешно применены",
+            ),
+        )
+
     def _handle_snap(self, cmd: CommandItem) -> None:
         """Обработка команды SNAP (все камеры установки, последовательность реле, загрузка кадра перед result)."""
         snap_start = time.perf_counter()
@@ -449,6 +541,10 @@ class EdgeOrchestrator:
                 ),
             )
             return
+
+        is_live = self.live_stream.is_running
+        if is_live:
+            self.live_stream.set_paused(True)
 
         success_count = 0
         last_error_message = ""
@@ -561,12 +657,18 @@ class EdgeOrchestrator:
                     debug_log_line=combined_debug_log,
                 ),
             )
+        if is_live:
+            self.live_stream.set_paused(False)
 
     def trigger_scheduled_capture(self) -> str | None:
         """Запускает разовую плановую автосъемку по всем активным установкам."""
         if not self.active_installations:
             logger.debug("Нет активных установок для плановой съемки")
             return None
+
+        is_live = self.live_stream.is_running
+        if is_live:
+            self.live_stream.set_paused(True)
 
         logger.info(
             f"Старт плановой автосъемки для {len(self.active_installations)} установок"
@@ -641,6 +743,8 @@ class EdgeOrchestrator:
         finally:
             self.hardware.release_lock()
             self.is_scheduled_capture_running.clear()
+            if is_live:
+                self.live_stream.set_paused(False)
 
         debug_lines = []
         if self.config.test_capture_interval_sec is not None:

@@ -1433,3 +1433,372 @@ button {
     transform: scale(0);
   }
 }
+
+
+/* ==========================================================================
+   Этап 9.2: Стили Live-стрима, меню камер и ручных настроек V4L2/RGB
+   ========================================================================== */
+
+/* Время следующего кадра и кнопка Live на карточке установки */
+.unit-next-capture {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.unit-next-capture .icon-svg {
+  color: var(--primary-accent);
+}
+
+.unit-next-capture-val {
+  color: var(--text-main);
+  font-weight: 500;
+}
+
+.unit-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+/* Модальное окно списка камер */
+.camera-menu-card {
+  padding: 16px;
+  border-radius: 12px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(30, 41, 59, 0.4);
+  border: 1px solid var(--panel-border);
+  transition: border-color 0.2s;
+}
+
+.camera-menu-card:hover {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.camera-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.camera-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.camera-name {
+  font-size: 0.98rem;
+  color: var(--text-main);
+}
+
+.camera-status-text {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.camera-card-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+}
+
+.camera-inst-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  background: rgba(148, 163, 184, 0.1);
+  border-radius: 6px;
+  width: fit-content;
+  color: var(--text-main);
+}
+
+.camera-hw-id {
+  font-family: monospace;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.camera-calib-text {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.camera-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* Модальное окно Live */
+.live-modal-window {
+  max-width: 960px;
+  width: 95vw;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.live-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--panel-border);
+  background: rgba(15, 23, 42, 0.85);
+}
+
+.live-viewport-container {
+  position: relative;
+  width: 100%;
+  min-height: 420px;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.live-stream-image {
+  max-width: 100%;
+  max-height: 65vh;
+  object-fit: contain;
+  display: block;
+}
+
+/* Оверлей паузы при плановой съемке или ручном SNAP */
+.live-paused-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  backdrop-filter: blur(4px);
+}
+
+.live-paused-box {
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 24px 32px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.live-paused-box .icon-svg {
+  color: var(--primary-accent);
+}
+
+.live-paused-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.live-paused-sub {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* Выдвижная полупрозрачная панель настроек */
+.live-settings-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 340px;
+  max-width: 90%;
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-left: 1px solid var(--panel-border);
+  display: flex;
+  flex-direction: column;
+  z-index: 20;
+  box-shadow: -6px 0 24px rgba(0, 0, 0, 0.6);
+  transition: transform 0.25s ease-in-out;
+}
+
+.settings-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--panel-border);
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.settings-tabs-header {
+  display: flex;
+  border-bottom: 1px solid var(--panel-border);
+  background: rgba(0, 0, 0, 0.25);
+  overflow-x: auto;
+}
+
+.tab-folder-btn {
+  flex: 1;
+  padding: 10px 8px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  text-align: center;
+  transition: all 0.2s;
+}
+
+.tab-folder-btn:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tab-folder-btn.active {
+  color: var(--primary-accent);
+  border-bottom-color: var(--primary-accent);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.settings-tab-pane {
+  padding: 14px 16px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.control-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.control-item.control-inactive {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.control-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.82rem;
+}
+
+.control-title {
+  font-weight: 500;
+  color: var(--text-main);
+}
+
+.control-val {
+  color: var(--text-muted);
+  font-family: monospace;
+}
+
+.control-slider {
+  width: 100%;
+  accent-color: var(--primary-accent);
+  cursor: pointer;
+}
+
+.control-select {
+  width: 100%;
+  background: var(--secondary-bg);
+  border: 1px solid var(--panel-border);
+  color: var(--text-main);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.84rem;
+  outline: none;
+}
+
+.control-select:focus {
+  border-color: var(--primary-accent);
+}
+
+.control-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.84rem;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.control-checkbox-label input[type="checkbox"] {
+  accent-color: var(--primary-accent);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.rgb-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rgb-label {
+  width: 20px;
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+
+.rgb-r { color: #ef4444; }
+.rgb-g { color: #10b981; }
+.rgb-b { color: #3b82f6; }
+
+/* Нижняя панель модалки Live: телеметрия и кнопка тестового снимка */
+.live-footer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  background: rgba(15, 23, 42, 0.9);
+  border-top: 1px solid var(--panel-border);
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.live-telemetry-stats {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 0.82rem;
+  flex-wrap: wrap;
+}
+
+.live-stat-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.live-stat-badge .stat-value {
+  color: var(--text-main);
+  font-family: monospace;
+  font-weight: 600;
+}

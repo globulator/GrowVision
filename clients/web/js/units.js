@@ -7,11 +7,13 @@ import { getPlaceholderHTML } from './placeholders.js';
 let currentRole = 'guest';
 let onOpenGalleryCallback = null;
 let onOpenTestSnapCallback = null;
+let onOpenLiveCallback = null;
 let cacheBuster = Date.now();
 
-export function setUnitActionHandlers({ onOpenGallery, onOpenTestSnap }) {
+export function setUnitActionHandlers({ onOpenGallery, onOpenTestSnap, onOpenLive }) {
   onOpenGalleryCallback = onOpenGallery;
   onOpenTestSnapCallback = onOpenTestSnap;
+  onOpenLiveCallback = onOpenLive;
 }
 
 export function updateUnitsRole(role) {
@@ -138,12 +140,57 @@ export async function loadAndRenderUnits() {
       cultureEl.textContent = unit.culture_name;
       infoDiv.appendChild(cultureEl);
 
+      // Время следующего планового кадра для Biologist и Developer
+      if (
+        (currentRole === 'biologist' || currentRole === 'developer') &&
+        unit.next_capture_at
+      ) {
+        const nextCaptureEl = document.createElement('div');
+        nextCaptureEl.className = 'unit-next-capture';
+        const d = new Date(unit.next_capture_at);
+        const timeStr = !isNaN(d.getTime())
+          ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : unit.next_capture_at;
+        nextCaptureEl.innerHTML = `
+          <svg class="icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <polyline points="12 6 12 12 16 14"/>
+          </svg>
+          <span>След. кадр: ${timeStr}</span>
+        `;
+        infoDiv.appendChild(nextCaptureEl);
+      }
+
       card.appendChild(infoDiv);
 
       // Кнопки действий (только для авторизованных)
       if (currentRole === 'biologist' || currentRole === 'developer') {
         const actionsDiv = document.createElement('div');
         actionsDiv.className = 'unit-actions';
+
+        // Кнопка «Live» (рядом с галереей)
+        const liveBtn = document.createElement('button');
+        liveBtn.type = 'button';
+        liveBtn.className = 'btn btn-secondary unit-live-btn';
+        liveBtn.innerHTML = `
+          <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="23 7 16 12 23 17 23 7"/>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+          <span>Live</span>
+        `;
+        const hasCameras = unit.cameras && unit.cameras.length > 0;
+        if (!hasCameras) {
+          liveBtn.disabled = true;
+          liveBtn.title = 'Камеры не привязаны';
+        } else {
+          liveBtn.addEventListener('click', () => {
+            if (typeof onOpenLiveCallback === 'function') {
+              onOpenLiveCallback(unit);
+            }
+          });
+        }
+        actionsDiv.appendChild(liveBtn);
 
         // Кнопка «Галерея» (disabled если 0 кадров)
         const galleryBtn = document.createElement('button');

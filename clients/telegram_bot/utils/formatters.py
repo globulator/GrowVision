@@ -81,6 +81,15 @@ def format_installation_card(
             delay_str = "по умолчанию (общая)"
         lines.append(f"⏱ <b>Задержка съёмки:</b> {delay_str}")
 
+        next_cap = inst.get("next_capture_at")
+        if next_cap:
+            next_str = (
+                f"{next_cap} UTC"
+                if not str(next_cap).endswith("Z") and "UTC" not in str(next_cap)
+                else str(next_cap)
+            )
+            lines.append(f"⏰ <b>Следующий кадр:</b> {next_str}")
+
         cameras = inst.get("cameras", [])
         if cameras:
             cam_lines = []

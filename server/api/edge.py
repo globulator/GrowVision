@@ -1,4 +1,5 @@
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -8,7 +9,9 @@ from fastapi import (
     Depends,
     File,
     Form,
+    Header,
     HTTPException,
+    Request,
     UploadFile,
     status,
 )
@@ -16,6 +19,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from server.api.deps import get_db, verify_edge_key
+from server.core.live_manager import live_manager
 from server.core.state import app_state
 from server.core.timeouts import expire_stale_commands
 from server.db.models import (
@@ -439,3 +443,35 @@ async def edge_upload_capture(
         status_code=status.HTTP_201_CREATED,
         content={"capture_id": capture.id},
     )
+
+
+@router.post("/cameras/{hardware_id}/live-frame")
+async def receive_live_frame(
+    hardware_id: str,
+    request: Request,
+    _: Annotated[None, Depends(verify_edge_key)],
+    x_timestamp: Annotated[str | None, Header(alias="X-Timestamp")] = None,
+    x_paused: Annotated[str | None, Header(alias="X-Paused")] = None,
+    x_resolution: Annotated[str | None, Header(alias="X-Resolution")] = None,
+) -> dict[str, Any]:
+    """Прием свежего кадра Live-стрима от Edge-агента."""
+    body_bytes = await request.body()
+    if not body_bytes:
+        return {"status": "error", "message": "empty body"}
+
+    ts = float(x_timestamp) if x_timestamp else time.time()
+    is_paused = x_paused in ("1", "true", "True")
+    res = x_resolution or "1280x720"
+
+    session = live_manager.get_or_create(hardware_id)
+    session.push_frame(
+        body_bytes, frame_timestamp=ts, is_paused=is_paused, resolution=res
+    )
+
+    async with session.condition:
+        session.condition.notify_all()
+
+    return {
+        "status": "ok",
+        "active_subscribers": session.active_subscribers,
+    }

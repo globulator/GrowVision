@@ -162,4 +162,20 @@ export const api = {
   // Автокалибровка камеры (для разработчика)
   autocalibrateCamera: (cameraId) =>
     request(`/api/cameras/${cameraId}/autocalibrate`, { method: 'POST' }),
+
+  // Камеры и Live-режим
+  getCameras: () => request('/api/cameras'),
+  startLive: (cameraId) =>
+    request(`/api/cameras/${Number(cameraId)}/live/start`, { method: 'POST' }),
+  stopLive: (cameraId) =>
+    request(`/api/cameras/${Number(cameraId)}/live/stop`, { method: 'POST' }),
+  getLiveStatus: (cameraId) =>
+    request(`/api/cameras/${Number(cameraId)}/live/status`),
+  getCameraControls: (cameraId) =>
+    request(`/api/cameras/${Number(cameraId)}/controls`),
+  updateCameraControls: (cameraId, payload) =>
+    request(`/api/cameras/${Number(cameraId)}/controls`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
 };
