@@ -1,4 +1,5 @@
 import logging
+import os
 import platform
 import threading
 import time
@@ -286,6 +287,8 @@ class EdgeOrchestrator:
                 self._handle_start_live(cmd)
             elif cmd_type == "STOP_LIVE":
                 self._handle_stop_live(cmd)
+            elif cmd_type == "GET_CAMERA_CONTROLS":
+                self._handle_get_camera_controls(cmd)
             elif cmd_type == "SET_CAMERA_CONTROLS":
                 self._handle_set_camera_controls(cmd)
             else:
@@ -429,11 +432,11 @@ class EdgeOrchestrator:
             return
 
         profile = self.hardware.calibrate_camera(cam_hw_id)
-        af_text = "поддерживается" if profile.has_autofocus else "нет"
-        msg = (
-            f"Калибровка {cam_hw_id}: "
-            f"{profile.max_width}x{profile.max_height} ({profile.pixel_format}), "
-            f"автофокус: {af_text}"
+        msg = profile.summary_text()
+        self._sync_camera_controls_to_server(
+            cam_hw_id,
+            current_format=profile.pixel_format,
+            current_resolution=f"{profile.max_width}x{profile.max_height}",
         )
         self.client.send_command_result(
             cmd.id,
@@ -443,6 +446,59 @@ class EdgeOrchestrator:
                 debug_log_line=f"[CAM] AUTOCALIBRATE_CAMERA {cam_hw_id} -> {profile.summary_text()}",
             ),
         )
+
+    def _resolve_camera_dev_path(self, hw_id: str | None) -> str:
+        """Возвращает реальный путь к /dev/videoX для указанного hardware_id."""
+        if not hw_id:
+            return "/dev/video0"
+        candidate = self.config.v4l_by_id_dir / hw_id
+        if candidate.exists():
+            return os.path.realpath(str(candidate))
+        return f"/dev/v4l/by-id/{hw_id}"
+
+    def _query_and_sync_controls(
+        self,
+        hw_id: str,
+        current_format: str | None = None,
+        current_resolution: str | None = None,
+        sync_to_server: bool = True,
+    ) -> tuple[list[dict], list[dict]]:
+        """Опрашивает форматы и V4L2-контролы камеры и при необходимости отправляет их на сервер."""
+        from edge_agent.camera_controls import (
+            query_camera_controls,
+            query_camera_formats_and_sizes,
+        )
+
+        is_mock = self.config.hardware_mode == "mock"
+        dev_path = self._resolve_camera_dev_path(hw_id)
+        formats = query_camera_formats_and_sizes(dev_path, mock_mode=is_mock)
+        controls = query_camera_controls(dev_path, mock_mode=is_mock)
+        if sync_to_server:
+            self.client.send_camera_controls_state(
+                hardware_id=hw_id,
+                formats=formats,
+                controls=controls,
+                current_format=current_format,
+                current_resolution=current_resolution,
+            )
+        return formats, controls
+
+    def _sync_camera_controls_to_server(
+        self,
+        hw_id: str,
+        current_format: str | None = None,
+        current_resolution: str | None = None,
+    ) -> None:
+        """Безопасно синхронизирует форматы и контролы камеры с сервером."""
+        try:
+            self._query_and_sync_controls(
+                hw_id,
+                current_format=current_format,
+                current_resolution=current_resolution,
+                sync_to_server=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Не удалось синхронизировать контролы {hw_id}: {exc}")
 
     def _handle_start_live(self, cmd: CommandItem) -> None:
         """Обработка команды START_LIVE."""
@@ -468,9 +524,19 @@ class EdgeOrchestrator:
             if success
             else "Ошибка запуска Live-стрима"
         )
+        data: dict[str, str] | None = None
+        stream_url = getattr(self.live_stream, "stream_url", None)
+        if isinstance(stream_url, str) and stream_url:
+            data = {"stream_url": stream_url}
+        if success:
+            self._sync_camera_controls_to_server(
+                hw_id,
+                current_format=fmt,
+                current_resolution=f"{w}x{h}",
+            )
         self.client.send_command_result(
             cmd.id,
-            CommandResult(status=st, result_message=msg),
+            CommandResult(status=st, result_message=msg, data=data),
         )
 
     def _handle_stop_live(self, cmd: CommandItem) -> None:
@@ -479,6 +545,30 @@ class EdgeOrchestrator:
         self.client.send_command_result(
             cmd.id,
             CommandResult(status="done", result_message="Live-стрим остановлен"),
+        )
+
+    def _handle_get_camera_controls(self, cmd: CommandItem) -> None:
+        """Обработка команды GET_CAMERA_CONTROLS: опрос реальных форматов и контролов."""
+        payload = cmd.payload or {}
+        hw_id = payload.get("camera_hardware_id")
+        if not hw_id:
+            self.client.send_command_result(
+                cmd.id,
+                CommandResult(
+                    status="error",
+                    result_message="Не указан camera_hardware_id",
+                ),
+            )
+            return
+
+        formats, controls = self._query_and_sync_controls(hw_id, sync_to_server=True)
+        self.client.send_command_result(
+            cmd.id,
+            CommandResult(
+                status="done",
+                result_message=f"Получено контролов: {len(controls)}",
+                data={"formats": formats, "controls": controls},
+            ),
         )
 
     def _handle_set_camera_controls(self, cmd: CommandItem) -> None:
@@ -498,7 +588,7 @@ class EdgeOrchestrator:
 
         from edge_agent.camera_controls import set_v4l2_control
 
-        dev_path = f"/dev/v4l/by-id/{hw_id}" if hw_id else "/dev/video0"
+        dev_path = self._resolve_camera_dev_path(hw_id)
         is_mock = self.config.hardware_mode == "mock"
         for cname, cval in controls.items():
             set_v4l2_control(dev_path, cname, cval, mock_mode=is_mock)
@@ -514,6 +604,14 @@ class EdgeOrchestrator:
                 w, h = int(parts[0]), int(parts[1])
             cur_fmt = fmt or self.live_stream.current_format
             self.live_stream.start(hw_id, width=w, height=h, pixel_format=cur_fmt)
+
+        if hw_id and not is_mock:
+            # Перечитываем реальные контролы камеры (чтобы обновить flags=inactive для зависимых пар)
+            self._sync_camera_controls_to_server(
+                hw_id,
+                current_format=fmt if isinstance(fmt, str) else None,
+                current_resolution=res if isinstance(res, str) else None,
+            )
 
         self.client.send_command_result(
             cmd.id,

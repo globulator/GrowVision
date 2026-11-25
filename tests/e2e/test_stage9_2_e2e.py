@@ -21,24 +21,30 @@ def test_stage9_2_web_markup_and_invariants():
     assert 'id="modal-cameras-menu"' in index_html
     assert 'id="cameras-list-container"' in index_html
 
-    # 3. Проверка модального окна Live-стрима
+    # 3. Проверка модального окна Live-стрима и новых оверлеев
     assert 'id="modal-camera-live"' in index_html
     assert 'id="live-stream-img"' in index_html
+    assert 'id="live-loading-overlay"' in index_html
+    assert 'id="live-error-overlay"' in index_html
     assert 'id="live-paused-overlay"' in index_html
     assert "Стрим на паузе" in index_html
     assert 'id="live-settings-drawer"' in index_html
     assert 'id="live-settings-content"' in index_html
+    assert "btn-cam-settings" not in cameras_js
 
-    # 4. Проверка 4 папок-категорий настроек в cameras.js
-    assert 'data-tab="format"' in cameras_js
-    assert 'data-tab="exposure"' in cameras_js
-    assert 'data-tab="color"' in cameras_js
-    assert 'data-tab="focus"' in cameras_js
+    # 4. Проверка 4 категорий настроек и новой верхней панели в cameras.js
+    assert "id: 'format'" in cameras_js
+    assert "id: 'exposure'" in cameras_js
+    assert "id: 'color'" in cameras_js
+    assert "id: 'focus'" in cameras_js
+    assert "Фиксированный фокус" in cameras_js
+    assert "URL.createObjectURL" in cameras_js
 
     # 5. Проверка ползунков RGB и телеметрии
-    assert 'id="slider-rgb-r"' in cameras_js
-    assert 'id="slider-rgb-g"' in cameras_js
-    assert 'id="slider-rgb-b"' in cameras_js
+    assert "slider-rgb-" in cameras_js
+    assert "id: 'r'" in cameras_js
+    assert "id: 'g'" in cameras_js
+    assert "id: 'b'" in cameras_js
     assert 'id="live-fps"' in index_html
     assert 'id="live-latency"' in index_html
     assert 'id="live-res"' in index_html

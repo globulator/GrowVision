@@ -1,14 +1,19 @@
 # edge_agent/tests/test_stage9_2_live_and_controls.py
 import time
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
 from edge_agent.camera_controls import (
+    apply_control_dependencies,
     categorize_control,
     parse_v4l2_controls,
+    query_camera_controls,
+    query_camera_formats_and_sizes,
 )
 from edge_agent.config import EdgeConfig
+from edge_agent.hardware import HardwareManager, clean_camera_name
 from edge_agent.live_stream import LiveStreamManager
 from edge_agent.orchestrator import EdgeOrchestrator
 from shared.schemas import CommandItem
@@ -182,3 +187,130 @@ def test_orchestrator_handles_live_commands():
         )
     )
     orch.live_stream.stop.assert_called_once()
+
+
+def test_clean_camera_name_and_sysfs_scan(tmp_path: Path):
+    """Тест получения человекочитаемого имени камеры из sysfs и очистки от дублей."""
+    assert clean_camera_name("HD Webcam C270: HD Webcam C270") == "HD Webcam C270"
+    assert (
+        clean_camera_name("", "usb-046d_0825_123456-video-index0") == "046d 0825 123456"
+    )
+
+    by_id_dir = tmp_path / "dev" / "v4l" / "by-id"
+    by_id_dir.mkdir(parents=True)
+    dev_dir = tmp_path / "dev"
+    video0 = dev_dir / "video0"
+    video0.touch()
+    cam_link = by_id_dir / "usb-046d_0825_ABCDEF-video-index0"
+    cam_link.symlink_to(video0)
+
+    sys_dir = tmp_path / "sys"
+    sys_name_dir = sys_dir / "class" / "video4linux" / "video0"
+    sys_name_dir.mkdir(parents=True)
+    (sys_name_dir / "name").write_text("UVC Camera (046d:0825)", encoding="utf-8")
+
+    hw = HardwareManager(mode="mock", v4l_by_id_dir=by_id_dir, sys_dir=sys_dir)
+    cams = hw.scan_cameras()
+    assert len(cams) == 1
+    assert cams[0].hardware_id == "usb-046d_0825_ABCDEF-video-index0"
+    assert cams[0].auto_name == "UVC Camera (046d:0825)"
+
+
+def test_ustreamer_command_flags_and_no_fake_frame_in_rpi():
+    """В режиме rpi ustreamer запускается с --device-timeout 5 и без --quality; фейковый кадр не генерируется."""
+    mgr = LiveStreamManager(mode="rpi", client=MagicMock())
+    fake_proc = MagicMock()
+    fake_proc.poll.return_value = None
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/ustreamer"),
+        patch("subprocess.Popen", return_value=fake_proc) as popen_mock,
+    ):
+        ok = mgr.start(
+            "usb-046d_0825-video-index0", width=1280, height=960, pixel_format="MJPG"
+        )
+        assert ok is True
+        cmd = popen_mock.call_args[0][0]
+        assert "--device-timeout" in cmd
+        idx = cmd.index("--device-timeout")
+        assert cmd[idx + 1] == "5"
+        assert "--quality" not in cmd
+        assert "-m" in cmd and cmd[cmd.index("-m") + 1] == "MJPG"
+
+        # Если ustreamer не отдал кадр (ошибка/таймаут), в rpi не подставляется синтетический кадр
+        with patch("urllib.request.urlopen", side_effect=OSError("timeout")):
+            assert mgr._generate_frame() is None
+
+        mgr.stop()
+
+
+def test_rpi_controls_and_formats_no_fake_fallback():
+    """В режиме rpi (mock_mode=False) при ошибке v4l2-ctl не подставляются фейковые контролы и разрешения."""
+    with patch("subprocess.run", side_effect=FileNotFoundError("no v4l2-ctl")):
+        assert query_camera_formats_and_sizes("/dev/video0", mock_mode=False) == []
+        assert query_camera_controls("/dev/video0", mock_mode=False) == []
+
+
+def test_apply_control_dependencies():
+    """Проверка пересчёта is_inactive для зависимых пар контролов."""
+    ctrls = [
+        {"name": "white_balance_automatic", "value": 1, "is_inactive": False},
+        {"name": "white_balance_temperature", "value": 4600, "is_inactive": True},
+        {
+            "name": "auto_exposure",
+            "value": 3,
+            "is_inactive": False,
+            "menu_items": [
+                {"id": 1, "label": "Manual Mode"},
+                {"id": 3, "label": "Aperture Priority Mode"},
+            ],
+        },
+        {"name": "exposure_time_absolute", "value": 156, "is_inactive": True},
+    ]
+
+    apply_control_dependencies(
+        ctrls, {"white_balance_automatic": 0, "auto_exposure": 1}
+    )
+    by_name = {c["name"]: c for c in ctrls}
+    assert by_name["white_balance_temperature"]["is_inactive"] is False
+    assert by_name["exposure_time_absolute"]["is_inactive"] is False
+
+    apply_control_dependencies(
+        ctrls, {"white_balance_automatic": 1, "auto_exposure": 3}
+    )
+    assert by_name["white_balance_temperature"]["is_inactive"] is True
+    assert by_name["exposure_time_absolute"]["is_inactive"] is True
+
+
+def test_orchestrator_autocalibrate_summary_without_id_and_get_controls():
+    """AUTOCALIBRATE_CAMERA не дублирует hardware_id в сообщении; GET_CAMERA_CONTROLS синхронизирует состояние."""
+    cfg = EdgeConfig(hardware_mode="mock")
+    mock_client = MagicMock()
+    orch = EdgeOrchestrator(config=cfg, client=mock_client)
+
+    orch.handle_command(
+        CommandItem(
+            id=10,
+            command_type="AUTOCALIBRATE_CAMERA",
+            payload={"camera_hardware_id": "usb-046d_0825-video-index0"},
+        )
+    )
+    _, res_calib = mock_client.send_command_result.call_args[0]
+    assert res_calib.status == "done"
+    assert "usb-046d_0825" not in res_calib.result_message
+    assert "1920x1080 (MJPG)" in res_calib.result_message
+
+    mock_client.reset_mock()
+    orch.handle_command(
+        CommandItem(
+            id=11,
+            command_type="GET_CAMERA_CONTROLS",
+            payload={"camera_hardware_id": "mock-usb-cam-1"},
+        )
+    )
+    mock_client.send_camera_controls_state.assert_called_once()
+    _, res_ctrl = mock_client.send_command_result.call_args[0]
+    assert res_ctrl.status == "done"
+    assert isinstance(res_ctrl.data, dict)
+    assert "controls" in res_ctrl.data
+    assert "formats" in res_ctrl.data

@@ -32,6 +32,7 @@ class EdgeAPIClient:
         self.timeout = timeout
         self.upload_timeout = upload_timeout
         self.transport = transport
+        self._live_http_client: httpx.Client | None = None
 
     def _get_headers(self) -> dict[str, str]:
         """Возвращает обязательные заголовки запроса к Edge API."""
@@ -178,6 +179,12 @@ class EdgeAPIClient:
             logger.error(f"Неожиданная ошибка при выгрузке кадра: {exc}")
             return 0, {"error": str(exc)}
 
+    def _get_live_client(self) -> httpx.Client:
+        """Возвращает переиспользуемый HTTP-клиент для частой отправки live-кадров."""
+        if self._live_http_client is None or self._live_http_client.is_closed:
+            self._live_http_client = self._create_client(timeout=2.0)
+        return self._live_http_client
+
     def send_live_frame(
         self,
         hardware_id: str,
@@ -185,6 +192,8 @@ class EdgeAPIClient:
         frame_timestamp: float | None = None,
         is_paused: bool = False,
         resolution: str = "1280x720",
+        latency_ms: int | None = None,
+        stream_url: str | None = None,
     ) -> dict[str, Any] | None:
         """Отправляет свежий кадр Live-стрима: POST /api/edge/cameras/{hardware_id}/live-frame."""
         url = f"/api/edge/cameras/{hardware_id}/live-frame"
@@ -194,11 +203,47 @@ class EdgeAPIClient:
             "X-Paused": "1" if is_paused else "0",
             "X-Resolution": resolution,
         }
-        with (
-            contextlib.suppress(Exception),
-            self._create_client(timeout=1.5) as client,
-        ):
-            resp = client.post(url, content=frame_bytes, headers=headers)
+        if latency_ms is not None:
+            headers["X-Latency-Ms"] = str(max(0, int(latency_ms)))
+        if stream_url:
+            headers["X-Stream-Url"] = stream_url
+
+        try:
+            resp = self._get_live_client().post(
+                url, content=frame_bytes, headers=headers
+            )
             if resp.status_code == 200:
                 return resp.json()
+        except Exception:  # noqa: BLE001
+            with contextlib.suppress(Exception):
+                if self._live_http_client is not None:
+                    self._live_http_client.close()
+            self._live_http_client = None
         return None
+
+    def send_camera_controls_state(
+        self,
+        hardware_id: str,
+        formats: list[dict[str, Any]],
+        controls: list[dict[str, Any]],
+        current_format: str | None = None,
+        current_resolution: str | None = None,
+    ) -> bool:
+        """Отправляет реальные форматы и V4L2-контролы камеры на сервер."""
+        url = f"/api/edge/cameras/{hardware_id}/controls-state"
+        payload: dict[str, Any] = {
+            "formats": formats,
+            "controls": controls,
+        }
+        if current_format:
+            payload["current_format"] = current_format
+        if current_resolution:
+            payload["current_resolution"] = current_resolution
+
+        with (
+            contextlib.suppress(Exception),
+            self._create_client(timeout=5.0) as client,
+        ):
+            resp = client.post(url, json=payload)
+            return resp.status_code == 200
+        return False

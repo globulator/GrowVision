@@ -158,6 +158,70 @@ def probe_camera_capabilities(
     )
 
 
+def clean_camera_name(raw_name: str, fallback_hw_id: str = "") -> str:
+    """Очищает имя камеры от технических префиксов/суффиксов и дублей через двоеточие."""
+    name = (raw_name or "").strip()
+    if name:
+        # Часто UVC отдает "HD Webcam C270: HD Webcam C270" — оставляем одну часть
+        if ":" in name:
+            parts = [p.strip() for p in name.split(":") if p.strip()]
+            if len(parts) >= 2 and parts[0].lower() == parts[1].lower():
+                name = parts[0]
+            elif len(parts) >= 2 and parts[1].lower().startswith(parts[0].lower()):
+                name = parts[1]
+        # Убираем возможные остатки usb-...-video-index0
+        name = re.sub(r"^usb-", "", name)
+        name = re.sub(r"-video-index\d+$", "", name)
+        name = name.strip()
+
+    if name:
+        return name
+
+    fb = (fallback_hw_id or "").strip()
+    fb = re.sub(r"^usb-", "", fb)
+    fb = re.sub(r"-video-index\d+$", "", fb)
+    return fb.replace("_", " ").strip() or fallback_hw_id
+
+
+def resolve_camera_name(
+    cam_by_id_file: Path,
+    sys_dir: Path,
+    use_v4l2: bool = True,
+) -> str:
+    """Определяет человекочитаемое имя камеры из sysfs или v4l2-ctl."""
+    hw_id = cam_by_id_file.name
+    real_dev = os.path.realpath(str(cam_by_id_file))
+    video_node = Path(real_dev).name
+
+    # 1. Пробуем /sys/class/video4linux/videoX/name
+    if video_node.startswith("video"):
+        sys_name_file = sys_dir / "class" / "video4linux" / video_node / "name"
+        if sys_name_file.exists():
+            with contextlib.suppress(OSError):
+                raw_sys_name = sys_name_file.read_text(
+                    encoding="utf-8", errors="ignore"
+                ).strip()
+                if raw_sys_name:
+                    return clean_camera_name(raw_sys_name, fallback_hw_id=hw_id)
+
+    # 2. Пробуем v4l2-ctl -d <real_dev> --info (в режиме rpi)
+    if use_v4l2:
+        with contextlib.suppress(Exception):
+            res = subprocess.run(
+                ["v4l2-ctl", "-d", real_dev, "--info"],
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                check=False,
+            )
+            if res.returncode == 0 and res.stdout:
+                m = re.search(r"Card type\s*:\s*(.+)", res.stdout)
+                if m:
+                    return clean_camera_name(m.group(1), fallback_hw_id=hw_id)
+
+    return clean_camera_name("", fallback_hw_id=hw_id)
+
+
 def apply_power_line_frequency_50hz(dev_path: str) -> bool:
     """Устанавливает подавление мерцания частоты сети 50 Гц (power_line_frequency=1).
 
@@ -325,14 +389,14 @@ class HardwareManager:
             ]
 
         cameras: list[DetectedCamera] = []
+        actual_sys_dir = sys_dir or self.sys_dir
         if search_dir.exists():
             for cam_file in sorted(search_dir.glob("*-video-index0")):
                 hw_id = cam_file.name
-                # Формируем автоимя из hardware_id
-                clean_name = (
-                    hw_id.replace("usb-", "")
-                    .replace("-video-index0", "")
-                    .replace("_", " ")
+                clean_name = resolve_camera_name(
+                    cam_file,
+                    actual_sys_dir,
+                    use_v4l2=(self.mode == "rpi"),
                 )
                 cameras.append(
                     DetectedCamera(

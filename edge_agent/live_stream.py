@@ -1,10 +1,12 @@
 import contextlib
 import os
 import shutil
+import socket
 import subprocess
 import threading
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 from shared.logger import get_logger
 
@@ -31,6 +33,7 @@ class LiveStreamManager:
         self.current_height: int = 720
         self.current_format: str = "MJPG"
         self.current_port: int = 8080
+        self.stream_url: str | None = None
         self.is_running: bool = False
         self.is_paused: bool = False
         self.last_activity_time: float = time.time()
@@ -40,6 +43,26 @@ class LiveStreamManager:
         self._push_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._mock_counter: int = 0
+        self._last_send_rtt_ms: float = 0.0
+
+    def _resolve_stream_url(self, port: int) -> str | None:
+        """Вычисляет URL ustreamer на интерфейсе, смотрящем в сторону сервера."""
+        host_ip = "127.0.0.1"
+        base_url = getattr(self.client, "base_url", None) if self.client else None
+        if isinstance(base_url, str) and base_url:
+            parsed = urlparse(base_url)
+            target_host = parsed.hostname
+            target_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            if target_host and target_host not in ("127.0.0.1", "localhost"):
+                with (
+                    contextlib.suppress(OSError),
+                    socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock,
+                ):
+                    sock.connect((target_host, target_port))
+                    detected_ip = sock.getsockname()[0]
+                    if detected_ip:
+                        host_ip = detected_ip
+        return f"http://{host_ip}:{port}"
 
     def set_rgb_gains(self, r: float, g: float, b: float) -> None:
         """Устанавливает программные коэффициенты усиления R/G/B."""
@@ -125,18 +148,21 @@ class LiveStreamManager:
                         str(self.v4l_by_id_dir / camera_hardware_id)
                     )
 
+                # Без --quality для аппаратного MJPEG и с --device-timeout 5 для камер (Logitech C270 ~1-2.3 с)
                 cmd = [
                     "ustreamer",
                     "--device",
                     dev_path,
                     "--host",
-                    "127.0.0.1",
+                    "0.0.0.0",
                     "--port",
                     str(port),
                     "-m",
                     pixel_format,
                     "-r",
                     f"{width}x{height}",
+                    "--device-timeout",
+                    "5",
                     "--workers",
                     "2",
                     "--drop-same-frames",
@@ -151,11 +177,21 @@ class LiveStreamManager:
                         stderr=subprocess.DEVNULL,
                     )
                     time.sleep(0.3)
+                    if self.process.poll() is None:
+                        self.stream_url = self._resolve_stream_url(port)
+                    else:
+                        logger.warning(
+                            f"[LIVE] ustreamer завершился сразу с кодом {self.process.returncode}"
+                        )
+                        self.process = None
+                        self.stream_url = None
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        f"[LIVE] Не удалось запустить ustreamer: {exc}. Переход на внутренний генератор."
-                    )
+                    logger.warning(f"[LIVE] Не удалось запустить ustreamer: {exc}")
                     self.process = None
+                    self.stream_url = None
+            elif self.mode == "rpi":
+                logger.warning("[LIVE] ustreamer не найден в системе (режим rpi)")
+                self.stream_url = None
 
             self.is_running = True
             self.is_paused = False
@@ -176,6 +212,8 @@ class LiveStreamManager:
                 self.process.wait(timeout=0.5)
             self.process = None
 
+        self.stream_url = None
+        self._last_frame = None
         self.is_running = False
         self.is_paused = False
 
@@ -185,7 +223,7 @@ class LiveStreamManager:
             self._stop_internal()
             logger.info("[LIVE] Стрим остановлен")
 
-    def _generate_frame(self) -> bytes:
+    def _generate_frame(self) -> bytes | None:
         """Генерирует или считывает свежий кадр с применением RGB-коррекции."""
         if self.is_paused and self._last_frame:
             return self._last_frame
@@ -200,12 +238,15 @@ class LiveStreamManager:
                 req = urllib.request.Request(
                     f"http://127.0.0.1:{self.current_port}/snapshot"
                 )
-                with urllib.request.urlopen(req, timeout=0.4) as resp:
+                with urllib.request.urlopen(req, timeout=2.5) as resp:
                     if resp.status == 200:
                         raw_frame = resp.read()
 
-        # 2. Mock или fallback генерация кадра
+        # 2. В режиме rpi не подставляем фейковую синтетическую картинку
         if raw_frame is None:
+            if self.mode == "rpi":
+                return self._last_frame if self.is_paused else None
+
             from edge_agent.synthetic import generate_synthetic_frame
 
             raw_frame = generate_synthetic_frame(
@@ -235,7 +276,7 @@ class LiveStreamManager:
 
     def _push_loop(self) -> None:
         """Фоновый цикл отправки кадров на сервер и watchdog неактивности."""
-        consecutive_idle_sec = 0
+        consecutive_idle_sec = 0.0
 
         while not self._stop_event.is_set():
             loop_start = time.time()
@@ -249,25 +290,36 @@ class LiveStreamManager:
                 self.stop()
                 break
 
-            # Получаем свежий кадр
+            # Получаем свежий кадр и замеряем время захвата
+            cap_t0 = time.perf_counter()
             frame_bytes = self._generate_frame()
+            cap_ms = (time.perf_counter() - cap_t0) * 1000.0
+            if frame_bytes is None:
+                time.sleep(0.1)
+                continue
+
             now_ts = time.time()
+            est_latency_ms = max(1, round(cap_ms + self._last_send_rtt_ms / 2.0))
 
             # Отправка кадра на сервер через HTTP клиент, если доступен
             if self.client and self.active_camera_id:
                 try:
+                    send_t0 = time.perf_counter()
                     res = self.client.send_live_frame(
                         hardware_id=self.active_camera_id,
                         frame_bytes=frame_bytes,
                         frame_timestamp=now_ts,
                         is_paused=self.is_paused,
                         resolution=f"{self.current_width}x{self.current_height}",
+                        latency_ms=est_latency_ms,
+                        stream_url=self.stream_url,
                     )
+                    self._last_send_rtt_ms = (time.perf_counter() - send_t0) * 1000.0
                     if res and res.get("active_subscribers", 0) > 0:
                         self.touch()
-                        consecutive_idle_sec = 0
+                        consecutive_idle_sec = 0.0
                     else:
-                        consecutive_idle_sec += 0.05
+                        consecutive_idle_sec += max(0.04, time.time() - loop_start)
                         if consecutive_idle_sec >= 120.0:
                             logger.info(
                                 "[LIVE] Нет активных подписчиков в браузере более 120 с, автоостановка"

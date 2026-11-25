@@ -1,25 +1,59 @@
 import asyncio
+import contextlib
 import json
 import time
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from edge_agent.camera_controls import (
+    apply_control_dependencies,
     get_default_mock_controls,
-    query_camera_formats_and_sizes,
+    get_default_mock_formats,
 )
 from server.api.deps import format_utc_z, get_db, require_role
 from server.core.live_manager import live_manager
 from server.core.state import app_state
-from server.core.system_status import check_rpi_online, is_debug_mode
+from server.core.system_status import check_rpi_online, is_debug_mode, is_rpi_online
 from server.db.models import Camera, EdgeCommand, Installation, SystemSetting, User
 
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
+
+
+def _is_rpi_hardware_mode(db: Session) -> bool:
+    """Определяет по телеметрии, работает ли Edge-агент в боевом режиме rpi."""
+    telem = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == "rpi_last_telemetry")
+        .first()
+    )
+    if not telem or not telem.value:
+        return False
+    try:
+        data = json.loads(telem.value)
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("hardware_mode") == "rpi" or data.get("is_raspberry_pi") is True:
+        return True
+    hw = data.get("hardware")
+    return isinstance(hw, dict) and hw.get("gpio_mode") == "rpi"
+
+
+def _upsert_setting(db: Session, key: str, value: str, now: datetime) -> None:
+    """Создаёт или обновляет SystemSetting по ключу."""
+    existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+    if existing:
+        existing.value = value
+        existing.updated_at = now
+    else:
+        db.add(SystemSetting(key=key, value=value, updated_at=now))
 
 
 class CameraBindRequest(BaseModel):
@@ -350,6 +384,12 @@ def start_camera_live(
 
     session = live_manager.get_or_create(cam.hardware_id, camera_id=cam.id)
     session.is_active = True
+    session.is_paused = False
+    session.latest_frame = None
+    session.last_frame_at = 0.0
+    session.fps = 0.0
+    session.latency_ms = 0
+    session._frame_times.clear()
     session.last_heartbeat = time.time()
 
     fmt_setting = (
@@ -457,7 +497,7 @@ def get_camera_live_status(
 
 
 @router.get("/{camera_id}/live/snapshot")
-def get_camera_live_snapshot(
+async def get_camera_live_snapshot(
     camera_id: int,
     current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
     db: Annotated[Session, Depends(get_db)],
@@ -470,45 +510,130 @@ def get_camera_live_snapshot(
             detail="Камера не найдена",
         )
     session = live_manager.get(cam.hardware_id)
-    frame = session.latest_frame if session else None
-    if not frame:
-        from edge_agent.synthetic import generate_synthetic_frame
+    frame: bytes | None = None
 
-        frame = generate_synthetic_frame(0, cam.hardware_id)
+    if session:
+        is_fresh = session.latest_frame is not None and (
+            session.is_paused or (time.time() - session.last_frame_at) <= 1.5
+        )
+        if is_fresh:
+            frame = session.latest_frame
+        elif session.stream_url and not session.is_paused:
+            snap_url = f"{session.stream_url.rstrip('/')}/snapshot"
+            with contextlib.suppress(Exception):
+                async with httpx.AsyncClient(
+                    timeout=3.0, trust_env=False
+                ) as http_client:
+                    resp = await http_client.get(snap_url)
+                    if resp.status_code == 200 and resp.content:
+                        frame = resp.content
+                        session.latest_frame = frame
+                        session.last_frame_at = time.time()
+
+        if frame is None and session.latest_frame:
+            frame = session.latest_frame
+
+    if not frame:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Live-стрим недоступен или кадр ещё не получен",
+        )
 
     return Response(
         content=frame,
         media_type="image/jpeg",
         headers={
             "Content-Disposition": f'attachment; filename="snapshot_{cam.hardware_id}_{int(time.time())}.jpg"',
+            "Cache-Control": "no-store",
         },
     )
 
 
+async def _proxy_ustreamer_frames(session: Any):
+    """Читает MJPEG-поток напрямую из ustreamer и выдаёт отдельные JPEG-кадры."""
+    if not session.stream_url:
+        return
+    stream_url = f"{session.stream_url.rstrip('/')}/stream"
+    timeout = httpx.Timeout(connect=2.0, read=6.0, write=5.0, pool=2.0)
+    buf = bytearray()
+    last_frame_t = time.perf_counter()
+
+    async with (
+        httpx.AsyncClient(timeout=timeout, trust_env=False) as http_client,
+        http_client.stream("GET", stream_url) as resp,
+    ):
+        if resp.status_code != 200:
+            return
+        async for chunk in resp.aiter_bytes(chunk_size=32768):
+            if not session.is_active:
+                break
+            if session.is_paused:
+                await asyncio.sleep(0.1)
+                continue
+            buf.extend(chunk)
+            # Защита от разрастания буфера на некорректном потоке
+            if len(buf) > 4 * 1024 * 1024:
+                buf.clear()
+                continue
+            while True:
+                start = buf.find(b"\xff\xd8")
+                if start == -1:
+                    if len(buf) > 2:
+                        del buf[:-2]
+                    break
+                if start > 0:
+                    del buf[:start]
+                end = buf.find(b"\xff\xd9", 2)
+                if end == -1:
+                    break
+                frame = bytes(buf[: end + 2])
+                del buf[: end + 2]
+                now_t = time.perf_counter()
+                lat_ms = max(1, min(500, int((now_t - last_frame_t) * 1000)))
+                last_frame_t = now_t
+                session.latest_frame = frame
+                session.record_proxied_frame(latency_ms=lat_ms)
+                yield frame
+
+
 async def _mjpeg_generator(hardware_id: str):
-    """Низколатентный генератор потока MJPEG без накопления очереди."""
+    """Низколатентный генератор потока MJPEG (прямое проксирование ustreamer или push-буфер)."""
     session = live_manager.get_or_create(hardware_id)
     session.active_subscribers += 1
     session.is_active = True
     last_frame_id = -1
+    proxy_failed = False
 
     try:
-        while True:
+        while session.is_active:
+            # 1. Пробуем прямое проксирование от ustreamer, если есть URL и ещё не упало
+            if session.stream_url and not proxy_failed and not session.is_paused:
+                try:
+                    got_any = False
+                    async for frame in _proxy_ustreamer_frames(session):
+                        got_any = True
+                        yield (
+                            b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                            + frame
+                            + b"\r\n"
+                        )
+                    if not got_any:
+                        proxy_failed = True
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    proxy_failed = True
+
+            # 2. Fallback / основной режим через push-буфер от Edge-агента
             async with session.condition:
                 if session.frame_counter == last_frame_id:
-                    try:
+                    with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(session.condition.wait(), timeout=0.5)
-                    except TimeoutError:
-                        pass
                 frame = session.latest_frame
                 last_frame_id = session.frame_counter
 
-            if frame is None:
-                from edge_agent.synthetic import generate_synthetic_frame
-
-                frame = generate_synthetic_frame(0, hardware_id)
-
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+            if frame is not None:
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
             await asyncio.sleep(0.02)
     except asyncio.CancelledError:
         pass
@@ -536,10 +661,11 @@ async def get_camera_live_stream(
 
 
 @router.get("/{camera_id}/controls", response_model=dict[str, Any])
-def get_camera_controls(
+async def get_camera_controls(
     camera_id: int,
     current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
     db: Annotated[Session, Depends(get_db)],
+    refresh: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
     """Получение поддерживаемых V4L2-контролов, форматов и RGB настроек."""
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
@@ -549,19 +675,67 @@ def get_camera_controls(
             detail="Камера не найдена",
         )
 
-    formats = query_camera_formats_and_sizes(f"/dev/v4l/by-id/{cam.hardware_id}")
-
+    is_rpi = _is_rpi_hardware_mode(db)
+    fmt_list_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_formats_{cam.hardware_id}")
+        .first()
+    )
     ctrl_setting = (
         db.query(SystemSetting)
         .filter(SystemSetting.key == f"camera_ctrls_{cam.hardware_id}")
         .first()
     )
+
+    # В боевом режиме rpi при первом запросе или ?refresh=true запрашиваем реальное состояние у Edge-агента
+    need_sync = is_rpi and (refresh or not fmt_list_setting or not ctrl_setting)
+    if need_sync and is_rpi_online(db)[0]:
+        cmd = EdgeCommand(
+            command_type="GET_CAMERA_CONTROLS",
+            installation_id=cam.installation_id,
+            is_global=cam.installation_id is None,
+            payload=json.dumps({"camera_hardware_id": cam.hardware_id}),
+            status="pending",
+        )
+        db.add(cmd)
+        db.commit()
+        db.refresh(cmd)
+
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < 6.0:
+            await asyncio.sleep(0.05)
+            db.expire_all()
+            check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
+            if not check_cmd or check_cmd.status in ("done", "error", "timeout"):
+                break
+
+        fmt_list_setting = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == f"camera_formats_{cam.hardware_id}")
+            .first()
+        )
+        ctrl_setting = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == f"camera_ctrls_{cam.hardware_id}")
+            .first()
+        )
+
+    formats: list[dict[str, Any]] = []
+    if fmt_list_setting and fmt_list_setting.value:
+        with contextlib.suppress(Exception):
+            parsed_fmt = json.loads(fmt_list_setting.value)
+            if isinstance(parsed_fmt, list):
+                formats = parsed_fmt
+    if not formats and not is_rpi:
+        formats = get_default_mock_formats()
+
+    controls: list[dict[str, Any]] = []
     if ctrl_setting and ctrl_setting.value:
-        try:
-            controls = json.loads(ctrl_setting.value)
-        except Exception:  # noqa: BLE001
-            controls = get_default_mock_controls()
-    else:
+        with contextlib.suppress(Exception):
+            parsed_ctrls = json.loads(ctrl_setting.value)
+            if isinstance(parsed_ctrls, list):
+                controls = parsed_ctrls
+    if not controls and not is_rpi and ctrl_setting is None:
         controls = get_default_mock_controls()
 
     rgb_setting = (
@@ -569,13 +743,12 @@ def get_camera_controls(
         .filter(SystemSetting.key == f"camera_rgb_{cam.hardware_id}")
         .first()
     )
+    rgb = {"r": 1.0, "g": 1.0, "b": 1.0}
     if rgb_setting and rgb_setting.value:
-        try:
-            rgb = json.loads(rgb_setting.value)
-        except Exception:  # noqa: BLE001
-            rgb = {"r": 1.0, "g": 1.0, "b": 1.0}
-    else:
-        rgb = {"r": 1.0, "g": 1.0, "b": 1.0}
+        with contextlib.suppress(Exception):
+            parsed_rgb = json.loads(rgb_setting.value)
+            if isinstance(parsed_rgb, dict):
+                rgb = parsed_rgb
 
     cur_fmt_setting = (
         db.query(SystemSetting)
@@ -588,14 +761,21 @@ def get_camera_controls(
         .first()
     )
 
+    default_fmt = formats[0]["format"] if formats else "MJPG"
+    default_res = (
+        formats[0]["resolutions"][0]
+        if formats and formats[0].get("resolutions")
+        else "1280x720"
+    )
+
     return {
         "camera_id": cam.id,
         "hardware_id": cam.hardware_id,
         "formats": formats,
         "controls": controls,
         "rgb": rgb,
-        "current_format": cur_fmt_setting.value if cur_fmt_setting else "MJPG",
-        "current_resolution": cur_res_setting.value if cur_res_setting else "1280x720",
+        "current_format": cur_fmt_setting.value if cur_fmt_setting else default_fmt,
+        "current_resolution": cur_res_setting.value if cur_res_setting else default_res,
     }
 
 
@@ -614,57 +794,37 @@ def update_camera_controls(
             detail="Камера не найдена",
         )
 
+    now = datetime.now(UTC)
     if body.format:
-        db.merge(
-            SystemSetting(
-                key=f"camera_format_{cam.hardware_id}",
-                value=body.format,
-                updated_at=datetime.now(UTC),
-            )
-        )
+        _upsert_setting(db, f"camera_format_{cam.hardware_id}", body.format, now)
     if body.resolution:
-        db.merge(
-            SystemSetting(
-                key=f"camera_res_{cam.hardware_id}",
-                value=body.resolution,
-                updated_at=datetime.now(UTC),
-            )
-        )
-
+        _upsert_setting(db, f"camera_res_{cam.hardware_id}", body.resolution, now)
     if body.rgb:
-        db.merge(
-            SystemSetting(
-                key=f"camera_rgb_{cam.hardware_id}",
-                value=json.dumps(body.rgb),
-                updated_at=datetime.now(UTC),
-            )
-        )
+        _upsert_setting(db, f"camera_rgb_{cam.hardware_id}", json.dumps(body.rgb), now)
 
+    updated_controls: list[dict[str, Any]] | None = None
     if body.controls:
         ctrl_setting = (
             db.query(SystemSetting)
             .filter(SystemSetting.key == f"camera_ctrls_{cam.hardware_id}")
             .first()
         )
-        existing_controls = (
-            json.loads(ctrl_setting.value)
-            if ctrl_setting and ctrl_setting.value
-            else get_default_mock_controls()
-        )
-        for ctrl in existing_controls:
-            cname = ctrl.get("name")
-            if cname in body.controls:
-                ctrl["value"] = body.controls[cname]
+        if ctrl_setting and ctrl_setting.value:
+            existing_controls = json.loads(ctrl_setting.value)
+        elif not _is_rpi_hardware_mode(db):
+            existing_controls = get_default_mock_controls()
+        else:
+            existing_controls = []
 
-        db.merge(
-            SystemSetting(
-                key=f"camera_ctrls_{cam.hardware_id}",
-                value=json.dumps(existing_controls),
-                updated_at=datetime.now(UTC),
+        if existing_controls:
+            apply_control_dependencies(existing_controls, body.controls)
+            _upsert_setting(
+                db,
+                f"camera_ctrls_{cam.hardware_id}",
+                json.dumps(existing_controls),
+                now,
             )
-        )
-
-    db.commit()
+            updated_controls = existing_controls
 
     cmd = EdgeCommand(
         command_type="SET_CAMERA_CONTROLS",
@@ -684,7 +844,7 @@ def update_camera_controls(
     db.add(cmd)
     db.commit()
 
-    return {
+    resp: dict[str, Any] = {
         "status": "updated",
         "camera_id": cam.id,
         "hardware_id": cam.hardware_id,
@@ -692,3 +852,6 @@ def update_camera_controls(
         "resolution": body.resolution,
         "rgb": body.rgb,
     }
+    if updated_controls is not None:
+        resp["controls"] = updated_controls
+    return resp

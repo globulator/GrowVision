@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 from typing import Any
@@ -5,6 +6,14 @@ from typing import Any
 from shared.logger import get_logger
 
 logger = get_logger("edge_agent.camera_controls")
+
+
+def get_default_mock_formats() -> list[dict[str, Any]]:
+    """Возвращает набор форматов и разрешений для mock-режима."""
+    return [
+        {"format": "MJPG", "resolutions": ["1920x1080", "1280x720", "640x480"]},
+        {"format": "YUYV", "resolutions": ["1280x720", "640x480"]},
+    ]
 
 
 def categorize_control(name: str) -> str:
@@ -100,15 +109,24 @@ def parse_v4l2_controls(stdout: str) -> list[dict[str, Any]]:
     return controls
 
 
-def query_camera_formats_and_sizes(dev_path: str) -> list[dict[str, Any]]:
-    """Парсит поддерживаемые форматы и разрешения через v4l2-ctl --list-formats-ext."""
+def query_camera_formats_and_sizes(
+    dev_path: str, mock_mode: bool = False
+) -> list[dict[str, Any]]:
+    """Парсит поддерживаемые форматы и разрешения через v4l2-ctl --list-formats-ext.
+
+    В режиме mock_mode=False (rpi) не подставляет захардкоженные разрешения.
+    """
+    if mock_mode:
+        return get_default_mock_formats()
+
+    resolved_path = os.path.realpath(dev_path) if os.path.exists(dev_path) else dev_path
     formats: list[dict[str, Any]] = []
     try:
         res = subprocess.run(
-            ["v4l2-ctl", "-d", dev_path, "--list-formats-ext"],
+            ["v4l2-ctl", "-d", resolved_path, "--list-formats-ext"],
             capture_output=True,
             text=True,
-            timeout=2.0,
+            timeout=2.5,
             check=False,
         )
         if res.returncode == 0 and res.stdout:
@@ -128,15 +146,11 @@ def query_camera_formats_and_sizes(dev_path: str) -> list[dict[str, Any]]:
                         fmt_sizes[current_fmt].append(size_str)
 
             for fmt, sizes in fmt_sizes.items():
-                formats.append({"format": fmt, "resolutions": sizes})
+                if sizes:
+                    formats.append({"format": fmt, "resolutions": sizes})
     except Exception as exc:  # noqa: BLE001
-        logger.debug(f"Ошибка чтения форматов для {dev_path}: {exc}")
+        logger.debug(f"Ошибка чтения форматов для {resolved_path}: {exc}")
 
-    if not formats:
-        formats = [
-            {"format": "MJPG", "resolutions": ["1920x1080", "1280x720", "640x480"]},
-            {"format": "YUYV", "resolutions": ["1280x720", "640x480"]},
-        ]
     return formats
 
 
@@ -314,26 +328,68 @@ def get_default_mock_controls() -> list[dict[str, Any]]:
 def query_camera_controls(
     dev_path: str, mock_mode: bool = False
 ) -> list[dict[str, Any]]:
-    """Опрашивает поддерживаемые v4l2-контролы устройства."""
+    """Опрашивает поддерживаемые v4l2-контролы устройства.
+
+    В режиме mock_mode=False (rpi) возвращает только реальный результат v4l2-ctl.
+    """
     if mock_mode:
         return get_default_mock_controls()
 
+    resolved_path = os.path.realpath(dev_path) if os.path.exists(dev_path) else dev_path
     try:
         res = subprocess.run(
-            ["v4l2-ctl", "-d", dev_path, "--list-ctrls-menus"],
+            ["v4l2-ctl", "-d", resolved_path, "--list-ctrls-menus"],
             capture_output=True,
             text=True,
             timeout=2.5,
             check=False,
         )
         if res.returncode == 0 and res.stdout:
-            parsed = parse_v4l2_controls(res.stdout)
-            if parsed:
-                return parsed
+            return parse_v4l2_controls(res.stdout)
     except Exception as exc:  # noqa: BLE001
-        logger.debug(f"Ошибка чтения контролов v4l2 для {dev_path}: {exc}")
+        logger.debug(f"Ошибка чтения контролов v4l2 для {resolved_path}: {exc}")
 
-    return get_default_mock_controls()
+    return []
+
+
+def apply_control_dependencies(
+    controls: list[dict[str, Any]], updates: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Обновляет значения контролов и пересчитывает флаги is_inactive для зависимых пар."""
+    by_name: dict[str, dict[str, Any]] = {}
+    for ctrl in controls:
+        cname = ctrl.get("name")
+        if cname:
+            if cname in updates:
+                ctrl["value"] = updates[cname]
+            by_name[cname] = ctrl
+
+    # 1. white_balance_automatic <-> white_balance_temperature
+    if "white_balance_automatic" in by_name and "white_balance_temperature" in by_name:
+        auto_wb = bool(by_name["white_balance_automatic"].get("value"))
+        by_name["white_balance_temperature"]["is_inactive"] = auto_wb
+
+    # 2. auto_exposure <-> exposure_time_absolute
+    if "auto_exposure" in by_name and "exposure_time_absolute" in by_name:
+        ae_ctrl = by_name["auto_exposure"]
+        ae_val = ae_ctrl.get("value")
+        menu_items = ae_ctrl.get("menu_items") or []
+        manual_ids = {
+            m.get("id")
+            for m in menu_items
+            if isinstance(m, dict)
+            and any(kw in str(m.get("label", "")).lower() for kw in ("manual", "ручн"))
+        }
+        if not manual_ids:
+            manual_ids = {1}
+        by_name["exposure_time_absolute"]["is_inactive"] = ae_val not in manual_ids
+
+    # 3. focus_automatic_continuous / focus_auto <-> focus_absolute
+    af_ctrl = by_name.get("focus_automatic_continuous") or by_name.get("focus_auto")
+    if af_ctrl and "focus_absolute" in by_name:
+        by_name["focus_absolute"]["is_inactive"] = bool(af_ctrl.get("value"))
+
+    return controls
 
 
 def set_v4l2_control(
@@ -344,17 +400,22 @@ def set_v4l2_control(
         logger.info(f"[MOCK] Установлен контрол {ctrl_name}={value} для {dev_path}")
         return True
 
+    resolved_path = os.path.realpath(dev_path) if os.path.exists(dev_path) else dev_path
     try:
         res = subprocess.run(
-            ["v4l2-ctl", "-d", dev_path, f"--set-ctrl={ctrl_name}={value}"],
+            ["v4l2-ctl", "-d", resolved_path, f"--set-ctrl={ctrl_name}={value}"],
             capture_output=True,
             text=True,
             timeout=2.0,
             check=False,
         )
+        if res.returncode != 0:
+            logger.warning(
+                f"v4l2-ctl --set-ctrl={ctrl_name}={value} ({resolved_path}) код {res.returncode}: {res.stderr.strip()}"
+            )
         return res.returncode == 0
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            f"Не удалось установить контрол {ctrl_name}={value} для {dev_path}: {exc}"
+            f"Не удалось установить контрол {ctrl_name}={value} для {resolved_path}: {exc}"
         )
         return False

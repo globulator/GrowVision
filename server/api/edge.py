@@ -106,13 +106,16 @@ def edge_heartbeat(
             )
         )
 
-    # 2. Обновление статуса известных камер
-    detected_hw_ids = {c.hardware_id for c in hb.detected_cameras}
+    # 2. Обновление статуса и человекочитаемого имени известных камер
+    detected_by_hw_id = {c.hardware_id: c for c in hb.detected_cameras}
     known_cameras = db.query(Camera).all()
     for cam in known_cameras:
-        if cam.hardware_id in detected_hw_ids:
+        detected_cam = detected_by_hw_id.get(cam.hardware_id)
+        if detected_cam is not None:
             cam.is_online = True
             cam.last_seen_at = now
+            if detected_cam.auto_name and detected_cam.auto_name.strip():
+                cam.auto_name = detected_cam.auto_name.strip()
         else:
             cam.is_online = False
 
@@ -321,9 +324,85 @@ def edge_command_result(
         # Сохраняем результат в памяти процесса (даже при пустом списке)
         app_state.save_scanned_cameras(command_id, scanned_hw_ids)
 
+    # Обработка дополнительных данных результата команды (stream_url, controls, formats)
+    if body.data and isinstance(body.data, dict):
+        cmd_payload = {}
+        if cmd.payload:
+            try:
+                cmd_payload = json.loads(cmd.payload)
+            except Exception:  # noqa: BLE001
+                cmd_payload = {}
+        hw_id = cmd_payload.get("camera_hardware_id")
+        if hw_id:
+            if cmd.command_type == "START_LIVE" and body.data.get("stream_url"):
+                session = live_manager.get_or_create(hw_id)
+                session.stream_url = str(body.data["stream_url"])
+                session.is_active = True
+            if "formats" in body.data or "controls" in body.data:
+                _save_camera_controls_state(
+                    db=db,
+                    hardware_id=hw_id,
+                    formats=body.data.get("formats"),
+                    controls=body.data.get("controls"),
+                    now=now,
+                )
+
     db.commit()
 
     return {"ok": True}
+
+
+def _upsert_setting(db: Session, key: str, value: str, now: datetime) -> None:
+    """Создаёт или обновляет SystemSetting по ключу."""
+    existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+    if existing:
+        existing.value = value
+        existing.updated_at = now
+    else:
+        db.add(SystemSetting(key=key, value=value, updated_at=now))
+
+
+def _save_camera_controls_state(
+    db: Session,
+    hardware_id: str,
+    formats: list[dict[str, Any]] | None = None,
+    controls: list[dict[str, Any]] | None = None,
+    current_format: str | None = None,
+    current_resolution: str | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Сохраняет актуальные форматы и V4L2-контролы камеры в SystemSetting."""
+    ts = now or datetime.now(UTC)
+    if formats is not None:
+        _upsert_setting(db, f"camera_formats_{hardware_id}", json.dumps(formats), ts)
+    if controls is not None:
+        _upsert_setting(db, f"camera_ctrls_{hardware_id}", json.dumps(controls), ts)
+    if current_format:
+        _upsert_setting(db, f"camera_format_{hardware_id}", current_format, ts)
+    if current_resolution:
+        _upsert_setting(db, f"camera_res_{hardware_id}", current_resolution, ts)
+
+
+@router.post(
+    "/cameras/{hardware_id}/controls-state",
+    dependencies=[Depends(verify_edge_key)],
+)
+def receive_camera_controls_state(
+    hardware_id: str,
+    body: dict[str, Any],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, str]:
+    """Принимает от Edge-агента реальные форматы и V4L2-контролы камеры."""
+    _save_camera_controls_state(
+        db=db,
+        hardware_id=hardware_id,
+        formats=body.get("formats"),
+        controls=body.get("controls"),
+        current_format=body.get("current_format"),
+        current_resolution=body.get("current_resolution"),
+    )
+    db.commit()
+    return {"status": "ok"}
 
 
 @router.post(
@@ -451,21 +530,50 @@ async def receive_live_frame(
     request: Request,
     _: Annotated[None, Depends(verify_edge_key)],
     x_timestamp: Annotated[str | None, Header(alias="X-Timestamp")] = None,
+    x_frame_timestamp: Annotated[str | None, Header(alias="X-Frame-Timestamp")] = None,
     x_paused: Annotated[str | None, Header(alias="X-Paused")] = None,
     x_resolution: Annotated[str | None, Header(alias="X-Resolution")] = None,
+    x_latency_ms: Annotated[str | None, Header(alias="X-Latency-Ms")] = None,
+    x_stream_url: Annotated[str | None, Header(alias="X-Stream-Url")] = None,
 ) -> dict[str, Any]:
     """Прием свежего кадра Live-стрима от Edge-агента."""
     body_bytes = await request.body()
     if not body_bytes:
         return {"status": "error", "message": "empty body"}
 
-    ts = float(x_timestamp) if x_timestamp else time.time()
+    raw_ts = x_timestamp or x_frame_timestamp
+    try:
+        ts = float(raw_ts) if raw_ts else time.time()
+    except ValueError:
+        ts = time.time()
+
+    try:
+        latency_ms = int(x_latency_ms) if x_latency_ms else None
+    except ValueError:
+        latency_ms = None
+
     is_paused = x_paused in ("1", "true", "True")
     res = x_resolution or "1280x720"
 
+    stream_url = x_stream_url
+    if (
+        stream_url
+        and "127.0.0.1" in stream_url
+        and request.client
+        and request.client.host
+    ):
+        client_host = request.client.host
+        if client_host not in ("127.0.0.1", "::1", "testclient"):
+            stream_url = stream_url.replace("127.0.0.1", client_host, 1)
+
     session = live_manager.get_or_create(hardware_id)
     session.push_frame(
-        body_bytes, frame_timestamp=ts, is_paused=is_paused, resolution=res
+        body_bytes,
+        frame_timestamp=ts,
+        is_paused=is_paused,
+        resolution=res,
+        latency_ms=latency_ms,
+        stream_url=stream_url,
     )
 
     async with session.condition:

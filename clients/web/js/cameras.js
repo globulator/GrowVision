@@ -7,9 +7,51 @@ import { showError, showToast } from './dialogs.js';
 let currentRole = 'guest';
 let activeCamera = null;
 let liveStatusInterval = null;
-let liveSettingsVisible = false;
+let liveConnectTimeout = null;
 let currentCameraControls = null;
-let currentActiveTab = 'format';
+let currentActiveTab = null;
+let streamReady = false;
+
+const CATEGORY_DEFS = [
+  {
+    id: 'format',
+    title: 'Разрешение и формат',
+    icon: `<svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="4" width="20" height="16" rx="2"/>
+      <path d="M8 9H6v2M16 15h2v-2"/>
+    </svg>`,
+  },
+  {
+    id: 'exposure',
+    title: 'Экспозиция и яркость',
+    icon: `<svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="4"/>
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+    </svg>`,
+  },
+  {
+    id: 'color',
+    title: 'Цвет и баланс белого',
+    icon: `<svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+    </svg>`,
+  },
+  {
+    id: 'focus',
+    title: 'Фокус и оптика',
+    icon: `<svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
+    </svg>`,
+  },
+];
+
+const DEPENDENT_TRIGGERS = new Set([
+  'white_balance_automatic',
+  'auto_exposure',
+  'focus_automatic_continuous',
+  'focus_auto',
+]);
 
 export function updateCamerasRole(role) {
   currentRole = role || 'guest';
@@ -17,6 +59,27 @@ export function updateCamerasRole(role) {
   if (btn) {
     btn.classList.toggle('hidden', currentRole === 'guest');
   }
+}
+
+function formatCameraDisplayName(cam) {
+  const raw = (cam && cam.auto_name ? String(cam.auto_name) : '').trim();
+  if (!raw || raw === cam.hardware_id || /^usb-.*-video-index\d+$/i.test(raw)) {
+    const cleaned = (raw || cam.hardware_id || '')
+      .replace(/^usb-/i, '')
+      .replace(/-video-index\d+$/i, '')
+      .replace(/_/g, ' ')
+      .trim();
+    return cleaned || `Камера #${cam.id}`;
+  }
+  return raw;
+}
+
+function formatCalibrationSummary(summary) {
+  if (!summary) return '';
+  return String(summary)
+    .replace(/^Калибровка\s+[^:]+:\s*/i, '')
+    .replace(/(\d+)x(\d+)/g, '$1\u00d7$2')
+    .trim();
 }
 
 // Открытие модального окна со списком камер
@@ -46,38 +109,34 @@ export async function openCamerasModal() {
       card.className = 'camera-menu-card glass-panel';
 
       const isOnline = Boolean(cam.is_online);
+      const displayName = formatCameraDisplayName(cam);
       const instName = cam.installation_name
         ? `Установка: ${cam.installation_name}`
         : 'Не привязана';
-      const hwText = cam.hardware_id ? `<span class="camera-hw-id">${cam.hardware_id}</span>` : '';
+      const showHwId = cam.hardware_id && cam.hardware_id !== displayName;
+      const hwText = showHwId ? `<span class="camera-hw-id">${cam.hardware_id}</span>` : '';
+      const calibText = formatCalibrationSummary(cam.calibration_summary);
 
       card.innerHTML = `
         <div class="camera-card-header">
           <div class="camera-title-group">
             <span class="status-dot ${isOnline ? 'online' : 'offline'}"></span>
-            <strong class="camera-name">${cam.auto_name || 'Камера #' + cam.id}</strong>
+            <strong class="camera-name">${displayName}</strong>
           </div>
           <span class="camera-status-text">${isOnline ? 'Онлайн' : 'Офлайн'}</span>
         </div>
         <div class="camera-card-details">
           <div class="camera-inst-badge">${instName}</div>
           ${hwText}
-          ${cam.calibration_summary ? `<div class="camera-calib-text">${cam.calibration_summary}</div>` : ''}
+          ${calibText ? `<div class="camera-calib-text">${calibText}</div>` : ''}
         </div>
         <div class="camera-card-actions">
           <button type="button" class="btn btn-primary btn-cam-live" ${!isOnline ? 'disabled' : ''}>
             <svg class="icon-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-              <polygon points="23 7 16 12 23 7"/>
+              <polygon points="23 7 16 12 23 17 23 7"/>
               <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
             </svg>
             <span>Live</span>
-          </button>
-          <button type="button" class="btn btn-secondary btn-cam-settings" ${!isOnline ? 'disabled' : ''}>
-            <svg class="icon-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-            </svg>
-            <span>Настройки</span>
           </button>
         </div>
       `;
@@ -86,15 +145,7 @@ export async function openCamerasModal() {
       if (liveBtn) {
         liveBtn.addEventListener('click', () => {
           closeCamerasModal();
-          openLiveModal(cam, false);
-        });
-      }
-
-      const settingsBtn = card.querySelector('.btn-cam-settings');
-      if (settingsBtn) {
-        settingsBtn.addEventListener('click', () => {
-          closeCamerasModal();
-          openLiveModal(cam, true);
+          openLiveModal(cam);
         });
       }
 
@@ -112,50 +163,109 @@ export function closeCamerasModal() {
   }
 }
 
+function setLiveViewportState(state, message = '') {
+  const streamImg = document.getElementById('live-stream-img');
+  const loadingOverlay = document.getElementById('live-loading-overlay');
+  const errorOverlay = document.getElementById('live-error-overlay');
+  const errorText = document.getElementById('live-error-text');
+
+  if (state === 'loading') {
+    streamReady = false;
+    if (streamImg) streamImg.classList.add('hidden');
+    if (loadingOverlay) loadingOverlay.classList.remove('hidden');
+    if (errorOverlay) errorOverlay.classList.add('hidden');
+  } else if (state === 'streaming') {
+    streamReady = true;
+    if (streamImg) streamImg.classList.remove('hidden');
+    if (loadingOverlay) loadingOverlay.classList.add('hidden');
+    if (errorOverlay) errorOverlay.classList.add('hidden');
+  } else if (state === 'error') {
+    streamReady = false;
+    if (streamImg) streamImg.classList.add('hidden');
+    if (loadingOverlay) loadingOverlay.classList.add('hidden');
+    if (errorText && message) errorText.textContent = message;
+    if (errorOverlay) errorOverlay.classList.remove('hidden');
+  }
+}
+
+function attachStreamHandlers(cameraId) {
+  const streamImg = document.getElementById('live-stream-img');
+  if (!streamImg) return;
+
+  if (liveConnectTimeout) {
+    clearTimeout(liveConnectTimeout);
+    liveConnectTimeout = null;
+  }
+
+  setLiveViewportState('loading');
+
+  streamImg.onload = () => {
+    if (!activeCamera || activeCamera.id !== cameraId) return;
+    if (liveConnectTimeout) {
+      clearTimeout(liveConnectTimeout);
+      liveConnectTimeout = null;
+    }
+    setLiveViewportState('streaming');
+  };
+
+  streamImg.onerror = () => {
+    if (!activeCamera || activeCamera.id !== cameraId) return;
+    if (!streamImg.getAttribute('src')) return;
+    if (liveConnectTimeout) {
+      clearTimeout(liveConnectTimeout);
+      liveConnectTimeout = null;
+    }
+    setLiveViewportState('error', 'Стрим недоступен');
+  };
+
+  streamImg.src = `/api/cameras/${cameraId}/live/stream?t=${Date.now()}`;
+
+  // Если за 12 с не пришёл ни один кадр — показываем понятную заглушку
+  liveConnectTimeout = setTimeout(() => {
+    if (activeCamera && activeCamera.id === cameraId && !streamReady) {
+      setLiveViewportState('error', 'Таймаут подключения к камере');
+    }
+  }, 12000);
+}
+
 // Запуск и открытие модального окна Live-режима
-export async function openLiveModal(camera, startWithSettings = false) {
+export async function openLiveModal(camera) {
   if (!camera || !camera.id) return;
   activeCamera = camera;
+  currentActiveTab = null;
+  currentCameraControls = null;
 
   const modal = document.getElementById('modal-camera-live');
   const titleEl = document.getElementById('live-modal-title');
-  const streamImg = document.getElementById('live-stream-img');
   const pausedOverlay = document.getElementById('live-paused-overlay');
-  const settingsDrawer = document.getElementById('live-settings-drawer');
-  if (!modal || !streamImg) return;
+  const fpsEl = document.getElementById('live-fps');
+  const latEl = document.getElementById('live-latency');
+  if (!modal) return;
 
   if (titleEl) {
-    titleEl.textContent = `Live: ${camera.auto_name || 'Камера #' + camera.id}`;
+    titleEl.textContent = `Live: ${formatCameraDisplayName(camera)}`;
   }
-
-  // Сброс оверлеев и параметров
+  if (fpsEl) fpsEl.textContent = '0.0';
+  if (latEl) latEl.textContent = '0';
   if (pausedOverlay) pausedOverlay.classList.add('hidden');
-  liveSettingsVisible = Boolean(startWithSettings);
-  if (settingsDrawer) {
-    settingsDrawer.classList.toggle('hidden', !liveSettingsVisible);
-  }
 
+  setLiveViewportState('loading');
+  renderLiveSettingsOverlay();
   modal.classList.remove('hidden');
 
   try {
-    // 1. Старт стрима на сервере
     await api.startLive(camera.id);
-    // 2. Подключение low-latency потока
-    streamImg.src = `/api/cameras/${camera.id}/live/stream?t=${Date.now()}`;
-    streamImg.onerror = () => {
-      // При временном разрыве стрима не сбрасываем модалку
-    };
+    if (!activeCamera || activeCamera.id !== camera.id) return;
+    attachStreamHandlers(camera.id);
   } catch (err) {
-    showError(err.message || 'Ошибка запуска Live-стрима');
+    setLiveViewportState('error', err.message || 'Ошибка запуска Live-стрима');
   }
 
-  // 3. Запуск опроса метрик (FPS, задержка, статус паузы)
   if (liveStatusInterval) clearInterval(liveStatusInterval);
   liveStatusInterval = setInterval(updateLiveMetrics, 1000);
   updateLiveMetrics();
 
-  // 4. Загрузка настроек камеры
-  loadCameraControls(camera.id);
+  loadCameraControls(camera.id, true);
 }
 
 // Остановка и закрытие Live-режима
@@ -168,18 +278,28 @@ export async function closeLiveModal() {
     clearInterval(liveStatusInterval);
     liveStatusInterval = null;
   }
+  if (liveConnectTimeout) {
+    clearTimeout(liveConnectTimeout);
+    liveConnectTimeout = null;
+  }
 
+  streamReady = false;
+  currentActiveTab = null;
   if (streamImg) {
-    streamImg.src = '';
+    streamImg.onload = null;
+    streamImg.onerror = null;
+    streamImg.removeAttribute('src');
+    streamImg.classList.add('hidden');
   }
 
   if (activeCamera && activeCamera.id) {
+    const camId = activeCamera.id;
+    activeCamera = null;
     try {
-      await api.stopLive(activeCamera.id);
+      await api.stopLive(camId);
     } catch (_) {
       // игнорируем ошибку при закрытии
     }
-    activeCamera = null;
   }
 }
 
@@ -196,8 +316,8 @@ async function updateLiveMetrics() {
     const pausedOverlay = document.getElementById('live-paused-overlay');
 
     if (fpsEl) fpsEl.textContent = Number(status.fps || 0).toFixed(1);
-    if (latEl) latEl.textContent = Math.round(Number(status.latency_ms || 0));
-    if (resEl) resEl.textContent = status.resolution || '1280x720';
+    if (latEl) latEl.textContent = String(Math.round(Number(status.latency_ms || 0)));
+    if (resEl && status.resolution) resEl.textContent = status.resolution;
 
     if (pausedOverlay) {
       pausedOverlay.classList.toggle('hidden', !Boolean(status.is_paused));
@@ -208,296 +328,419 @@ async function updateLiveMetrics() {
 }
 
 // Загрузка доступных контролов камеры и отрисовка панели
-async function loadCameraControls(cameraId) {
-  const container = document.getElementById('live-settings-content');
-  if (!container) return;
-
+async function loadCameraControls(cameraId, refresh = false) {
   try {
-    const data = await api.getCameraControls(cameraId);
+    const data = await api.getCameraControls(cameraId, { refresh });
+    if (!activeCamera || activeCamera.id !== cameraId) return;
     currentCameraControls = data;
-    renderControlsTabs();
-  } catch (err) {
-    if (container) {
-      container.innerHTML = `<div class="form-error-inline">${err.message || 'Ошибка загрузки контролов'}</div>`;
-    }
+    renderLiveSettingsOverlay();
+  } catch (_) {
+    renderLiveSettingsOverlay();
   }
 }
 
-// Отрисовка вкладок и содержимого настроек
-function renderControlsTabs() {
-  const container = document.getElementById('live-settings-content');
-  if (!container || !currentCameraControls) return;
+// Прокрутка горизонтального контейнера колёсиком мыши при наведении
+function attachHorizontalWheelScroll(el) {
+  if (!el) return;
+  el.addEventListener(
+    'wheel',
+    (e) => {
+      if (el.scrollWidth > el.clientWidth && e.deltaY !== 0) {
+        e.preventDefault();
+        el.scrollLeft += e.deltaY;
+      }
+    },
+    { passive: false }
+  );
+}
 
-  const { formats, controls, rgb, current_format, current_resolution } = currentCameraControls;
+// Отрисовка ряда квадратных кнопок категорий и выпадающей строки плашек
+function renderLiveSettingsOverlay() {
+  const container = document.getElementById('live-settings-content');
+  if (!container) return;
+
+  const buttonsHtml = CATEGORY_DEFS.map((cat) => {
+    const isActive = currentActiveTab === cat.id;
+    return `
+      <button type="button"
+        class="live-cat-btn cat-${cat.id} ${isActive ? 'active' : ''}"
+        data-tab="${cat.id}"
+        title="${cat.title}"
+        aria-label="${cat.title}"
+        aria-pressed="${isActive ? 'true' : 'false'}">
+        ${cat.icon}
+      </button>
+    `;
+  }).join('');
 
   container.innerHTML = `
-    <div class="settings-tabs-header">
-      <button type="button" class="tab-folder-btn ${currentActiveTab === 'format' ? 'active' : ''}" data-tab="format">Разрешение и формат</button>
-      <button type="button" class="tab-folder-btn ${currentActiveTab === 'exposure' ? 'active' : ''}" data-tab="exposure">Экспозиция</button>
-      <button type="button" class="tab-folder-btn ${currentActiveTab === 'color' ? 'active' : ''}" data-tab="color">Цвет и баланс</button>
-      <button type="button" class="tab-folder-btn ${currentActiveTab === 'focus' ? 'active' : ''}" data-tab="focus">Фокус и оптика</button>
+    <div class="live-cat-bar" id="live-cat-bar">
+      <div class="live-cat-track">${buttonsHtml}</div>
     </div>
-    <div class="settings-tab-pane" id="settings-tab-pane"></div>
+    <div class="live-pills-bar ${currentActiveTab ? '' : 'hidden'}" id="live-pills-bar">
+      <div class="live-pills-track" id="live-pills-track"></div>
+    </div>
   `;
 
-  // Навешиваем слушатели на кнопки папок
-  const tabBtns = container.querySelectorAll('.tab-folder-btn');
-  tabBtns.forEach((btn) => {
+  const catBar = container.querySelector('#live-cat-bar');
+  const pillsBar = container.querySelector('#live-pills-bar');
+  attachHorizontalWheelScroll(catBar);
+  attachHorizontalWheelScroll(pillsBar);
+
+  container.querySelectorAll('.live-cat-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
-      currentActiveTab = btn.dataset.tab;
-      tabBtns.forEach((b) => b.classList.toggle('active', b.dataset.tab === currentActiveTab));
-      renderTabPaneContent();
+      const tab = btn.dataset.tab;
+      // Повторный клик по активной кнопке скрывает плашки
+      currentActiveTab = currentActiveTab === tab ? null : tab;
+      container.querySelectorAll('.live-cat-btn').forEach((b) => {
+        const active = b.dataset.tab === currentActiveTab;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+      if (pillsBar) {
+        pillsBar.classList.toggle('hidden', !currentActiveTab);
+      }
+      renderCategoryPills();
     });
   });
 
-  renderTabPaneContent();
+  if (currentActiveTab) {
+    renderCategoryPills();
+  }
 }
 
-// Отрисовка содержимого выбранной вкладки
-function renderTabPaneContent() {
-  const pane = document.getElementById('settings-tab-pane');
-  if (!pane || !currentCameraControls) return;
+function createControlPill(labelText, isDisabled = false, extraClass = '') {
+  const pill = document.createElement('div');
+  pill.className = `live-ctrl-pill ${isDisabled ? 'is-disabled' : ''} ${extraClass}`.trim();
+  if (labelText) {
+    const head = document.createElement('div');
+    head.className = 'live-pill-head';
+    head.innerHTML = `<span class="live-pill-label">${labelText}</span>`;
+    pill.appendChild(head);
+  }
+  return pill;
+}
+
+function getResolutionsForFormat(formats, fmt) {
+  const matched = (formats || []).find((f) => f.format === fmt);
+  if (matched && Array.isArray(matched.resolutions) && matched.resolutions.length > 0) {
+    return matched.resolutions;
+  }
+  const all = [];
+  (formats || []).forEach((f) => {
+    (f.resolutions || []).forEach((r) => {
+      if (!all.includes(r)) all.push(r);
+    });
+  });
+  return all;
+}
+
+// Отрисовка компактных прозрачных плашек настроек выбранной категории в одну строку
+function renderCategoryPills() {
+  const track = document.getElementById('live-pills-track');
+  if (!track || !currentActiveTab) return;
+
+  track.innerHTML = '';
+
+  if (!currentCameraControls) {
+    const pill = createControlPill('Параметры камеры', true);
+    const note = document.createElement('span');
+    note.className = 'live-pill-static';
+    note.textContent = 'Загрузка...';
+    pill.appendChild(note);
+    track.appendChild(pill);
+    return;
+  }
 
   const { formats, controls, rgb, current_format, current_resolution } = currentCameraControls;
-  pane.innerHTML = '';
 
   if (currentActiveTab === 'format') {
-    // 1. Папка: Разрешение и формат
-    const formGroup = document.createElement('div');
-    formGroup.className = 'control-group';
+    const availFormats = (formats || []).filter((f) => f && f.format);
+    const activeFmt = current_format || (availFormats[0] && availFormats[0].format) || '';
+    const resolutions = getResolutionsForFormat(availFormats, activeFmt);
 
-    const allResolutions = [];
-    (formats || []).forEach((f) => {
-      (f.resolutions || []).forEach((r) => {
-        if (!allResolutions.includes(r)) allResolutions.push(r);
-      });
-    });
-
-    const isSingleRes = allResolutions.length <= 1;
-    const isSingleFmt = (formats || []).length <= 1;
-
-    let resOptions = allResolutions
-      .map(
-        (r) => `<option value="${r}" ${r === current_resolution ? 'selected' : ''}>${r}</option>`
-      )
-      .join('');
-
-    let fmtOptions = (formats || [])
-      .map(
-        (f) =>
-          `<option value="${f.format}" ${f.format === current_format ? 'selected' : ''}>${f.format}</option>`
-      )
-      .join('');
-
-    formGroup.innerHTML = `
-      <label class="control-label">Разрешение видео</label>
-      <select id="ctrl-select-res" class="form-input" ${isSingleRes ? 'disabled' : ''}>
-        ${resOptions}
-      </select>
-
-      <label class="control-label" style="margin-top: 12px;">Кодек / Формат</label>
-      <select id="ctrl-select-fmt" class="form-input" ${isSingleFmt ? 'disabled' : ''}>
-        ${fmtOptions}
-      </select>
-    `;
-
-    const selectRes = formGroup.querySelector('#ctrl-select-res');
-    if (selectRes) {
-      selectRes.addEventListener('change', async (e) => {
+    // Плашка: Разрешение
+    const resPill = createControlPill('Разрешение', resolutions.length <= 1);
+    if (resolutions.length === 0) {
+      const emptyEl = document.createElement('span');
+      emptyEl.className = 'live-pill-static';
+      emptyEl.textContent = current_resolution || 'Неизвестно';
+      resPill.appendChild(emptyEl);
+    } else {
+      const selRes = document.createElement('select');
+      selRes.id = 'ctrl-select-res';
+      selRes.className = 'live-pill-select';
+      if (resolutions.length <= 1) selRes.disabled = true;
+      selRes.innerHTML = resolutions
+        .map(
+          (r) => `<option value="${r}" ${r === current_resolution ? 'selected' : ''}>${r.replace('x', '\u00d7')}</option>`
+        )
+        .join('');
+      selRes.addEventListener('change', async (e) => {
         const newRes = e.target.value;
         try {
           await api.updateCameraControls(activeCamera.id, { resolution: newRes });
           currentCameraControls.current_resolution = newRes;
-          showToast(`Разрешение изменено на ${newRes}`);
+          const resEl = document.getElementById('live-res');
+          if (resEl) resEl.textContent = newRes;
+          showToast(`Разрешение: ${newRes.replace('x', '\u00d7')}`);
         } catch (err) {
           showError(err.message || 'Ошибка применения разрешения');
         }
       });
+      resPill.appendChild(selRes);
     }
+    track.appendChild(resPill);
 
-    const selectFmt = formGroup.querySelector('#ctrl-select-fmt');
-    if (selectFmt) {
-      selectFmt.addEventListener('change', async (e) => {
+    // Плашка: Формат / Кодек
+    const fmtPill = createControlPill('Формат', availFormats.length <= 1);
+    if (availFormats.length === 0) {
+      const emptyEl = document.createElement('span');
+      emptyEl.className = 'live-pill-static';
+      emptyEl.textContent = activeFmt || 'Неизвестно';
+      fmtPill.appendChild(emptyEl);
+    } else {
+      const selFmt = document.createElement('select');
+      selFmt.id = 'ctrl-select-fmt';
+      selFmt.className = 'live-pill-select';
+      if (availFormats.length <= 1) selFmt.disabled = true;
+      selFmt.innerHTML = availFormats
+        .map(
+          (f) => `<option value="${f.format}" ${f.format === activeFmt ? 'selected' : ''}>${f.format}</option>`
+        )
+        .join('');
+      selFmt.addEventListener('change', async (e) => {
         const newFmt = e.target.value;
+        const fmtResList = getResolutionsForFormat(availFormats, newFmt);
+        let nextRes = currentCameraControls.current_resolution;
+        const payload = { format: newFmt };
+        if (fmtResList.length > 0 && !fmtResList.includes(nextRes)) {
+          nextRes = fmtResList[0];
+          payload.resolution = nextRes;
+        }
         try {
-          await api.updateCameraControls(activeCamera.id, { format: newFmt });
+          await api.updateCameraControls(activeCamera.id, payload);
           currentCameraControls.current_format = newFmt;
-          showToast(`Формат изменен на ${newFmt}`);
+          if (payload.resolution) {
+            currentCameraControls.current_resolution = payload.resolution;
+            const resEl = document.getElementById('live-res');
+            if (resEl) resEl.textContent = payload.resolution;
+          }
+          renderCategoryPills();
+          showToast(`Формат: ${newFmt}`);
         } catch (err) {
           showError(err.message || 'Ошибка применения формата');
         }
       });
+      fmtPill.appendChild(selFmt);
     }
+    track.appendChild(fmtPill);
+    return;
+  }
 
-    pane.appendChild(formGroup);
-  } else if (currentActiveTab === 'exposure') {
-    // 2. Папка: Экспозиция (авто/ручная, выдержка, gain, яркость, контраст)
+  if (currentActiveTab === 'exposure') {
     const exposureControls = (controls || []).filter((c) => c.category === 'exposure');
-    renderV4L2ControlsList(pane, exposureControls);
-  } else if (currentActiveTab === 'color') {
-    // 3. Папка: Цвет и баланс (авто ББ, температура, насыщенность + RGB ползунки)
+    appendV4L2ControlPills(track, exposureControls);
+    return;
+  }
+
+  if (currentActiveTab === 'color') {
     const colorControls = (controls || []).filter((c) => c.category === 'color');
-    renderV4L2ControlsList(pane, colorControls);
+    appendV4L2ControlPills(track, colorControls, true);
 
-    // Добавляем ползунки R / G / B
-    const rgbBox = document.createElement('div');
-    rgbBox.className = 'control-group rgb-control-box';
-    const curR = (rgb && rgb.r) || 1.0;
-    const curG = (rgb && rgb.g) || 1.0;
-    const curB = (rgb && rgb.b) || 1.0;
+    // Компактные плашки программной RGB-коррекции
+    const curR = rgb && rgb.r !== undefined ? Number(rgb.r) : 1.0;
+    const curG = rgb && rgb.g !== undefined ? Number(rgb.g) : 1.0;
+    const curB = rgb && rgb.b !== undefined ? Number(rgb.b) : 1.0;
 
-    rgbBox.innerHTML = `
-      <div class="control-section-subtitle">Программная RGB-коррекция</div>
-      <div class="rgb-slider-row">
-        <label>Канал R: <span id="val-rgb-r">${curR.toFixed(2)}</span></label>
-        <input type="range" id="slider-rgb-r" min="0.5" max="2.0" step="0.05" value="${curR}">
-      </div>
-      <div class="rgb-slider-row">
-        <label>Канал G: <span id="val-rgb-g">${curG.toFixed(2)}</span></label>
-        <input type="range" id="slider-rgb-g" min="0.5" max="2.0" step="0.05" value="${curG}">
-      </div>
-      <div class="rgb-slider-row">
-        <label>Канал B: <span id="val-rgb-b">${curB.toFixed(2)}</span></label>
-        <input type="range" id="slider-rgb-b" min="0.5" max="2.0" step="0.05" value="${curB}">
-      </div>
-    `;
+    const rgbChannels = [
+      { id: 'r', title: 'Канал R', value: curR, accentClass: 'rgb-r' },
+      { id: 'g', title: 'Канал G', value: curG, accentClass: 'rgb-g' },
+      { id: 'b', title: 'Канал B', value: curB, accentClass: 'rgb-b' },
+    ];
 
-    const applyRgb = async () => {
-      const r = parseFloat(rgbBox.querySelector('#slider-rgb-r').value);
-      const g = parseFloat(rgbBox.querySelector('#slider-rgb-g').value);
-      const b = parseFloat(rgbBox.querySelector('#slider-rgb-b').value);
-      rgbBox.querySelector('#val-rgb-r').textContent = r.toFixed(2);
-      rgbBox.querySelector('#val-rgb-g').textContent = g.toFixed(2);
-      rgbBox.querySelector('#val-rgb-b').textContent = b.toFixed(2);
-      try {
-        await api.updateCameraControls(activeCamera.id, { rgb: { r, g, b } });
-        currentCameraControls.rgb = { r, g, b };
-      } catch (err) {
-        showError(err.message || 'Ошибка применения RGB');
-      }
-    };
+    rgbChannels.forEach((ch) => {
+      const pill = createControlPill(`<span class="${ch.accentClass}">${ch.title}</span>`);
+      const head = pill.querySelector('.live-pill-head');
+      const valSpan = document.createElement('span');
+      valSpan.className = 'live-pill-val';
+      valSpan.id = `val-rgb-${ch.id}`;
+      valSpan.textContent = ch.value.toFixed(2);
+      head.appendChild(valSpan);
 
-    rgbBox.querySelectorAll('input[type="range"]').forEach((input) => {
-      input.addEventListener('change', applyRgb);
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.className = 'live-pill-slider';
+      input.id = `slider-rgb-${ch.id}`;
+      input.min = '0.5';
+      input.max = '2.0';
+      input.step = '0.05';
+      input.value = String(ch.value);
+
+      input.addEventListener('input', () => {
+        valSpan.textContent = parseFloat(input.value).toFixed(2);
+      });
+      input.addEventListener('change', async () => {
+        const nextRgb = {
+          r: parseFloat(document.getElementById('slider-rgb-r').value),
+          g: parseFloat(document.getElementById('slider-rgb-g').value),
+          b: parseFloat(document.getElementById('slider-rgb-b').value),
+        };
+        try {
+          await api.updateCameraControls(activeCamera.id, { rgb: nextRgb });
+          currentCameraControls.rgb = nextRgb;
+        } catch (err) {
+          showError(err.message || 'Ошибка применения RGB');
+        }
+      });
+
+      pill.appendChild(input);
+      track.appendChild(pill);
     });
+    return;
+  }
 
-    pane.appendChild(rgbBox);
-  } else if (currentActiveTab === 'focus') {
-    // 4. Папка: Фокус и оптика (автофокус, фиксированный фокус, зум, резкость, 50 Гц)
+  if (currentActiveTab === 'focus') {
     const focusControls = (controls || []).filter((c) => c.category === 'focus');
-
-    // Проверяем наличие автофокуса
-    const hasAutofocus = focusControls.some(
-      (c) => c.name.includes('focus_auto') || c.name.includes('focus_automatic')
+    const hasFocusCtrl = focusControls.some(
+      (c) =>
+        c.name === 'focus_automatic_continuous' ||
+        c.name === 'focus_auto' ||
+        c.name === 'focus_absolute'
     );
-    const hasAnyFocus = focusControls.some((c) => c.name.includes('focus'));
 
-    // Если фокус отсутствует или фиксированный
-    if (!hasAutofocus && !hasAnyFocus) {
-      const fixFocusNotice = document.createElement('div');
-      fixFocusNotice.className = 'control-group fixed-focus-notice';
-      fixFocusNotice.innerHTML = `
-        <label class="control-label">Фокусировка</label>
-        <input type="text" class="form-input" value="Фиксированный фокус" disabled>
-      `;
-      pane.appendChild(fixFocusNotice);
+    if (!hasFocusCtrl) {
+      const fixedPill = createControlPill('Фокусировка', true);
+      const staticVal = document.createElement('input');
+      staticVal.type = 'text';
+      staticVal.className = 'live-pill-static-input';
+      staticVal.value = 'Фиксированный фокус';
+      staticVal.disabled = true;
+      fixedPill.appendChild(staticVal);
+      track.appendChild(fixedPill);
     }
 
-    renderV4L2ControlsList(pane, focusControls);
+    appendV4L2ControlPills(track, focusControls, !hasFocusCtrl);
   }
 }
 
-// Рендеринг списка v4l2 контролов (слайдеры, чекбоксы, меню)
-function renderV4L2ControlsList(container, controlsList) {
+function appendV4L2ControlPills(track, controlsList, allowEmpty = false) {
   if (!controlsList || controlsList.length === 0) {
-    const emptyNotice = document.createElement('div');
-    emptyNotice.className = 'control-group';
-    emptyNotice.innerHTML = '<span class="control-label">Контролы данной категории не поддерживаются камерой</span>';
-    container.appendChild(emptyNotice);
+    if (!allowEmpty) {
+      const emptyPill = createControlPill('Настройки', true);
+      const span = document.createElement('span');
+      span.className = 'live-pill-static';
+      span.textContent = 'Не поддерживаются камерой';
+      emptyPill.appendChild(span);
+      track.appendChild(emptyPill);
+    }
     return;
   }
 
   controlsList.forEach((ctrl) => {
-    const group = document.createElement('div');
-    group.className = 'control-group';
-
     const isInactive = Boolean(ctrl.is_inactive);
     const labelText = formatControlTitle(ctrl.name);
 
     if (ctrl.type === 'bool') {
+      const pill = createControlPill(labelText, isInactive, 'live-pill-toggle');
+      const wrap = document.createElement('label');
+      wrap.className = 'live-pill-switch';
       const isChecked = Boolean(ctrl.value);
-      group.innerHTML = `
-        <label class="checkbox-label ${isInactive ? 'disabled' : ''}">
-          <input type="checkbox" data-cname="${ctrl.name}" ${isChecked ? 'checked' : ''} ${isInactive ? 'disabled' : ''}>
-          <span>${labelText}</span>
-        </label>
+      wrap.innerHTML = `
+        <input type="checkbox" data-cname="${ctrl.name}" ${isChecked ? 'checked' : ''} ${isInactive ? 'disabled' : ''}>
+        <span class="live-pill-switch-text">${isChecked ? 'Вкл' : 'Выкл'}</span>
       `;
-      const chk = group.querySelector('input[type="checkbox"]');
+      const chk = wrap.querySelector('input[type="checkbox"]');
+      const txt = wrap.querySelector('.live-pill-switch-text');
       if (chk) {
         chk.addEventListener('change', async (e) => {
           const val = e.target.checked ? 1 : 0;
+          if (txt) txt.textContent = e.target.checked ? 'Вкл' : 'Выкл';
           await sendControlChange(ctrl.name, val);
         });
       }
+      pill.appendChild(wrap);
+      track.appendChild(pill);
     } else if (ctrl.type === 'menu' && ctrl.menu_items && ctrl.menu_items.length > 0) {
-      const options = ctrl.menu_items
+      const pill = createControlPill(labelText, isInactive);
+      const sel = document.createElement('select');
+      sel.className = 'live-pill-select';
+      sel.dataset.cname = ctrl.name;
+      if (isInactive) sel.disabled = true;
+      sel.innerHTML = ctrl.menu_items
         .map(
           (m) => `<option value="${m.id}" ${m.id === ctrl.value ? 'selected' : ''}>${m.label}</option>`
         )
         .join('');
-      group.innerHTML = `
-        <label class="control-label ${isInactive ? 'disabled' : ''}">${labelText}</label>
-        <select class="form-input" data-cname="${ctrl.name}" ${isInactive ? 'disabled' : ''}>
-          ${options}
-        </select>
-      `;
-      const sel = group.querySelector('select');
-      if (sel) {
-        sel.addEventListener('change', async (e) => {
-          await sendControlChange(ctrl.name, parseInt(e.target.value, 10));
-        });
-      }
+      sel.addEventListener('change', async (e) => {
+        await sendControlChange(ctrl.name, parseInt(e.target.value, 10));
+      });
+      pill.appendChild(sel);
+      track.appendChild(pill);
     } else {
-      // Слайдер (int)
       const minVal = ctrl.min !== null && ctrl.min !== undefined ? ctrl.min : 0;
       const maxVal = ctrl.max !== null && ctrl.max !== undefined ? ctrl.max : 100;
       const stepVal = ctrl.step || 1;
       const curVal = ctrl.value !== null && ctrl.value !== undefined ? ctrl.value : minVal;
 
-      group.innerHTML = `
-        <div class="slider-header ${isInactive ? 'disabled' : ''}">
-          <label class="control-label">${labelText}</label>
-          <span class="slider-val" id="val-${ctrl.name}">${curVal}</span>
-        </div>
-        <input type="range" class="control-slider" data-cname="${ctrl.name}" min="${minVal}" max="${maxVal}" step="${stepVal}" value="${curVal}" ${isInactive ? 'disabled' : ''}>
-      `;
-      const slider = group.querySelector('input[type="range"]');
-      const valDisplay = group.querySelector(`#val-${ctrl.name}`);
-      if (slider) {
-        slider.addEventListener('input', (e) => {
-          if (valDisplay) valDisplay.textContent = e.target.value;
-        });
-        slider.addEventListener('change', async (e) => {
-          await sendControlChange(ctrl.name, parseInt(e.target.value, 10));
-        });
-      }
-    }
+      const pill = createControlPill(labelText, isInactive);
+      const head = pill.querySelector('.live-pill-head');
+      const valDisplay = document.createElement('span');
+      valDisplay.className = 'live-pill-val';
+      valDisplay.id = `val-${ctrl.name}`;
+      valDisplay.textContent = String(curVal);
+      head.appendChild(valDisplay);
 
-    container.appendChild(group);
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.className = 'live-pill-slider';
+      slider.dataset.cname = ctrl.name;
+      slider.min = String(minVal);
+      slider.max = String(maxVal);
+      slider.step = String(stepVal);
+      slider.value = String(curVal);
+      if (isInactive) slider.disabled = true;
+
+      slider.addEventListener('input', (e) => {
+        valDisplay.textContent = e.target.value;
+      });
+      slider.addEventListener('change', async (e) => {
+        await sendControlChange(ctrl.name, parseInt(e.target.value, 10));
+      });
+
+      pill.appendChild(slider);
+      track.appendChild(pill);
+    }
   });
 }
 
-// Отправка изменения v4l2 контрола на сервер
+// Отправка изменения v4l2 контрола на сервер и синхронизация зависимых контролов
 async function sendControlChange(ctrlName, value) {
   if (!activeCamera || !activeCamera.id) return;
+  const cameraId = activeCamera.id;
   try {
-    await api.updateCameraControls(activeCamera.id, {
+    const patchRes = await api.updateCameraControls(cameraId, {
       controls: { [ctrlName]: value },
     });
-    // Обновляем локальное состояние контрола
     if (currentCameraControls && currentCameraControls.controls) {
-      const c = currentCameraControls.controls.find((item) => item.name === ctrlName);
-      if (c) c.value = value;
+      if (patchRes && Array.isArray(patchRes.controls)) {
+        currentCameraControls.controls = patchRes.controls;
+      } else {
+        const c = currentCameraControls.controls.find((item) => item.name === ctrlName);
+        if (c) c.value = value;
+      }
+      if (DEPENDENT_TRIGGERS.has(ctrlName)) {
+        renderCategoryPills();
+      }
+    }
+
+    // Для зависимых контролов запрашиваем обновлённое реальное состояние с камеры
+    if (DEPENDENT_TRIGGERS.has(ctrlName)) {
+      const refreshed = await api.getCameraControls(cameraId, { refresh: true });
+      if (activeCamera && activeCamera.id === cameraId && refreshed) {
+        currentCameraControls = refreshed;
+        renderCategoryPills();
+      }
     }
   } catch (err) {
     showError(err.message || 'Ошибка применения контрола камеры');
@@ -514,28 +757,50 @@ function formatControlTitle(name) {
     white_balance_automatic: 'Автобаланс белого',
     white_balance_temperature: 'Температура ББ (K)',
     auto_exposure: 'Режим экспозиции',
-    exposure_time_absolute: 'Время выдержки',
+    exposure_time_absolute: 'Выдержка',
+    exposure_dynamic_framerate: 'Динам. FPS',
+    backlight_compensation: 'Компенс. засветки',
     gain: 'Усиление (Gain)',
-    focus_automatic_continuous: 'Автофокус (непрерывный)',
+    focus_automatic_continuous: 'Автофокус',
     focus_auto: 'Автофокус',
     focus_absolute: 'Ручной фокус',
     sharpness: 'Резкость',
-    zoom_absolute: 'Зум / Увеличение',
-    power_line_frequency: 'Частота сети (подавление мерцания)',
+    zoom_absolute: 'Зум',
+    power_line_frequency: 'Частота сети',
   };
   return titles[name] || name;
 }
 
-// Скачивание свежего JPEG напрямую без записи в БД
-function downloadLiveSnapshot() {
+// Скачивание свежего JPEG напрямую без открытия новой вкладки через fetch -> Blob
+async function downloadLiveSnapshot() {
   if (!activeCamera || !activeCamera.id) return;
-  const url = `/api/cameras/${activeCamera.id}/live/snapshot?t=${Date.now()}`;
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `snapshot_${activeCamera.hardware_id || activeCamera.id}_${Date.now()}.jpg`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const btn = document.getElementById('btn-live-download-snapshot');
+  if (btn) btn.disabled = true;
+  try {
+    const url = `/api/cameras/${activeCamera.id}/live/snapshot?t=${Date.now()}`;
+    const resp = await fetch(url, { credentials: 'same-origin' });
+    if (!resp.ok) {
+      let detail = `Ошибка HTTP ${resp.status}`;
+      try {
+        const errJson = await resp.json();
+        if (errJson && errJson.detail) detail = errJson.detail;
+      } catch (_) {}
+      throw new Error(detail);
+    }
+    const blob = await resp.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = `snapshot_${activeCamera.hardware_id || activeCamera.id}_${Date.now()}.jpg`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  } catch (err) {
+    showError(err.message || 'Не удалось скачать тестовый снимок');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // Инициализация модуля камер
@@ -543,8 +808,8 @@ export function initCameras() {
   const btnMenu = document.getElementById('btn-cameras-menu');
   const modalMenuClose = document.getElementById('modal-cameras-menu-close');
   const modalLiveClose = document.getElementById('modal-camera-live-close');
-  const btnToggleSettings = document.getElementById('btn-toggle-camera-settings');
   const btnDownloadSnap = document.getElementById('btn-live-download-snapshot');
+  const btnLiveRetry = document.getElementById('btn-live-retry');
 
   if (btnMenu) {
     btnMenu.addEventListener('click', openCamerasModal);
@@ -555,18 +820,19 @@ export function initCameras() {
   if (modalLiveClose) {
     modalLiveClose.addEventListener('click', closeLiveModal);
   }
-
-  if (btnToggleSettings) {
-    btnToggleSettings.addEventListener('click', () => {
-      liveSettingsVisible = !liveSettingsVisible;
-      const drawer = document.getElementById('live-settings-drawer');
-      if (drawer) {
-        drawer.classList.toggle('hidden', !liveSettingsVisible);
-      }
-    });
-  }
-
   if (btnDownloadSnap) {
     btnDownloadSnap.addEventListener('click', downloadLiveSnapshot);
+  }
+  if (btnLiveRetry) {
+    btnLiveRetry.addEventListener('click', async () => {
+      if (!activeCamera || !activeCamera.id) return;
+      setLiveViewportState('loading');
+      try {
+        await api.startLive(activeCamera.id);
+        attachStreamHandlers(activeCamera.id);
+      } catch (err) {
+        setLiveViewportState('error', err.message || 'Стрим недоступен');
+      }
+    });
   }
 }

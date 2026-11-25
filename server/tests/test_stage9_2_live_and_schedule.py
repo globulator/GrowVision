@@ -304,3 +304,188 @@ def test_camera_live_lifecycle_and_proxy(client: TestClient, test_env):
     resp_status3 = client.get(f"/api/cameras/{cam_id}/live/status", cookies=cookies)
     assert resp_status3.status_code == 200
     assert resp_status3.json()["is_active"] is False
+
+
+def test_live_snapshot_unavailable_returns_503_not_500(client: TestClient, test_env):
+    """При недоступном стриме и отсутствии кадров /live/snapshot возвращает 503 без HTTP 500."""
+    session_factory, _ = test_env
+    db: Session = session_factory()
+    cam = Camera(
+        hardware_id="cam_no_frame_01",
+        auto_name="Камера без кадров",
+        is_online=True,
+    )
+    db.add(cam)
+    db.commit()
+    db.refresh(cam)
+    cam_id = cam.id
+    db.close()
+
+    cookies = create_user_cookie(
+        session_factory, "developer", "Разработчик", ext_id="444"
+    )
+
+    # 1. Сессии вообще нет -> 503 (не 500)
+    resp1 = client.get(f"/api/cameras/{cam_id}/live/snapshot", cookies=cookies)
+    assert resp1.status_code == 503
+
+    # 2. Есть stream_url, но ustreamer недоступен -> 503 (не 500)
+    session = live_manager.get_or_create("cam_no_frame_01", camera_id=cam_id)
+    session.is_active = True
+    session.stream_url = "http://127.0.0.1:59999"
+    resp2 = client.get(f"/api/cameras/{cam_id}/live/snapshot", cookies=cookies)
+    assert resp2.status_code == 503
+
+
+def test_live_session_fps_and_latency_calculation():
+    """Расчёт реального FPS и latency_ms при частых кадрах и рассинхроне часов."""
+    import time
+
+    from server.core.live_manager import LiveCameraSession
+
+    session = LiveCameraSession("cam_fps_test", camera_id=1)
+    # Имитируем рассинхрон часов: frame_timestamp в будущем + переданный X-Latency-Ms=24
+    future_ts = time.time() + 10.0
+    session.push_frame(b"frame1", frame_timestamp=future_ts, latency_ms=24)
+    time.sleep(0.06)
+    session.push_frame(b"frame2", frame_timestamp=future_ts + 0.06, latency_ms=26)
+
+    st = session.to_status_dict()
+    assert st["fps"] > 0.0
+    assert st["latency_ms"] == 26
+
+
+def test_rpi_controls_state_sync_and_no_fake_controls(client: TestClient, test_env):
+    """В режиме rpi сервер отдаёт реальные контролы от агента и обновляет auto_name в heartbeat."""
+    import json
+
+    session_factory, _ = test_env
+    db: Session = session_factory()
+    cam = Camera(
+        hardware_id="usb-046d_0825_1122-video-index0",
+        auto_name="usb-046d_0825_1122-video-index0",
+        is_online=True,
+    )
+    db.add(cam)
+    db.add(
+        SystemSetting(
+            key="rpi_last_telemetry",
+            value=json.dumps({"hardware_mode": "rpi", "is_raspberry_pi": True}),
+            updated_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+    db.refresh(cam)
+    cam_id = cam.id
+    hw_id = cam.hardware_id
+    db.close()
+
+    # 1. Edge-агент присылает реальные форматы и контролы C270 (без автофокуса и без 1920x1080)
+    real_formats = [
+        {"format": "MJPG", "resolutions": ["1280x960", "1280x720", "640x480"]}
+    ]
+    real_controls = [
+        {
+            "name": "brightness",
+            "id": "0x00980900",
+            "type": "int",
+            "min": 0,
+            "max": 255,
+            "step": 1,
+            "default": 128,
+            "value": 128,
+            "is_inactive": False,
+            "category": "exposure",
+            "menu_items": [],
+        },
+        {
+            "name": "white_balance_automatic",
+            "id": "0x0098090c",
+            "type": "bool",
+            "min": 0,
+            "max": 1,
+            "step": 1,
+            "default": 1,
+            "value": 1,
+            "is_inactive": False,
+            "category": "color",
+            "menu_items": [],
+        },
+        {
+            "name": "white_balance_temperature",
+            "id": "0x0098091a",
+            "type": "int",
+            "min": 2800,
+            "max": 6500,
+            "step": 1,
+            "default": 4000,
+            "value": 4000,
+            "is_inactive": True,
+            "category": "color",
+            "menu_items": [],
+        },
+    ]
+    resp_state = client.post(
+        f"/api/edge/cameras/{hw_id}/controls-state",
+        headers={"X-Edge-Key": EDGE_KEY},
+        json={
+            "formats": real_formats,
+            "controls": real_controls,
+            "current_format": "MJPG",
+            "current_resolution": "1280x960",
+        },
+    )
+    assert resp_state.status_code == 200
+
+    cookies = create_user_cookie(
+        session_factory, "developer", "Разработчик", ext_id="555"
+    )
+    resp_get = client.get(f"/api/cameras/{cam_id}/controls", cookies=cookies)
+    assert resp_get.status_code == 200
+    body = resp_get.json()
+    assert body["formats"] == real_formats
+    assert all(c["name"] != "focus_automatic_continuous" for c in body["controls"])
+    assert body["current_resolution"] == "1280x960"
+
+    # 2. Переключаем white_balance_automatic=0 -> white_balance_temperature разблокируется
+    resp_patch = client.patch(
+        f"/api/cameras/{cam_id}/controls",
+        json={"controls": {"white_balance_automatic": 0}},
+        cookies=cookies,
+    )
+    assert resp_patch.status_code == 200
+    patched_ctrls = {c["name"]: c for c in resp_patch.json()["controls"]}
+    assert patched_ctrls["white_balance_temperature"]["is_inactive"] is False
+
+    # 3. Heartbeat обновляет человекочитаемое имя камеры
+    resp_hb = client.post(
+        "/api/edge/heartbeat",
+        headers={"X-Edge-Key": EDGE_KEY},
+        json={
+            "software": {
+                "edge_version": "0.7.0",
+                "python_version": "3.12.0",
+                "model_name": "mock",
+            },
+            "hardware": {
+                "board_model": "Raspberry Pi 5",
+                "os_info": "Linux",
+                "uptime_sec": 100,
+                "cpu_temp_c": 45.0,
+                "cpu_usage_percent": 5.0,
+                "ram_used_mb": 512,
+                "ram_total_mb": 4096,
+                "disk_free_gb": 20.0,
+                "gpio_mode": "rpi",
+            },
+            "offline_queue_count": 0,
+            "detected_cameras": [
+                {"hardware_id": hw_id, "auto_name": "UVC Camera (046d:0825)"}
+            ],
+        },
+    )
+    assert resp_hb.status_code == 200
+    resp_cams = client.get("/api/cameras", cookies=cookies)
+    assert resp_cams.status_code == 200
+    cam_item = next(c for c in resp_cams.json() if c["id"] == cam_id)
+    assert cam_item["auto_name"] == "UVC Camera (046d:0825)"
