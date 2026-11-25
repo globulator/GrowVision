@@ -27,6 +27,7 @@ import {
   openLiveModal,
   closeCamerasModal,
   closeLiveModal,
+  setLiveProfileSavedHandler,
 } from './cameras.js';
 import {
   initUnits,
@@ -227,6 +228,11 @@ async function bootstrap() {
   initTestSnap();
   initRpiSetup();
   initCameras();
+  setLiveProfileSavedHandler(async (scope) => {
+    if (scope === 'all_gallery') {
+      await loadAndRenderUnits();
+    }
+  });
 
   setUnauthorizedHandler(handleSessionExpired);
 

@@ -171,6 +171,11 @@ export const api = {
     request(`/api/cameras/${Number(cameraId)}/live/stop`, { method: 'POST' }),
   getLiveStatus: (cameraId) =>
     request(`/api/cameras/${Number(cameraId)}/live/status`),
+  setLiveMode: (cameraId, mode) =>
+    request(`/api/cameras/${Number(cameraId)}/live/mode`, {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    }),
   getCameraControls: (cameraId, options = {}) => {
     const qs = options && options.refresh ? '?refresh=1' : '';
     return request(`/api/cameras/${Number(cameraId)}/controls${qs}`);
@@ -178,6 +183,11 @@ export const api = {
   updateCameraControls: (cameraId, payload) =>
     request(`/api/cameras/${Number(cameraId)}/controls`, {
       method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  saveCameraControls: (cameraId, payload) =>
+    request(`/api/cameras/${Number(cameraId)}/controls/save`, {
+      method: 'POST',
       body: JSON.stringify(payload),
     }),
 };

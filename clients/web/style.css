@@ -243,13 +243,14 @@ button {
 /* Сетка карточек установок */
 .units-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: 20px;
 }
 
 .unit-card {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   overflow: hidden;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
@@ -316,13 +317,17 @@ button {
 
 .unit-actions {
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 12px 16px 16px 16px;
   border-top: 1px solid var(--panel-border);
 }
 
 .unit-actions .btn {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 12px;
+  white-space: nowrap;
 }
 
 /* Пустое состояние */
@@ -1555,9 +1560,25 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 14px 20px;
   border-bottom: 1px solid var(--panel-border);
   background: rgba(15, 23, 42, 0.85);
+}
+
+.live-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.live-svg-filters {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 .live-viewport-container {
@@ -1588,25 +1609,10 @@ button {
   justify-content: center;
   gap: 12px;
   padding: 24px;
-  background: radial-gradient(circle at center, rgba(15, 23, 42, 0.72), rgba(2, 6, 23, 0.92));
+  background: radial-gradient(circle at center, rgba(15, 23, 42, 0.85), rgba(2, 6, 23, 0.96));
   color: var(--text-main);
   z-index: 8;
   text-align: center;
-}
-
-.live-spinner {
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
-  border: 3px solid rgba(148, 163, 184, 0.25);
-  border-top-color: var(--primary-accent);
-  animation: live-spin 0.85s linear infinite;
-}
-
-@keyframes live-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .live-error-icon {
@@ -1615,7 +1621,8 @@ button {
 }
 
 .live-state-text {
-  font-size: 0.92rem;
+  font-size: 0.96rem;
+  font-weight: 500;
   color: var(--text-muted);
 }
 
@@ -1758,8 +1765,8 @@ button {
 
 .live-ctrl-pill {
   flex: 0 0 auto;
-  min-width: 148px;
-  max-width: 220px;
+  min-width: 152px;
+  max-width: 228px;
   padding: 8px 12px;
   border-radius: 12px;
   background: rgba(15, 23, 42, 0.28);
@@ -1772,6 +1779,10 @@ button {
   gap: 6px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
   transition: opacity 0.18s ease, border-color 0.18s ease;
+}
+
+.live-ctrl-pill.live-pill-wide {
+  max-width: 320px;
 }
 
 .live-ctrl-pill:hover:not(.is-disabled) {
@@ -1791,6 +1802,13 @@ button {
   line-height: 1.2;
 }
 
+.live-pill-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .live-pill-label {
   font-weight: 500;
   color: rgba(248, 250, 252, 0.92);
@@ -1801,12 +1819,47 @@ button {
 
 .live-pill-val {
   font-family: monospace;
-  font-size: 0.75rem;
-  color: rgba(226, 232, 240, 0.9);
+  font-size: 0.74rem;
+  color: rgba(226, 232, 240, 0.92);
   flex-shrink: 0;
 }
 
+.live-pill-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(226, 232, 240, 0.85);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.live-pill-reset-btn:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.25);
+  color: #34d399;
+}
+
+.live-pill-reset-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.live-slider-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 2px 0 6px;
+}
+
 .live-pill-slider {
+  position: relative;
+  z-index: 2;
   width: 100%;
   accent-color: var(--primary-accent);
   cursor: pointer;
@@ -1815,6 +1868,18 @@ button {
 
 .live-pill-slider:disabled {
   cursor: not-allowed;
+}
+
+.live-slider-default-mark {
+  position: absolute;
+  bottom: 0;
+  width: 2px;
+  height: 6px;
+  border-radius: 1px;
+  background: rgba(250, 204, 21, 0.9);
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 1;
 }
 
 .live-pill-select,
@@ -1839,20 +1904,92 @@ button {
   color: var(--text-muted);
 }
 
-.live-pill-switch {
-  display: flex;
+/* Кнопка-переключатель (toggle) для бинарных контролов */
+.live-toggle-btn {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 0.78rem;
-  color: var(--text-main);
+  padding: 3px 8px 3px 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(15, 23, 42, 0.52);
+  color: rgba(226, 232, 240, 0.9);
+  font-size: 0.76rem;
   cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+  align-self: flex-start;
 }
 
-.live-pill-switch input[type="checkbox"] {
-  accent-color: var(--primary-accent);
-  width: 16px;
+.live-toggle-btn.is-on {
+  border-color: rgba(16, 185, 129, 0.6);
+  background: rgba(16, 185, 129, 0.18);
+  color: #ffffff;
+}
+
+.live-toggle-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.live-toggle-track {
+  position: relative;
+  width: 28px;
   height: 16px;
-  cursor: pointer;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.35);
+  transition: background 0.18s ease;
+  flex-shrink: 0;
+}
+
+.live-toggle-btn.is-on .live-toggle-track {
+  background: var(--primary-accent);
+}
+
+.live-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  transition: transform 0.18s ease;
+}
+
+.live-toggle-btn.is-on .live-toggle-thumb {
+  transform: translateX(12px);
+}
+
+.live-toggle-text {
+  font-weight: 500;
+  min-width: 30px;
+  text-align: left;
+}
+
+/* Segmented control внутри пилюли для 2-3 пунктов меню */
+.live-pill-segmented {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.live-pill-segmented .seg-btn {
+  padding: 4px 8px;
+  font-size: 0.74rem;
+  border-radius: 6px;
+  white-space: nowrap;
+  min-height: 26px;
+}
+
+.live-unsaved-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .live-pill-static {

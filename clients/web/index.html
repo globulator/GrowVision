@@ -620,6 +620,10 @@
       <div class="modal-header live-modal-header">
         <h3 id="live-modal-title" class="modal-title">Live-стрим</h3>
         <div class="live-header-actions">
+          <div id="live-layer-container" class="segmented-control">
+            <button type="button" id="live-layer-raw" class="seg-btn active">Оригинал</button>
+            <button type="button" id="live-layer-ann" class="seg-btn">Разметка</button>
+          </div>
           <button id="modal-camera-live-close" class="btn-icon modal-close" title="Закрыть" aria-label="Закрыть">
             <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/>
@@ -630,17 +634,21 @@
       </div>
 
       <div class="live-viewport-container">
+        <svg class="live-svg-filters" width="0" height="0" aria-hidden="true">
+          <defs>
+            <filter id="live-rgb-filter" color-interpolation-filters="sRGB">
+              <feColorMatrix id="live-rgb-matrix" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0"/>
+            </filter>
+          </defs>
+        </svg>
         <img id="live-stream-img" class="live-stream-image hidden" alt="">
 
-        <!-- Оверлей загрузки потока -->
-        <div id="live-loading-overlay" class="live-state-overlay">
-          <div class="live-spinner" aria-hidden="true"></div>
-          <span class="live-state-text">Подключение к камере...</span>
-        </div>
+        <!-- Оверлей загрузки потока (фирменный лоадер GrowVision) -->
+        <div id="live-loading-overlay" class="live-state-overlay"></div>
 
-        <!-- Оверлей ошибки / недоступности потока -->
+        <!-- Оверлей ошибки / отключения камеры -->
         <div id="live-error-overlay" class="live-state-overlay hidden">
-          <svg class="icon-svg live-error-icon" viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="currentColor" stroke-width="1.8">
+          <svg class="icon-svg live-error-icon" viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10"/>
             <line x1="1" y1="1" x2="23" y2="23"/>
           </svg>
@@ -701,6 +709,29 @@
         <div class="modal-actions horizontal-actions">
           <button type="button" id="modal-confirm-cancel-btn" class="btn btn-secondary">Отмена</button>
           <button type="button" id="modal-confirm-ok-btn" class="btn btn-primary">Подтвердить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модалка: Сохранение изменений Live перед закрытием -->
+  <div id="modal-live-unsaved" class="modal-backdrop hidden">
+    <div class="modal-window modal-window-small glass-panel">
+      <div class="modal-header">
+        <h3 class="modal-title">Сохранить настройки камеры?</h3>
+        <button id="modal-live-unsaved-close" class="btn-icon modal-close" title="Вернуться в Live" aria-label="Вернуться в Live">
+          <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-confirm-text">Параметры камеры или каналы R/G/B были изменены. Выберите способ сохранения:</p>
+        <div class="live-unsaved-actions">
+          <button type="button" id="btn-live-unsaved-gallery" class="btn btn-primary btn-block">Для всей галереи</button>
+          <button type="button" id="btn-live-unsaved-next" class="btn btn-secondary btn-block">Со следующего кадра</button>
+          <button type="button" id="btn-live-unsaved-discard" class="btn btn-danger btn-block">Не сохранять</button>
         </div>
       </div>
     </div>
