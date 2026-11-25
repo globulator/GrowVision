@@ -4,11 +4,11 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 9.2
-- Название этапа: Live-стрим (ustreamer), реальные V4L2-контролы, фиксы по итогам теста на реальной RPi 5 (Logitech C270) и новый Live UI
+- Текущий этап: 9.3
+- Название этапа: Гибридный режим эмулятора (MOCK_CAMERAS=false для реальных камер), аннотации кадра при 0 растений и починка Live-стрима / V4L2-настроек
 - Режим: FAST (coordinator2 + builder2)
 - Статус: DONE
-- Итераций ревью: 1 из 3
+- Итераций ревью: 0 из 3
 - Ждём от пользователя: задачи следующего этапа
 
 ## Активные агенты
@@ -18,14 +18,12 @@
 | — | — | — | — | — |
 
 ## Коммиты текущего этапа
-- d206095 feat(live): implement ustreamer live stream, camera controls, low-latency proxy, and aligned schedule
-- 3f363bc fix(live): fix RPi ustreamer proxy, real V4L2 controls, camera card and live UI
-- f0a5654 fix(live): guard proxied fps from push doubling, close stream on pause, normalize START_LIVE url
-- 054d66f docs(repo): add coordinator2 and builder2 role guides
-- Слияние stage-9/live-stream-camera-settings-and-schedule в main, версия 0.7.1 (тег v0.7.1)
+- 1429864 feat(edge): add hybrid mock_cameras mode and annotate zero-plant frames
+- 6f6e280 fix(live): fix ustreamer MJPEG mapping, OpenCV V4L2 fallback, proxy retry and controls cache
+- Слияние stage-9/hybrid-mock-real-cameras-and-live-fix в main, версия 0.7.2 (тег v0.7.2)
 
 ## Последний вердикт ревью
-- Вердикт: PASS (по этапу 9.2, итераций ревью: 1/3)
+- Вердикт: PASS (по этапу 9.3, итераций ревью: 0/3)
 - Открытые дефекты: —
 
 ## Закрытые этапы
@@ -55,13 +53,13 @@
 - Этап 8.10: Стабилизация съёмки RPi (автоподбор качества, умный прогрев, HSV-сегментация без ONNX, автокалибровка камеры в боте) и инфо-панель RPi в Web (принят QA, слит в main, версия 0.6.5, отчёт docs/stage_reports/stage-8.10.md)
 - Этап 9.1: Исправление кириллицы на CV-разметке, фильтрация шума/серого фона в HSV-сегментации и 50 Гц для V4L2-камер (принят QA, слит в main, версия 0.7.0, отчёт docs/stage_reports/stage-9.1.md)
 - Этап 9.2: Live-стрим, реальные V4L2-контролы, фиксы по тесту на реальной RPi 5 (Logitech C270) и новый Live UI (принят после ревью, слит в main, версия 0.7.1)
+- Этап 9.3: Гибридный режим эмулятора с реальными V4L2-камерами, аннотации кадра при 0 растений и стабилизация Live/V4L2 (принят после ревью, слит в main, версия 0.7.2)
 
 ## История (последние 10 событий)
-- 2026-11-24: Поднята версия 0.7.0 (тег v0.7.0), этап 9.1 закрыт (DONE)
-- 2026-11-24: В ветке stage-9/live-stream-camera-settings-and-schedule реализована базовая часть этапа 9.2 (d206095)
-- 2026-11-25: Запущены исправления этапа 9.2 по итогам ручного теста на RPi 5 (Logitech C270) в режиме coordinator2 + builder2
-- 2026-11-25: Builder v2 реализовал правки по карточке камеры, ustreamer, V4L2-контролам, FPS/задержке, заглушкам и новой панели настроек (3f363bc)
-- 2026-11-25: По итогам ревью (1/3) исправлены двойной подсчёт FPS, буфер паузы прокси и нормализация START_LIVE URL (f0a5654)
-- 2026-11-25: Пройдены проверки pytest (edge_agent 78, server 86, bot 72, cli 51, целевые e2e 15) и ruff
-- 2026-11-25: Ветка stage-9/live-stream-camera-settings-and-schedule слита в main
-- 2026-11-25: Поднята версия 0.7.1, поставлен тег v0.7.1, этап 9.2 закрыт (DONE)
+- 2026-11-25: Builder v2 реализовал правки этапа 9.2 (3f363bc) и фиксы по ревью (f0a5654)
+- 2026-11-25: Ветка stage-9/live-stream-camera-settings-and-schedule слита в main, поднята версия 0.7.1 (тег v0.7.1)
+- 2026-11-25: Запущен этап 9.3 в ветке stage-9/hybrid-mock-real-cameras-and-live-fix (coordinator2 + builder2)
+- 2026-11-25: Реализован гибридный режим MOCK_CAMERAS и отрисовка метаданных при 0 растений (1429864)
+- 2026-11-25: Исправлены маппинг MJPEG в ustreamer, OpenCV V4L2 fallback, retry прокси и защита кэша контролов (6f6e280)
+- 2026-11-25: Пройдены проверки pytest (edge 86, server 89, bot 72, cli 51, целевые e2e 17) и ruff
+- 2026-11-25: Ветка stage-9/hybrid-mock-real-cameras-and-live-fix слита в main, поднята версия 0.7.2 (тег v0.7.2), этап 9.3 закрыт (DONE)
