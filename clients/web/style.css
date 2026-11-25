@@ -658,12 +658,6 @@ button {
   gap: 14px;
 }
 
-.duration-control {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .duration-label {
   font-size: 0.85rem;
   color: var(--text-muted);
@@ -1241,17 +1235,24 @@ button {
 
 /* ================== Галерея: Длительность и FPS ================== */
 .duration-control {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 3px;
 }
 
 .fps-container {
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 20px;
+  min-width: 155px;
   font-size: 0.8rem;
-  margin-top: 2px;
+  margin-top: 0;
+  white-space: nowrap;
+  flex-wrap: nowrap;
 }
 
 .fps-badge {
@@ -1261,16 +1262,25 @@ button {
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.75rem;
+  white-space: nowrap;
 }
 
 .fps-warning {
   color: #f59e0b;
   font-size: 0.75rem;
   line-height: 1.2;
+  white-space: nowrap;
 }
 
 .fps-warning.hidden {
   display: none !important;
+}
+
+.duration-control .form-error-inline {
+  margin-top: 0;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 /* ================== Тематические медиа-заглушки ================== */
@@ -1736,7 +1746,7 @@ button {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: transform 0.16s ease, background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: transform 0.16s ease, background 0.2s ease, border-color 0.2s ease;
 }
 
 .live-cat-btn.cat-format { --cat-accent: #0ea5e9; }
@@ -1755,7 +1765,7 @@ button {
   background: var(--cat-accent);
   border-color: rgba(255, 255, 255, 0.55);
   color: #ffffff;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: none;
 }
 
 /* Строка компактных почти полностью прозрачных плашек настроек */
@@ -1766,7 +1776,7 @@ button {
   align-items: stretch;
   gap: 8px;
   margin: 0 auto;
-  padding: 2px 4px 6px;
+  padding: 2px 4px;
 }
 
 .live-ctrl-pill {
@@ -1783,8 +1793,30 @@ button {
   flex-direction: column;
   justify-content: center;
   gap: 6px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  box-shadow: none;
   transition: opacity 0.18s ease, border-color 0.18s ease;
+}
+
+.live-seg-mode-bar {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.34);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: none;
+}
+
+.live-seg-mode-label {
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: rgba(248, 250, 252, 0.9);
+  white-space: nowrap;
 }
 
 .live-ctrl-pill.live-pill-wide {

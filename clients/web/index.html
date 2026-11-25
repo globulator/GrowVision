@@ -348,8 +348,8 @@
               <div id="gallery-fps-container" class="fps-container">
                 <span id="gallery-fps-value" class="fps-badge">15 fps</span>
                 <span id="gallery-fps-warning" class="fps-warning hidden"></span>
+                <span id="gallery-duration-error" class="form-error-inline hidden"></span>
               </div>
-              <div id="gallery-duration-error" class="form-error-inline hidden"></div>
             </div>
 
             <!-- Кнопка «Скачать» (GIF при N>=2 / PNG при N=1) -->
@@ -718,6 +718,14 @@
         <!-- Верхняя полупрозрачная панель настроек поверх видео -->
         <div id="live-settings-drawer" class="live-settings-overlay">
           <div id="live-settings-content" class="live-settings-content"></div>
+          <div id="live-seg-mode-bar" class="live-seg-mode-bar">
+            <span class="live-seg-mode-label">Сегментация:</span>
+            <div id="live-seg-mode-control" class="segmented-control live-pill-segmented" role="group" aria-label="Движок сегментации">
+              <button type="button" id="live-seg-mode-auto" class="seg-btn active" data-seg-mode="auto">Авто</button>
+              <button type="button" id="live-seg-mode-onnx" class="seg-btn" data-seg-mode="onnx">ONNX</button>
+              <button type="button" id="live-seg-mode-hsv" class="seg-btn" data-seg-mode="hsv">HSV</button>
+            </div>
+          </div>
         </div>
 
         <!-- Компактная плашка предпросмотра автоцветокоррекции снизу Live-окна -->
@@ -731,7 +739,7 @@
           </div>
           <div class="live-auto-color-actions">
             <button type="button" id="btn-live-auto-color-apply" class="btn btn-primary btn-compact">Применить</button>
-            <button type="button" id="btn-live-auto-color-cancel" class="btn btn-secondary btn-compact">Отмена</button>
+            <button type="button" id="btn-live-auto-color-cancel" class="btn btn-secondary btn-compact">Скрыть</button>
           </div>
         </div>
       </div>
