@@ -17,7 +17,7 @@ from server.core.system_status import (
     is_debug_mode,
     validate_target_value,
 )
-from server.db.models import Capture, EdgeCommand, Installation, User
+from server.db.models import Capture, EdgeCommand, Installation, SystemSetting, User
 
 router = APIRouter(prefix="/api/control", tags=["control"])
 
@@ -479,11 +479,26 @@ async def control_relay_test(
     # 2. Проверка онлайна RPi
     check_rpi_online(db)
 
+    # Фиксируем исходные программные состояния пинов (свет=True, вспышка=False по умолчанию)
+    target_insts = (
+        db.query(Installation).filter(Installation.is_archived.is_(False)).all()
+        if is_global
+        else db.query(Installation).filter(Installation.id == inst_id).all()
+    )
+    initial_states: dict[str, bool] = {}
+    for item in target_insts:
+        light_st = app_state.get_pin_state(item.light_gpio_pin, default=True)
+        initial_states[str(item.light_gpio_pin)] = light_st
+        if item.flash_gpio_pin != item.light_gpio_pin:
+            initial_states[str(item.flash_gpio_pin)] = app_state.get_pin_state(
+                item.flash_gpio_pin, default=False
+            )
+
     cmd = EdgeCommand(
         command_type="RELAY_TEST",
         installation_id=inst_id,
         is_global=is_global,
-        payload=None,
+        payload=json.dumps({"initial_states": initial_states}),
         status="pending",
     )
     db.add(cmd)
@@ -492,10 +507,32 @@ async def control_relay_test(
 
     finished_cmd = await wait_command_result(cmd.id, 10.0, db)
 
+    cmd_data = app_state.pop_command_data(finished_cmd.id)
+    if finished_cmd.status == "done":
+        raw_pins = (
+            cmd_data.get("pin_states")
+            if isinstance(cmd_data, dict)
+            and isinstance(cmd_data.get("pin_states"), dict)
+            else None
+        )
+        if raw_pins is not None:
+            for raw_pin, raw_val in raw_pins.items():
+                try:
+                    app_state.set_pin_state(int(raw_pin), bool(raw_val))
+                except (TypeError, ValueError):
+                    continue
+        else:
+            existing_pins = app_state.get_all_pin_states()
+            for raw_pin, val in initial_states.items():
+                pin_num = int(raw_pin)
+                if pin_num not in existing_pins:
+                    app_state.set_pin_state(pin_num, val)
+
     resp: dict[str, Any] = {
         "command_id": finished_cmd.id,
         "status": finished_cmd.status,
         "result_message": finished_cmd.result_message or "OK",
+        "pin_states": {str(k): v for k, v in app_state.get_all_pin_states().items()},
     }
     debug_info = build_debug_info(finished_cmd, current_user, db)
     if debug_info:
@@ -506,9 +543,62 @@ async def control_relay_test(
 @router.get("/relays", response_model=dict[str, Any])
 def get_relays_status(
     current_user: Annotated[User, Depends(require_role("developer"))],
+    db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
-    """Возвращает текущие программные состояния всех GPIO-пинов."""
-    return {"pins": {str(k): v for k, v in app_state.get_all_pin_states().items()}}
+    """Возвращает текущие программные состояния GPIO-пинов, активных установок и capture_delay_sec."""
+    pins = {str(k): v for k, v in app_state.get_all_pin_states().items()}
+    active_insts = (
+        db.query(Installation)
+        .filter(Installation.is_archived.is_(False))
+        .order_by(Installation.id.asc())
+        .all()
+    )
+    installations_relays: list[dict[str, Any]] = []
+    for inst in active_insts:
+        light_st = app_state.get_pin_state(inst.light_gpio_pin, default=True)
+        flash_st = (
+            light_st
+            if inst.flash_gpio_pin == inst.light_gpio_pin
+            else app_state.get_pin_state(inst.flash_gpio_pin, default=False)
+        )
+        pins.setdefault(str(inst.light_gpio_pin), light_st)
+        pins.setdefault(str(inst.flash_gpio_pin), flash_st)
+        installations_relays.append(
+            {
+                "installation_id": inst.id,
+                "name": inst.name,
+                "light_gpio_pin": inst.light_gpio_pin,
+                "light_state": light_st,
+                "flash_gpio_pin": inst.flash_gpio_pin,
+                "flash_state": flash_st,
+            }
+        )
+
+    delay_setting = (
+        db.query(SystemSetting).filter(SystemSetting.key == "capture_delay_sec").first()
+    )
+    capture_delay_sec = (
+        float(delay_setting.value) if delay_setting and delay_setting.value else 1.5
+    )
+    light_state = (
+        any(item["light_state"] for item in installations_relays)
+        if installations_relays
+        else True
+    )
+    flash_pins_items = [
+        item
+        for item in installations_relays
+        if item["flash_gpio_pin"] != item["light_gpio_pin"]
+    ]
+    flash_state = any(item["flash_state"] for item in flash_pins_items)
+
+    return {
+        "pins": pins,
+        "installations": installations_relays,
+        "light_state": light_state,
+        "flash_state": flash_state,
+        "capture_delay_sec": capture_delay_sec,
+    }
 
 
 @router.get("/relays/{installation_id}", response_model=dict[str, Any])

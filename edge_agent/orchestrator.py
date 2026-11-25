@@ -387,9 +387,44 @@ class EdgeOrchestrator:
         elif cmd.installation:
             targets = [cmd.installation]
 
+        payload_initial: dict[int, bool] = {}
+        if cmd.payload and isinstance(cmd.payload, dict):
+            raw_initial = cmd.payload.get("initial_states")
+            if isinstance(raw_initial, dict):
+                for raw_pin, raw_val in raw_initial.items():
+                    try:
+                        payload_initial[int(raw_pin)] = bool(raw_val)
+                    except (TypeError, ValueError):
+                        continue
+
         pins: list[int] = []
+        initial_states: dict[int, bool] = {}
+        pin_roles = getattr(self.hardware, "_pin_roles", None)
         for inst in targets:
-            pins.extend([inst.light_gpio_pin, inst.flash_gpio_pin])
+            light_pin = inst.light_gpio_pin
+            flash_pin = inst.flash_gpio_pin
+            pins.extend([light_pin, flash_pin])
+
+            if isinstance(pin_roles, dict) and light_pin not in pin_roles:
+                pin_roles[light_pin] = "light"
+            if (
+                isinstance(pin_roles, dict)
+                and flash_pin != light_pin
+                and flash_pin not in pin_roles
+            ):
+                pin_roles[flash_pin] = "flash"
+
+            if light_pin in payload_initial:
+                initial_states[light_pin] = payload_initial[light_pin]
+            else:
+                initial_states.setdefault(light_pin, True)
+
+            if flash_pin != light_pin:
+                if flash_pin in payload_initial:
+                    initial_states[flash_pin] = payload_initial[flash_pin]
+                else:
+                    initial_states.setdefault(flash_pin, False)
+
         pins = list(dict.fromkeys(pins))
 
         if not pins:
@@ -402,13 +437,18 @@ class EdgeOrchestrator:
             )
             return
 
-        self.hardware.test_relay(pins, duration=duration)
+        restored = self.hardware.test_relay(
+            pins, duration=duration, initial_states=initial_states
+        )
+        if not isinstance(restored, dict):
+            restored = {pin: self.hardware.get_pin_state(pin) for pin in pins}
         self.client.send_command_result(
             cmd.id,
             CommandResult(
                 status="done",
                 result_message=f"Тест реле успешно завершен для пинов {pins}",
-                debug_log_line=f"[GPIO] RELAY_TEST done for pins {pins}",
+                data={"pin_states": {str(p): bool(v) for p, v in restored.items()}},
+                debug_log_line=f"[GPIO] RELAY_TEST done for pins {pins}: {restored}",
             ),
         )
 

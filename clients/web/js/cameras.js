@@ -24,6 +24,7 @@ let isAutoColorCalibrating = false;
 let pendingAutoColorPreview = null;
 let isClosingFlow = false;
 let onLiveProfileSavedCallback = null;
+let onCamerasChangedCallback = null;
 let liveStartedAt = 0;
 let liveStreamRetryTimer = null;
 let liveRgbSyncTimer = null;
@@ -79,6 +80,10 @@ const RESET_ICON_SVG = `<svg class="icon-svg" viewBox="0 0 24 24" width="13" hei
 
 export function setLiveProfileSavedHandler(fn) {
   onLiveProfileSavedCallback = fn;
+}
+
+export function setCamerasChangedHandler(fn) {
+  onCamerasChangedCallback = fn;
 }
 
 export function updateCamerasRole(role) {
@@ -183,7 +188,14 @@ export async function openCamerasModal() {
   container.innerHTML = '<div class="loading-spinner">Загрузка списка камер...</div>';
 
   try {
-    const cameras = await api.getCameras();
+    const [cameras, installations] = await Promise.all([
+      api.getCameras(),
+      api.getInstallations(false).catch(() => []),
+    ]);
+    const activeInstallations = Array.isArray(installations)
+      ? installations.filter((inst) => !inst.is_archived)
+      : [];
+
     container.innerHTML = '';
 
     if (!cameras || cameras.length === 0) {
@@ -222,6 +234,7 @@ export async function openCamerasModal() {
           ${calibText ? `<div class="camera-calib-text">${calibText}</div>` : ''}
         </div>
         <div class="camera-card-actions">
+          <select class="form-input camera-bind-select" aria-label="Привязка камеры ${displayName} к установке"></select>
           <button type="button" class="btn btn-primary btn-cam-live" ${!isOnline ? 'disabled' : ''}>
             <svg class="icon-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
               <polygon points="23 7 16 12 23 17 23 7"/>
@@ -231,6 +244,69 @@ export async function openCamerasModal() {
           </button>
         </div>
       `;
+
+      const bindSelect = card.querySelector('.camera-bind-select');
+      if (bindSelect) {
+        const unbindOpt = document.createElement('option');
+        unbindOpt.value = '';
+        unbindOpt.textContent = 'Отвязать';
+        bindSelect.appendChild(unbindOpt);
+
+        activeInstallations.forEach((inst) => {
+          const opt = document.createElement('option');
+          opt.value = String(inst.id);
+          opt.textContent = inst.name;
+          bindSelect.appendChild(opt);
+        });
+
+        const currentInstVal =
+          cam.installation_id !== null && cam.installation_id !== undefined
+            ? String(cam.installation_id)
+            : '';
+        if (
+          currentInstVal &&
+          !activeInstallations.some((inst) => String(inst.id) === currentInstVal)
+        ) {
+          const extraOpt = document.createElement('option');
+          extraOpt.value = currentInstVal;
+          extraOpt.textContent = cam.installation_name || `Установка #${currentInstVal}`;
+          bindSelect.appendChild(extraOpt);
+        }
+        bindSelect.value = currentInstVal;
+
+        if (currentRole !== 'developer') {
+          bindSelect.disabled = true;
+          bindSelect.title = 'Привязка камер доступна только разработчику';
+        } else {
+          bindSelect.addEventListener('change', async () => {
+            const nextVal = bindSelect.value;
+            const prevVal = currentInstVal;
+            const targetInstId = nextVal === '' ? null : Number(nextVal);
+            bindSelect.disabled = true;
+            try {
+              await api.bindCamera(cam.id, targetInstId);
+              if (targetInstId === null) {
+                showToast(`Камера «${displayName}» отвязана`);
+              } else {
+                const chosen = activeInstallations.find((i) => Number(i.id) === targetInstId);
+                showToast(
+                  chosen
+                    ? `Камера «${displayName}» привязана к «${chosen.name}»`
+                    : `Камера «${displayName}» привязана`
+                );
+              }
+              if (typeof onCamerasChangedCallback === 'function') {
+                await onCamerasChangedCallback();
+              }
+              await openCamerasModal();
+            } catch (err) {
+              bindSelect.value = prevVal;
+              bindSelect.disabled = false;
+              showError(err.message || 'Не удалось изменить привязку камеры');
+            }
+          });
+        }
+      }
 
       const liveBtn = card.querySelector('.btn-cam-live');
       if (liveBtn) {

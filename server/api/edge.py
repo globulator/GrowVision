@@ -361,9 +361,16 @@ def edge_command_result(
         # Сохраняем результат в памяти процесса (даже при пустом списке)
         app_state.save_scanned_cameras(command_id, scanned_hw_ids)
 
-    # Обработка дополнительных данных результата команды (stream_url, controls, formats, auto_color)
+    # Обработка дополнительных данных результата команды (stream_url, controls, formats, auto_color, pin_states)
     if body.data and isinstance(body.data, dict):
         app_state.save_command_data(command_id, body.data)
+        raw_pin_states = body.data.get("pin_states")
+        if body.status == "done" and isinstance(raw_pin_states, dict):
+            for raw_pin, raw_val in raw_pin_states.items():
+                try:
+                    app_state.set_pin_state(int(raw_pin), bool(raw_val))
+                except (TypeError, ValueError):
+                    continue
         cmd_payload = {}
         if cmd.payload:
             try:
