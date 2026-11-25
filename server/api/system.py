@@ -17,7 +17,7 @@ from server.api.deps import (
 )
 from server.core.bot_info import get_telegram_bot_username
 from server.core.system_status import is_rpi_online
-from server.db.models import SystemSetting, User
+from server.db.models import Camera, SystemSetting, User
 from shared.version import get_app_version
 
 router = APIRouter(tags=["system"])
@@ -121,15 +121,17 @@ def get_system_status(
         float(delay_setting.value) if delay_setting and delay_setting.value else 1.5
     )
 
+    hw_info = rpi_telemetry.get("hardware") if isinstance(rpi_telemetry, dict) else None
+    hw_mode = (
+        rpi_telemetry.get("hardware_mode") if isinstance(rpi_telemetry, dict) else None
+    ) or (hw_info.get("gpio_mode") if isinstance(hw_info, dict) else None)
+
     real_rpi = False
     if online and (
-        (
-            rpi_telemetry
-            and isinstance(rpi_telemetry, dict)
-            and (
-                rpi_telemetry.get("hardware_mode") == "rpi"
-                or rpi_telemetry.get("is_raspberry_pi")
-            )
+        hw_mode == "rpi"
+        or (
+            isinstance(rpi_telemetry, dict)
+            and bool(rpi_telemetry.get("is_raspberry_pi"))
         )
         or is_raspberry_pi()
     ):
@@ -140,17 +142,30 @@ def get_system_status(
         and isinstance(rpi_telemetry, dict)
         and "hardware_mode" not in rpi_telemetry
     ):
-        hw_info = rpi_telemetry.get("hardware")
-        if isinstance(hw_info, dict) and hw_info.get("gpio_mode"):
-            rpi_telemetry["hardware_mode"] = hw_info["gpio_mode"]
+        if hw_mode:
+            rpi_telemetry["hardware_mode"] = hw_mode
         else:
             rpi_telemetry["hardware_mode"] = "rpi" if real_rpi else "mock"
+
+    # 3. Сводка по камерам
+    all_cameras = db.query(Camera).all()
+    cam_total = len(all_cameras)
+    cam_online = sum(1 for c in all_cameras if c.is_online)
+    cam_bound = sum(1 for c in all_cameras if c.installation_id is not None)
+    cameras_summary = {
+        "total": cam_total,
+        "online": cam_online,
+        "offline": cam_total - cam_online,
+        "bound": cam_bound,
+        "unbound": cam_total - cam_bound,
+    }
 
     return {
         "server_version": get_app_version(),
         "rpi_connection": rpi_connection,
         "rpi_last_heartbeat_at": rpi_last_heartbeat_at,
         "is_real_rpi": real_rpi,
+        "cameras_summary": cameras_summary,
         "settings": {
             "capture_interval_hours": capture_interval_hours,
             "debug_mode": debug_mode,

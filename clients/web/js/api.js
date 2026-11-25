@@ -88,8 +88,19 @@ async function request(url, options = {}) {
 }
 
 export const api = {
-  // Информация о сессии
+  // Информация о сессии и профиле
   getMe: () => request('/api/auth/web/me'),
+  getProfile: () => request('/api/auth/me'),
+  updateProfile: (login) =>
+    request('/api/auth/me', {
+      method: 'PATCH',
+      body: JSON.stringify({ login }),
+    }),
+  getSessions: () => request('/api/auth/sessions'),
+  terminateSession: (sessionId) =>
+    request(`/api/auth/sessions/${Number(sessionId)}/terminate`, {
+      method: 'POST',
+    }),
 
   // Регистрация в Web SPA через Telegram
   registerStart: (telegram) =>

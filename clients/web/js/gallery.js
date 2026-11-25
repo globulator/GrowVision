@@ -873,14 +873,95 @@ export function prepareGrowthChartSeries(frames, mode = null) {
   };
 }
 
+function escapeCsvCell(value) {
+  if (value === null || value === undefined) return '';
+  const str = String(value);
+  if (/[",\r\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+function fmtCsvNum(value) {
+  if (value === null || value === undefined || value === '') return '';
+  return String(value);
+}
+
+// Генерация CSV-отчёта по замерам графика роста (с UTF-8 BOM для Excel/LibreOffice)
+export function buildGrowthChartCsv(frames, _unitName = '') {
+  const list = Array.isArray(frames) ? frames : [];
+  const headers = [
+    'Дата и время',
+    'Количество кустов',
+    'Общая площадь (см²)',
+    'Средняя площадь (см²)',
+    'Общая площадь (px)',
+    'Средняя площадь (px)',
+    'Ширина (мм)',
+    'Высота (мм)',
+    'Ширина (px)',
+    'Высота (px)',
+    'Калибровка ArUco',
+  ];
+
+  const rows = [headers.map(escapeCsvCell).join(',')];
+  for (const f of list) {
+    if (!f) continue;
+    const isCalibrated = Boolean(f.aruco_calibrated ?? f.has_aruco);
+    const row = [
+      f.captured_at || '',
+      f.plants_count ?? 0,
+      fmtCsvNum(f.total_area_cm2),
+      fmtCsvNum(f.avg_area_cm2),
+      fmtCsvNum(f.total_area_px),
+      fmtCsvNum(f.avg_area_px),
+      fmtCsvNum(f.width_mm),
+      fmtCsvNum(f.height_mm),
+      fmtCsvNum(f.width_px),
+      fmtCsvNum(f.height_px),
+      isCalibrated ? 'Да' : 'Нет',
+    ];
+    rows.push(row.map(escapeCsvCell).join(','));
+  }
+
+  return `\uFEFF${rows.join('\r\n')}\r\n`;
+}
+
+function handleExportGrowthCsv() {
+  if (!currentCameraFrames || currentCameraFrames.length === 0) {
+    showToast('Нет данных для экспорта', 'info');
+    return;
+  }
+  const unitName = (currentUnit && currentUnit.name) || 'installation';
+  const csvContent = buildGrowthChartCsv(currentCameraFrames, unitName);
+  const safeName =
+    String(unitName)
+      .trim()
+      .replace(/[^\p{L}\p{N}_-]+/gu, '_')
+      .replace(/^_+|_+$/g, '') || 'installation';
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `growvision_${safeName}_growth.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function updateChartPanelUi() {
   const panel = document.getElementById('gallery-chart-panel');
   const btn = document.getElementById('gallery-btn-chart');
+  const exportBtn = document.getElementById('gallery-chart-export-csv');
   if (panel) {
     panel.classList.toggle('hidden', !isChartOpen);
   }
   if (btn) {
     btn.classList.toggle('active', isChartOpen);
+  }
+  if (exportBtn) {
+    exportBtn.disabled = !currentCameraFrames || currentCameraFrames.length === 0;
   }
   const modeBtns = document.querySelectorAll('#gallery-chart-mode-control .seg-btn');
   modeBtns.forEach((b) => {
@@ -1154,6 +1235,11 @@ export function initGallery() {
         }
       });
     });
+  }
+
+  const exportCsvBtn = document.getElementById('gallery-chart-export-csv');
+  if (exportCsvBtn) {
+    exportCsvBtn.addEventListener('click', handleExportGrowthCsv);
   }
 
   // Валидация поля длительности и динамический расчет FPS

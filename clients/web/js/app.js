@@ -4,9 +4,18 @@
 import { api, setUnauthorizedHandler } from './api.js';
 import {
   initAuth,
+  openLoginModal,
   setAuthSuccessHandler,
   updateBotLinks,
 } from './auth.js';
+import {
+  closeProfileModal,
+  closeSessionsModal,
+  initProfile,
+  setProfileUpdatedHandler,
+  setProfileUser,
+  setSelfSessionTerminatedHandler,
+} from './profile.js';
 import { initDialogs, showError, showToast } from './dialogs.js';
 import {
   closeGalleryModal,
@@ -77,10 +86,10 @@ function updateHeaderUi() {
     }
   }
 
-  // Имя пользователя
+// Имя пользователя
   if (userNameEl) {
     userNameEl.textContent = name;
-    userNameEl.classList.toggle('hidden', !name);
+    userNameEl.classList.toggle('hidden', !name || role === 'guest');
   }
 
   // Кнопки Вход / Выход
@@ -109,7 +118,19 @@ function applyRole(role) {
   updateRpiRole(role);
   updateLightRole(role);
   updateCamerasRole(role);
+  setProfileUser(currentUser);
   updateHeaderUi();
+}
+
+function closeAllModals() {
+  closeGalleryModal();
+  closeTestSnapModal();
+  closeCamerasModal();
+  closeLiveModal();
+  closeUnitEditorModal();
+  closeLightControlModal();
+  closeProfileModal();
+  closeSessionsModal();
 }
 
 // Показ компактного inline-подтверждения выхода в шапке
@@ -136,12 +157,7 @@ async function performLogout() {
     await api.logout();
     currentUser = { authenticated: false, role: 'guest', login: null };
     applyRole('guest');
-    closeGalleryModal();
-    closeTestSnapModal();
-    closeCamerasModal();
-    closeLiveModal();
-    closeUnitEditorModal();
-    closeLightControlModal();
+    closeAllModals();
     await loadAndRenderUnits();
     showToast('Вы вышли из системы');
   } catch (err) {
@@ -154,15 +170,25 @@ function handleSessionExpired() {
   if (currentUser && currentUser.role !== 'guest') {
     currentUser = { authenticated: false, role: 'guest', login: null };
     applyRole('guest');
-    closeGalleryModal();
-    closeTestSnapModal();
-    closeCamerasModal();
-    closeLiveModal();
-    closeUnitEditorModal();
-    closeLightControlModal();
+    closeAllModals();
     loadAndRenderUnits();
     showError('Сессия завершена. Войдите снова.', 'Сессия');
   }
+}
+
+// Обработка принудительного завершения собственного сеанса из «Активных сессий»
+async function handleSelfSessionTerminated() {
+  try {
+    await api.logout();
+  } catch (_) {
+    // Игнорируем ошибку, если сервер уже деактивировал сессию
+  }
+  currentUser = { authenticated: false, role: 'guest', login: null };
+  applyRole('guest');
+  closeAllModals();
+  await loadAndRenderUnits();
+  openLoginModal();
+  showToast('Текущий сеанс завершён. Войдите снова.');
 }
 
 // Загрузка версии сервера для подвала и ссылки на бота
@@ -219,9 +245,16 @@ async function pollBackground() {
       }
       const wasAuth = currentUser && currentUser.authenticated;
       const wasRole = currentUser && currentUser.role;
-      if (me.authenticated !== wasAuth || (me.authenticated && me.role !== wasRole)) {
+      const wasLogin = currentUser && currentUser.login;
+      if (
+        me.authenticated !== wasAuth ||
+        (me.authenticated && (me.role !== wasRole || me.login !== wasLogin))
+      ) {
         currentUser = me.authenticated ? me : { authenticated: false, role: 'guest', login: null };
         applyRole(currentUser.role);
+      } else if (me.authenticated) {
+        currentUser = { ...currentUser, ...me };
+        setProfileUser(currentUser);
       }
     }
   } catch (_) {
@@ -243,6 +276,7 @@ function startBackgroundPolling() {
 async function bootstrap() {
   initDialogs();
   initAuth();
+  initProfile();
   initUnits();
   initUnitEditor();
   initGallery();
@@ -264,6 +298,14 @@ async function bootstrap() {
 
   setUnauthorizedHandler(handleSessionExpired);
 
+  setProfileUpdatedHandler((updatedUser) => {
+    if (updatedUser && currentUser && currentUser.authenticated) {
+      currentUser = { ...currentUser, ...updatedUser };
+      updateHeaderUi();
+    }
+  });
+  setSelfSessionTerminatedHandler(handleSelfSessionTerminated);
+
   setAuthSuccessHandler(async (res) => {
     currentUser = {
       authenticated: true,
@@ -271,6 +313,7 @@ async function bootstrap() {
       login: res.login,
     };
     applyRole(res.role);
+    await initSession();
     await loadAndRenderUnits();
   });
 

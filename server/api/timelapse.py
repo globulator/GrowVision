@@ -38,6 +38,14 @@ class VideoRequest(BaseModel):
     fps: float | None = Field(default=None, ge=1.0, le=60.0)
 
 
+def _avg_non_null(values: list[float | None], decimals: int = 1) -> float | None:
+    """Возвращает округлённое среднее по непустым значениям или None."""
+    nums = [float(v) for v in values if v is not None]
+    if not nums:
+        return None
+    return round(sum(nums) / len(nums), decimals)
+
+
 def get_frame_file_path(image_path: str) -> Path:
     """Строит абсолютный путь к файлу кадра строго через get_media_dir()."""
     base_media = get_media_dir()
@@ -115,6 +123,15 @@ def get_timelapse_frames(
                 )
                 avg_area_cm2 = round(total_area_cm2 / plants_count, 2)
 
+        width_px = _avg_non_null([m.width_px for m in measurements], 1)
+        height_px = _avg_non_null([m.height_px for m in measurements], 1)
+        width_mm = (
+            _avg_non_null([m.width_mm for m in measurements], 1) if has_aruco else None
+        )
+        height_mm = (
+            _avg_non_null([m.height_mm for m in measurements], 1) if has_aruco else None
+        )
+
         meas = next(
             (m for m in measurements if m.plant_index == 0),
             None,
@@ -137,8 +154,13 @@ def get_timelapse_frames(
                 "avg_area_px": avg_area_px,
                 "total_area_cm2": total_area_cm2,
                 "avg_area_cm2": avg_area_cm2,
+                "width_px": width_px,
+                "height_px": height_px,
+                "width_mm": width_mm,
+                "height_mm": height_mm,
                 "plants_count": plants_count,
                 "has_aruco": has_aruco,
+                "aruco_calibrated": has_aruco,
             }
         )
 
