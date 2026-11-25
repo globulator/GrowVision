@@ -4,8 +4,8 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 9.3
-- Название этапа: Гибридный режим эмулятора (MOCK_CAMERAS=false для реальных камер), аннотации кадра при 0 растений и починка Live-стрима / V4L2-настроек
+- Текущий этап: 9.4
+- Название этапа: Съёмка без паузы Live, заглушка отключения камеры, переключатель «Оригинал/Разметка», улучшенные контролы V4L2/RGB (feColorMatrix, диалог сохранения) и вёрстка карточек
 - Режим: FAST (coordinator2 + builder2)
 - Статус: DONE
 - Итераций ревью: 0 из 3
@@ -18,12 +18,13 @@
 | — | — | — | — | — |
 
 ## Коммиты текущего этапа
-- 1429864 feat(edge): add hybrid mock_cameras mode and annotate zero-plant frames
-- 6f6e280 fix(live): fix ustreamer MJPEG mapping, OpenCV V4L2 fallback, proxy retry and controls cache
-- Слияние stage-9/hybrid-mock-real-cameras-and-live-fix в main, версия 0.7.2 (тег v0.7.2)
+- 8e7bc52 feat(edge): live snapshot without pause, offline state and annotated mode
+- 0840c97 feat(server): live mode switch, offline status, rgb snapshot and gallery save
+- 59cc19f feat(web): live ux controls, feColorMatrix rgb, annotated toggle and card layout
+- Слияние stage-9/live-ux-controls-and-annotations в main, версия 0.7.3 (тег v0.7.3)
 
 ## Последний вердикт ревью
-- Вердикт: PASS (по этапу 9.3, итераций ревью: 0/3)
+- Вердикт: PASS (по этапу 9.4, итераций ревью: 0/3)
 - Открытые дефекты: —
 
 ## Закрытые этапы
@@ -54,12 +55,13 @@
 - Этап 9.1: Исправление кириллицы на CV-разметке, фильтрация шума/серого фона в HSV-сегментации и 50 Гц для V4L2-камер (принят QA, слит в main, версия 0.7.0, отчёт docs/stage_reports/stage-9.1.md)
 - Этап 9.2: Live-стрим, реальные V4L2-контролы, фиксы по тесту на реальной RPi 5 (Logitech C270) и новый Live UI (принят после ревью, слит в main, версия 0.7.1)
 - Этап 9.3: Гибридный режим эмулятора с реальными V4L2-камерами, аннотации кадра при 0 растений и стабилизация Live/V4L2 (принят после ревью, слит в main, версия 0.7.2)
+- Этап 9.4: Съёмка без паузы Live, заглушка отключения, режим «Оригинал/Разметка», улучшенные контролы V4L2/RGB, диалог сохранения и вёрстка карточек (принят после ревью, слит в main, версия 0.7.3)
 
 ## История (последние 10 событий)
-- 2026-11-25: Builder v2 реализовал правки этапа 9.2 (3f363bc) и фиксы по ревью (f0a5654)
-- 2026-11-25: Ветка stage-9/live-stream-camera-settings-and-schedule слита в main, поднята версия 0.7.1 (тег v0.7.1)
 - 2026-11-25: Запущен этап 9.3 в ветке stage-9/hybrid-mock-real-cameras-and-live-fix (coordinator2 + builder2)
-- 2026-11-25: Реализован гибридный режим MOCK_CAMERAS и отрисовка метаданных при 0 растений (1429864)
-- 2026-11-25: Исправлены маппинг MJPEG в ustreamer, OpenCV V4L2 fallback, retry прокси и защита кэша контролов (6f6e280)
-- 2026-11-25: Пройдены проверки pytest (edge 86, server 89, bot 72, cli 51, целевые e2e 17) и ruff
 - 2026-11-25: Ветка stage-9/hybrid-mock-real-cameras-and-live-fix слита в main, поднята версия 0.7.2 (тег v0.7.2), этап 9.3 закрыт (DONE)
+- 2026-11-25: Запущен этап 9.4 в ветке stage-9/live-ux-controls-and-annotations (coordinator2 + builder2)
+- 2026-11-25: Реализованы захват через /snapshot без паузы, online:false, режим Оригинал/Разметка (8e7bc52, 0840c97)
+- 2026-11-25: Обновлён Live Web UI: toggle/segmented контролы, единицы, default-сброс, feColorMatrix RGB 0..1, диалог сохранения и flex-wrap карточек (59cc19f)
+- 2026-11-25: Пройдены проверки pytest (edge 91, server 94, bot 72, cli 51, целевые e2e 17) и ruff
+- 2026-11-25: Ветка stage-9/live-ux-controls-and-annotations слита в main, поднята версия 0.7.3 (тег v0.7.3), этап 9.4 закрыт (DONE)
