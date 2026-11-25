@@ -123,6 +123,7 @@ class CommandResult(BaseModel):
     result_message: str
     debug_log_line: str | None = None
     scanned_cameras: list[DetectedCamera] | None = None
+    data: dict[str, Any] | None = None
 
 
 class PlantMeasurementMeta(BaseModel):

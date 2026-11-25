@@ -15,7 +15,8 @@ from server.api.deps import (
 )
 from server.core.area import calculate_area_display
 from server.core.state import app_state
-from server.db.models import Capture, Installation, User
+from server.db.models import Capture, Installation, SystemSetting, User
+from shared.schedule import compute_next_capture_at
 
 router = APIRouter(prefix="/api/installations", tags=["installations"])
 
@@ -106,6 +107,25 @@ def serialize_installation(
         inst.id, inst.aruco_size_mm, db
     )
     frames_count = db.query(Capture).filter(Capture.installation_id == inst.id).count()
+
+    next_capture_at = None
+    if not inst.is_archived:
+        last_cap = (
+            db.query(Capture)
+            .filter(Capture.installation_id == inst.id)
+            .order_by(Capture.captured_at.desc())
+            .first()
+        )
+        last_time = last_cap.captured_at if last_cap else None
+        setting = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == "capture_interval_hours")
+            .first()
+        )
+        interval_h = int(setting.value) if setting and setting.value else 1
+        next_dt = compute_next_capture_at(last_time, interval_h)
+        next_capture_at = format_utc_z(next_dt)
+
     data: dict[str, Any] = {
         "id": inst.id,
         "name": inst.name,
@@ -115,6 +135,7 @@ def serialize_installation(
         "last_frame_raw_url": last_raw_url,
         "last_frame_url": last_raw_url,
         "frames_count": frames_count,
+        "next_capture_at": next_capture_at,
         "warnings": warnings if warnings is not None else [],
     }
 

@@ -1433,3 +1433,477 @@ button {
     transform: scale(0);
   }
 }
+
+
+/* ==========================================================================
+   Этап 9.2: Стили Live-стрима, меню камер и ручных настроек V4L2/RGB
+   ========================================================================== */
+
+/* Время следующего кадра и кнопка Live на карточке установки */
+.unit-next-capture {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.unit-next-capture .icon-svg {
+  color: var(--primary-accent);
+}
+
+.unit-next-capture-val {
+  color: var(--text-main);
+  font-weight: 500;
+}
+
+.unit-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+/* Модальное окно списка камер */
+.camera-menu-card {
+  padding: 16px;
+  border-radius: 12px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(30, 41, 59, 0.4);
+  border: 1px solid var(--panel-border);
+  transition: border-color 0.2s;
+}
+
+.camera-menu-card:hover {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.camera-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.camera-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.camera-name {
+  font-size: 0.98rem;
+  color: var(--text-main);
+}
+
+.camera-status-text {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.camera-card-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+}
+
+.camera-inst-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  background: rgba(148, 163, 184, 0.1);
+  border-radius: 6px;
+  width: fit-content;
+  color: var(--text-main);
+}
+
+.camera-hw-id {
+  font-family: monospace;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.camera-calib-text {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.camera-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* Модальное окно Live */
+.live-modal-window {
+  max-width: 960px;
+  width: 95vw;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.live-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--panel-border);
+  background: rgba(15, 23, 42, 0.85);
+}
+
+.live-viewport-container {
+  position: relative;
+  width: 100%;
+  min-height: 440px;
+  background: #020617;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.live-stream-image {
+  width: 100%;
+  max-height: 68vh;
+  object-fit: contain;
+  display: block;
+}
+
+/* Оверлей загрузки / ошибки потока */
+.live-state-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  background: radial-gradient(circle at center, rgba(15, 23, 42, 0.72), rgba(2, 6, 23, 0.92));
+  color: var(--text-main);
+  z-index: 8;
+  text-align: center;
+}
+
+.live-spinner {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 3px solid rgba(148, 163, 184, 0.25);
+  border-top-color: var(--primary-accent);
+  animation: live-spin 0.85s linear infinite;
+}
+
+@keyframes live-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.live-error-icon {
+  color: #f87171;
+  opacity: 0.9;
+}
+
+.live-state-text {
+  font-size: 0.92rem;
+  color: var(--text-muted);
+}
+
+/* Оверлей паузы поверх замороженного последнего кадра */
+.live-paused-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 12;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.live-paused-badge {
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  padding: 16px 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-main);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.pause-overlay-icon {
+  color: var(--primary-accent);
+}
+
+.pause-overlay-text {
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+/* Верхняя панель категорий настроек поверх видео */
+.live-settings-overlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 20;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.live-settings-content {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.live-cat-bar,
+.live-pills-bar {
+  pointer-events: auto;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  display: flex;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+
+.live-cat-bar::-webkit-scrollbar,
+.live-pills-bar::-webkit-scrollbar {
+  height: 5px;
+}
+
+.live-cat-bar::-webkit-scrollbar-thumb,
+.live-pills-bar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+}
+
+.live-cat-track {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 auto;
+  padding: 2px 4px;
+}
+
+.live-cat-btn {
+  --cat-accent: #10b981;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(15, 23, 42, 0.44);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: rgba(248, 250, 252, 0.88);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.16s ease, background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.live-cat-btn.cat-format { --cat-accent: #0ea5e9; }
+.live-cat-btn.cat-exposure { --cat-accent: #f59e0b; }
+.live-cat-btn.cat-color { --cat-accent: #ec4899; }
+.live-cat-btn.cat-focus { --cat-accent: #10b981; }
+
+.live-cat-btn:hover {
+  transform: translateY(-1px);
+  background: rgba(15, 23, 42, 0.68);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.live-cat-btn.active {
+  opacity: 1;
+  background: var(--cat-accent);
+  border-color: rgba(255, 255, 255, 0.55);
+  color: #ffffff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* Строка компактных почти полностью прозрачных плашек настроек */
+.live-pills-track {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 8px;
+  margin: 0 auto;
+  padding: 2px 4px 6px;
+}
+
+.live-ctrl-pill {
+  flex: 0 0 auto;
+  min-width: 148px;
+  max-width: 220px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.28);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  transition: opacity 0.18s ease, border-color 0.18s ease;
+}
+
+.live-ctrl-pill:hover:not(.is-disabled) {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.live-ctrl-pill.is-disabled {
+  opacity: 0.48;
+}
+
+.live-pill-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.74rem;
+  line-height: 1.2;
+}
+
+.live-pill-label {
+  font-weight: 500;
+  color: rgba(248, 250, 252, 0.92);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-pill-val {
+  font-family: monospace;
+  font-size: 0.75rem;
+  color: rgba(226, 232, 240, 0.9);
+  flex-shrink: 0;
+}
+
+.live-pill-slider {
+  width: 100%;
+  accent-color: var(--primary-accent);
+  cursor: pointer;
+  margin: 0;
+}
+
+.live-pill-slider:disabled {
+  cursor: not-allowed;
+}
+
+.live-pill-select,
+.live-pill-static-input {
+  width: 100%;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: var(--text-main);
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  outline: none;
+}
+
+.live-pill-select:focus {
+  border-color: var(--primary-accent);
+}
+
+.live-pill-select:disabled,
+.live-pill-static-input:disabled {
+  cursor: not-allowed;
+  color: var(--text-muted);
+}
+
+.live-pill-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.live-pill-switch input[type="checkbox"] {
+  accent-color: var(--primary-accent);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.live-pill-static {
+  font-size: 0.76rem;
+  color: rgba(226, 232, 240, 0.8);
+  white-space: nowrap;
+}
+
+.rgb-r { color: #f87171; }
+.rgb-g { color: #34d399; }
+.rgb-b { color: #60a5fa; }
+
+/* Нижняя панель модалки Live: телеметрия и компактная кнопка снимка */
+.live-footer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 18px;
+  background: rgba(15, 23, 42, 0.9);
+  border-top: 1px solid var(--panel-border);
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.live-telemetry-stats {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 0.82rem;
+  flex-wrap: wrap;
+}
+
+.live-stat-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.live-stat-badge .stat-value {
+  color: var(--text-main);
+  font-family: monospace;
+  font-weight: 600;
+}
+
+.btn-snap-download {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+}

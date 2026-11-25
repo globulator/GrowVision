@@ -1,19 +1,59 @@
 import asyncio
+import contextlib
 import json
 import time
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
+from edge_agent.camera_controls import (
+    apply_control_dependencies,
+    get_default_mock_controls,
+    get_default_mock_formats,
+)
 from server.api.deps import format_utc_z, get_db, require_role
+from server.core.live_manager import live_manager
 from server.core.state import app_state
-from server.core.system_status import check_rpi_online, is_debug_mode
+from server.core.system_status import check_rpi_online, is_debug_mode, is_rpi_online
 from server.db.models import Camera, EdgeCommand, Installation, SystemSetting, User
 
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
+
+
+def _is_rpi_hardware_mode(db: Session) -> bool:
+    """Определяет по телеметрии, работает ли Edge-агент в боевом режиме rpi."""
+    telem = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == "rpi_last_telemetry")
+        .first()
+    )
+    if not telem or not telem.value:
+        return False
+    try:
+        data = json.loads(telem.value)
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("hardware_mode") == "rpi" or data.get("is_raspberry_pi") is True:
+        return True
+    hw = data.get("hardware")
+    return isinstance(hw, dict) and hw.get("gpio_mode") == "rpi"
+
+
+def _upsert_setting(db: Session, key: str, value: str, now: datetime) -> None:
+    """Создаёт или обновляет SystemSetting по ключу."""
+    existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+    if existing:
+        existing.value = value
+        existing.updated_at = now
+    else:
+        db.add(SystemSetting(key=key, value=value, updated_at=now))
 
 
 class CameraBindRequest(BaseModel):
@@ -166,10 +206,10 @@ async def scan_cameras(
 
 @router.get("", response_model=list[dict[str, Any]])
 def list_cameras(
-    current_user: Annotated[User, Depends(require_role("developer"))],
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
     db: Annotated[Session, Depends(get_db)],
 ) -> list[dict[str, Any]]:
-    """4.3. GET /api/cameras (Developer).
+    """4.3. GET /api/cameras (Developer, Biologist).
 
     Список всех камер с информацией о подключении и привязке к установкам.
     """
@@ -314,3 +354,506 @@ async def autocalibrate_camera(
         "hardware_id": cam.hardware_id,
         "summary": summary,
     }
+
+
+class CameraControlsPatch(BaseModel):
+    """Тело запроса PATCH /api/cameras/{camera_id}/controls."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    controls: dict[str, Any] | None = None
+    format: str | None = None
+    resolution: str | None = None
+    rgb: dict[str, float] | None = None
+
+
+@router.post("/{camera_id}/live/start", response_model=dict[str, Any])
+def start_camera_live(
+    camera_id: int,
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Запуск Live-сессии камеры (Developer, Biologist)."""
+    check_rpi_online(db)
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Камера не найдена",
+        )
+
+    session = live_manager.get_or_create(cam.hardware_id, camera_id=cam.id)
+    session.is_active = True
+    session.is_paused = False
+    session.stream_url = None
+    session.latest_frame = None
+    session.last_frame_at = 0.0
+    session.last_proxied_at = 0.0
+    session.fps = 0.0
+    session.latency_ms = 0
+    session._frame_times.clear()
+    session.last_heartbeat = time.time()
+
+    fmt_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_format_{cam.hardware_id}")
+        .first()
+    )
+    res_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_res_{cam.hardware_id}")
+        .first()
+    )
+    cur_fmt = fmt_setting.value if fmt_setting and fmt_setting.value else "MJPG"
+    cur_res = res_setting.value if res_setting and res_setting.value else "1280x720"
+
+    parts = cur_res.split("x")
+    w = int(parts[0]) if len(parts) == 2 else 1280
+    h = int(parts[1]) if len(parts) == 2 else 720
+
+    cmd = EdgeCommand(
+        command_type="START_LIVE",
+        installation_id=cam.installation_id,
+        is_global=cam.installation_id is None,
+        payload=json.dumps(
+            {
+                "camera_hardware_id": cam.hardware_id,
+                "width": w,
+                "height": h,
+                "pixel_format": cur_fmt,
+            }
+        ),
+        status="pending",
+    )
+    db.add(cmd)
+    db.commit()
+
+    return {
+        "status": "started",
+        "camera_id": cam.id,
+        "hardware_id": cam.hardware_id,
+        "resolution": f"{w}x{h}",
+        "format": cur_fmt,
+    }
+
+
+@router.post("/{camera_id}/live/stop", response_model=dict[str, Any])
+def stop_camera_live(
+    camera_id: int,
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Остановка Live-сессии камеры (Developer, Biologist)."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Камера не найдена",
+        )
+
+    live_manager.stop(cam.hardware_id)
+
+    cmd = EdgeCommand(
+        command_type="STOP_LIVE",
+        installation_id=cam.installation_id,
+        is_global=cam.installation_id is None,
+        payload=json.dumps({"camera_hardware_id": cam.hardware_id}),
+        status="pending",
+    )
+    db.add(cmd)
+    db.commit()
+
+    return {
+        "status": "stopped",
+        "camera_id": cam.id,
+        "hardware_id": cam.hardware_id,
+    }
+
+
+@router.get("/{camera_id}/live/status", response_model=dict[str, Any])
+def get_camera_live_status(
+    camera_id: int,
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Статус Live-сессии (FPS, задержка мс, пауза, разрешение)."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Камера не найдена",
+        )
+    session = live_manager.get(cam.hardware_id)
+    if not session:
+        return {
+            "hardware_id": cam.hardware_id,
+            "camera_id": cam.id,
+            "is_active": False,
+            "is_paused": False,
+            "fps": 0.0,
+            "latency_ms": 0,
+            "resolution": "1280x720",
+            "active_subscribers": 0,
+        }
+    return session.to_status_dict()
+
+
+@router.get("/{camera_id}/live/snapshot")
+async def get_camera_live_snapshot(
+    camera_id: int,
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> Response:
+    """Скачивание тестового JPEG-снимка напрямую без записи в БД и таймлапс."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Камера не найдена",
+        )
+    session = live_manager.get(cam.hardware_id)
+    frame: bytes | None = None
+
+    if session:
+        is_fresh = session.latest_frame is not None and (
+            session.is_paused or (time.time() - session.last_frame_at) <= 1.5
+        )
+        if is_fresh:
+            frame = session.latest_frame
+        elif session.stream_url and not session.is_paused:
+            snap_url = f"{session.stream_url.rstrip('/')}/snapshot"
+            with contextlib.suppress(Exception):
+                async with httpx.AsyncClient(
+                    timeout=3.0, trust_env=False
+                ) as http_client:
+                    resp = await http_client.get(snap_url)
+                    if resp.status_code == 200 and resp.content:
+                        frame = resp.content
+                        session.latest_frame = frame
+                        session.last_frame_at = time.time()
+
+        if frame is None and session.latest_frame:
+            frame = session.latest_frame
+
+    if not frame:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Live-стрим недоступен или кадр ещё не получен",
+        )
+
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={
+            "Content-Disposition": f'attachment; filename="snapshot_{cam.hardware_id}_{int(time.time())}.jpg"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+async def _proxy_ustreamer_frames(session: Any):
+    """Читает MJPEG-поток напрямую из ustreamer и выдаёт отдельные JPEG-кадры."""
+    if not session.stream_url:
+        return
+    stream_url = f"{session.stream_url.rstrip('/')}/stream"
+    timeout = httpx.Timeout(connect=2.0, read=6.0, write=5.0, pool=2.0)
+    buf = bytearray()
+    last_frame_t = time.perf_counter()
+
+    async with (
+        httpx.AsyncClient(timeout=timeout, trust_env=False) as http_client,
+        http_client.stream("GET", stream_url) as resp,
+    ):
+        if resp.status_code != 200:
+            return
+        async for chunk in resp.aiter_bytes(chunk_size=32768):
+            if not session.is_active:
+                break
+            if session.is_paused:
+                buf.clear()
+                return
+            buf.extend(chunk)
+            # Защита от разрастания буфера на некорректном потоке
+            if len(buf) > 4 * 1024 * 1024:
+                buf.clear()
+                continue
+            while True:
+                start = buf.find(b"\xff\xd8")
+                if start == -1:
+                    if len(buf) > 2:
+                        del buf[:-2]
+                    break
+                if start > 0:
+                    del buf[:start]
+                end = buf.find(b"\xff\xd9", 2)
+                if end == -1:
+                    break
+                frame = bytes(buf[: end + 2])
+                del buf[: end + 2]
+                now_t = time.perf_counter()
+                lat_ms = max(1, min(500, int((now_t - last_frame_t) * 1000)))
+                last_frame_t = now_t
+                session.latest_frame = frame
+                session.record_proxied_frame(latency_ms=lat_ms)
+                yield frame
+
+
+async def _mjpeg_generator(hardware_id: str):
+    """Низколатентный генератор потока MJPEG (прямое проксирование ustreamer или push-буфер)."""
+    session = live_manager.get_or_create(hardware_id)
+    session.active_subscribers += 1
+    session.is_active = True
+    last_frame_id = -1
+    proxy_failed = False
+
+    try:
+        while session.is_active:
+            # 1. Пробуем прямое проксирование от ustreamer, если есть URL и ещё не упало
+            if session.stream_url and not proxy_failed and not session.is_paused:
+                try:
+                    got_any = False
+                    async for frame in _proxy_ustreamer_frames(session):
+                        got_any = True
+                        yield (
+                            b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                            + frame
+                            + b"\r\n"
+                        )
+                    if not got_any:
+                        proxy_failed = True
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    proxy_failed = True
+
+            # 2. Fallback / основной режим через push-буфер от Edge-агента
+            async with session.condition:
+                if session.frame_counter == last_frame_id:
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(session.condition.wait(), timeout=0.5)
+                frame = session.latest_frame
+                last_frame_id = session.frame_counter
+
+            if frame is not None:
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+            await asyncio.sleep(0.02)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        session.active_subscribers = max(0, session.active_subscribers - 1)
+
+
+@router.get("/{camera_id}/live/stream")
+async def get_camera_live_stream(
+    camera_id: int,
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> StreamingResponse:
+    """Low-latency MJPEG-стрим камеры для прямого отображения в браузере."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Камера не найдена",
+        )
+    return StreamingResponse(
+        _mjpeg_generator(cam.hardware_id),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@router.get("/{camera_id}/controls", response_model=dict[str, Any])
+async def get_camera_controls(
+    camera_id: int,
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
+    db: Annotated[Session, Depends(get_db)],
+    refresh: Annotated[bool, Query()] = False,
+) -> dict[str, Any]:
+    """Получение поддерживаемых V4L2-контролов, форматов и RGB настроек."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Камера не найдена",
+        )
+
+    is_rpi = _is_rpi_hardware_mode(db)
+    fmt_list_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_formats_{cam.hardware_id}")
+        .first()
+    )
+    ctrl_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_ctrls_{cam.hardware_id}")
+        .first()
+    )
+
+    # В боевом режиме rpi при первом запросе или ?refresh=true запрашиваем реальное состояние у Edge-агента
+    need_sync = is_rpi and (refresh or not fmt_list_setting or not ctrl_setting)
+    if need_sync and is_rpi_online(db)[0]:
+        cmd = EdgeCommand(
+            command_type="GET_CAMERA_CONTROLS",
+            installation_id=cam.installation_id,
+            is_global=cam.installation_id is None,
+            payload=json.dumps({"camera_hardware_id": cam.hardware_id}),
+            status="pending",
+        )
+        db.add(cmd)
+        db.commit()
+        db.refresh(cmd)
+
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < 6.0:
+            await asyncio.sleep(0.05)
+            db.expire_all()
+            check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
+            if not check_cmd or check_cmd.status in ("done", "error", "timeout"):
+                break
+
+        fmt_list_setting = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == f"camera_formats_{cam.hardware_id}")
+            .first()
+        )
+        ctrl_setting = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == f"camera_ctrls_{cam.hardware_id}")
+            .first()
+        )
+
+    formats: list[dict[str, Any]] = []
+    if fmt_list_setting and fmt_list_setting.value:
+        with contextlib.suppress(Exception):
+            parsed_fmt = json.loads(fmt_list_setting.value)
+            if isinstance(parsed_fmt, list):
+                formats = parsed_fmt
+    if not formats and not is_rpi:
+        formats = get_default_mock_formats()
+
+    controls: list[dict[str, Any]] = []
+    if ctrl_setting and ctrl_setting.value:
+        with contextlib.suppress(Exception):
+            parsed_ctrls = json.loads(ctrl_setting.value)
+            if isinstance(parsed_ctrls, list):
+                controls = parsed_ctrls
+    if not controls and not is_rpi and ctrl_setting is None:
+        controls = get_default_mock_controls()
+
+    rgb_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_rgb_{cam.hardware_id}")
+        .first()
+    )
+    rgb = {"r": 1.0, "g": 1.0, "b": 1.0}
+    if rgb_setting and rgb_setting.value:
+        with contextlib.suppress(Exception):
+            parsed_rgb = json.loads(rgb_setting.value)
+            if isinstance(parsed_rgb, dict):
+                rgb = parsed_rgb
+
+    cur_fmt_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_format_{cam.hardware_id}")
+        .first()
+    )
+    cur_res_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_res_{cam.hardware_id}")
+        .first()
+    )
+
+    default_fmt = formats[0]["format"] if formats else "MJPG"
+    default_res = (
+        formats[0]["resolutions"][0]
+        if formats and formats[0].get("resolutions")
+        else "1280x720"
+    )
+
+    return {
+        "camera_id": cam.id,
+        "hardware_id": cam.hardware_id,
+        "formats": formats,
+        "controls": controls,
+        "rgb": rgb,
+        "current_format": cur_fmt_setting.value if cur_fmt_setting else default_fmt,
+        "current_resolution": cur_res_setting.value if cur_res_setting else default_res,
+    }
+
+
+@router.patch("/{camera_id}/controls", response_model=dict[str, Any])
+def update_camera_controls(
+    camera_id: int,
+    body: CameraControlsPatch,
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Применение настроек V4L2, смена разрешения/формата и RGB-коррекции."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Камера не найдена",
+        )
+
+    now = datetime.now(UTC)
+    if body.format:
+        _upsert_setting(db, f"camera_format_{cam.hardware_id}", body.format, now)
+    if body.resolution:
+        _upsert_setting(db, f"camera_res_{cam.hardware_id}", body.resolution, now)
+    if body.rgb:
+        _upsert_setting(db, f"camera_rgb_{cam.hardware_id}", json.dumps(body.rgb), now)
+
+    updated_controls: list[dict[str, Any]] | None = None
+    if body.controls:
+        ctrl_setting = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == f"camera_ctrls_{cam.hardware_id}")
+            .first()
+        )
+        if ctrl_setting and ctrl_setting.value:
+            existing_controls = json.loads(ctrl_setting.value)
+        elif not _is_rpi_hardware_mode(db):
+            existing_controls = get_default_mock_controls()
+        else:
+            existing_controls = []
+
+        if existing_controls:
+            apply_control_dependencies(existing_controls, body.controls)
+            _upsert_setting(
+                db,
+                f"camera_ctrls_{cam.hardware_id}",
+                json.dumps(existing_controls),
+                now,
+            )
+            updated_controls = existing_controls
+
+    cmd = EdgeCommand(
+        command_type="SET_CAMERA_CONTROLS",
+        installation_id=cam.installation_id,
+        is_global=cam.installation_id is None,
+        payload=json.dumps(
+            {
+                "camera_hardware_id": cam.hardware_id,
+                "controls": body.controls or {},
+                "format": body.format,
+                "resolution": body.resolution,
+                "rgb": body.rgb,
+            }
+        ),
+        status="pending",
+    )
+    db.add(cmd)
+    db.commit()
+
+    resp: dict[str, Any] = {
+        "status": "updated",
+        "camera_id": cam.id,
+        "hardware_id": cam.hardware_id,
+        "format": body.format,
+        "resolution": body.resolution,
+        "rgb": body.rgb,
+    }
+    if updated_controls is not None:
+        resp["controls"] = updated_controls
+    return resp
