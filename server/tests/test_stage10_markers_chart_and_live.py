@@ -379,9 +379,96 @@ def test_live_color_marker_status_and_auto_color_calibrate_endpoint(
     assert body["status"] == "done"
     assert body["rgb"] == {"r": 0.62, "g": 1.0, "b": 0.74}
 
+    # 4. Режим предпросмотра (preview=True): возвращает ROI-кроп и recommended_rgb, НЕ перезаписывая сохранённый профиль
+    with session_factory() as db:
+        from server.db.models import SystemSetting
+
+        existing_rgb = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == "camera_rgb_cam-ac-10")
+            .first()
+        )
+        assert existing_rgb is not None
+        existing_rgb.value = json.dumps({"r": 0.9, "g": 0.9, "b": 0.9})
+        db.commit()
+
+    def edge_preview_worker():
+        for _ in range(40):
+            claimed = client.post(
+                "/api/edge/commands/claim", headers={"X-Edge-Key": EDGE_KEY}
+            ).json()
+            if claimed:
+                cmd_id = claimed[0]["id"]
+                assert claimed[0]["command_type"] == "AUTO_COLOR_CALIBRATE"
+                assert claimed[0]["payload"]["preview"] is True
+                client.post(
+                    f"/api/edge/commands/{cmd_id}/result",
+                    headers={"X-Edge-Key": EDGE_KEY},
+                    json={
+                        "status": "done",
+                        "result_message": "Preview OK",
+                        "data": {
+                            "rgb": {"r": 0.55, "g": 0.98, "b": 0.72},
+                            "recommended_rgb": {"r": 0.55, "g": 0.98, "b": 0.72},
+                            "preview": True,
+                            "roi_image_base64": "ZmFrZS1qcGVnLXJvaQ==",
+                        },
+                    },
+                )
+                return
+            time.sleep(0.05)
+
+    t_prev = threading.Thread(target=edge_preview_worker, daemon=True)
+    t_prev.start()
+    resp_prev = client.post(
+        f"/api/cameras/{cam_id}/auto-color-calibrate",
+        cookies=cookies,
+        json={"preview": True},
+    )
+    t_prev.join(timeout=3.0)
+    assert resp_prev.status_code == 200
+    prev_body = resp_prev.json()
+    assert prev_body["preview"] is True
+    assert prev_body["recommended_rgb"] == {"r": 0.55, "g": 0.98, "b": 0.72}
+    assert prev_body["roi_image_base64"] == "ZmFrZS1qcGVnLXJvaQ=="
+
+    # Профиль в БД не должен был измениться при preview=True
+    with session_factory() as db:
+        from server.db.models import SystemSetting
+
+        setting_after_prev = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == "camera_rgb_cam-ac-10")
+            .first()
+        )
+        assert setting_after_prev is not None
+        assert json.loads(setting_after_prev.value) == {"r": 0.9, "g": 0.9, "b": 0.9}
+
+    # 5. Подтверждение через PATCH /controls применяет коэффициенты в БД
+    resp_apply = client.patch(
+        f"/api/cameras/{cam_id}/controls",
+        cookies=cookies,
+        json={"rgb": prev_body["recommended_rgb"]},
+    )
+    assert resp_apply.status_code == 200
+    with session_factory() as db:
+        from server.db.models import SystemSetting
+
+        setting_after_apply = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == "camera_rgb_cam-ac-10")
+            .first()
+        )
+        assert setting_after_apply is not None
+        assert json.loads(setting_after_apply.value) == {
+            "r": 0.55,
+            "g": 0.98,
+            "b": 0.72,
+        }
+
 
 def test_web_ui_stage10_markup_and_chart_scale_consistency():
-    """Проверяет отсутствие #btn-live-retry, наличие кнопок SVG, автоцветокоррекции и стабильность шкалы графика."""
+    """Проверяет отсутствие #btn-live-retry, предпросмотр автоцветокоррекции, кнопки SVG и режим см²/px графика."""
     web_dir = Path(__file__).resolve().parents[2] / "clients" / "web"
     html = (web_dir / "index.html").read_text(encoding="utf-8")
     cameras_js = (web_dir / "js" / "cameras.js").read_text(encoding="utf-8")
@@ -395,40 +482,52 @@ def test_web_ui_stage10_markup_and_chart_scale_consistency():
     assert "hasFirstLiveStatus" in cameras_js
     assert "deviceOfflineShown" in cameras_js
 
-    # 3. Автоцветокоррекция и скачивание маркеров
+    # 3. Автоцветокоррекция с предпросмотром и скачивание маркеров
     assert "btn-live-auto-color" in cameras_js
     assert "colorMarkerDetected" in cameras_js
     assert "autoColorCalibrate" in cameras_js
+    assert 'id="live-auto-color-preview"' in html
+    assert 'id="live-auto-color-roi-img"' in html
+    assert 'id="btn-live-auto-color-apply"' in html
+    assert 'id="btn-live-auto-color-cancel"' in html
     assert "Скачать ArUco-маркер" in html
     assert "Скачать цветовой маркер" in html
 
-    # 4. График роста в галерее
+    # 4. График роста в галерее: ровно две кнопки ("В см²" и "В px") без "Авто"
     assert 'id="gallery-btn-chart"' in html
     assert 'id="gallery-chart-panel"' in html
-    assert "Только калиброванные (см²)" in html
-    assert "Все кадры (px)" in html
+    assert 'data-chart-mode="auto"' not in html
+    assert 'data-chart-mode="cm2"' in html
+    assert 'data-chart-mode="px"' in html
+    assert ">В см²<" in html
+    assert ">В px<" in html
     assert "prepareGrowthChartSeries" in gallery_js
+    assert "resolveDefaultGrowthChartMode" in gallery_js
 
-    # 5. Если доступен node, проверяем JS-логику prepareGrowthChartSeries без скачков единиц
+    # 5. Если доступен node, проверяем JS-логику выбора cm2/px и prepareGrowthChartSeries
     import shutil
 
     if shutil.which("node"):
         script = f"""
-        import {{ prepareGrowthChartSeries }} from {json.dumps(str(web_dir / "js" / "gallery.js"))};
+        import {{ prepareGrowthChartSeries, resolveDefaultGrowthChartMode }} from {json.dumps(str(web_dir / "js" / "gallery.js"))};
         const mixed = [
           {{ captured_at: '2026-11-25T08:00:00Z', total_area_px: 1000, avg_area_px: 500, total_area_cm2: 20, avg_area_cm2: 10, plants_count: 2 }},
           {{ captured_at: '2026-11-25T09:00:00Z', total_area_px: 1500, avg_area_px: 750, total_area_cm2: null, avg_area_cm2: null, plants_count: 2 }},
         ];
-        const autoMixed = prepareGrowthChartSeries(mixed, 'auto');
-        if (autoMixed.unit !== 'px' || autoMixed.points.length !== 2) throw new Error('auto mixed must use px');
-        const onlyCal = prepareGrowthChartSeries(mixed, 'cm2');
-        if (onlyCal.unit !== 'cm2' || onlyCal.points.length !== 1) throw new Error('cm2 filter failed');
-        const allCal = [
-          {{ captured_at: '2026-11-25T08:00:00Z', total_area_px: 1000, avg_area_px: 500, total_area_cm2: 20, avg_area_cm2: 10, plants_count: 2 }},
-          {{ captured_at: '2026-11-25T09:00:00Z', total_area_px: 1500, avg_area_px: 750, total_area_cm2: 30, avg_area_cm2: 15, plants_count: 2 }},
+        if (resolveDefaultGrowthChartMode(mixed) !== 'cm2') throw new Error('mixed must default to cm2');
+        const defMixed = prepareGrowthChartSeries(mixed);
+        if (defMixed.unit !== 'cm2' || defMixed.points.length !== 1) throw new Error('default mixed must use calibrated cm2');
+        const pxMixed = prepareGrowthChartSeries(mixed, 'px');
+        if (pxMixed.unit !== 'px' || pxMixed.points.length !== 2) throw new Error('px mode must include all frames');
+        const uncal = [
+          {{ captured_at: '2026-11-25T08:00:00Z', total_area_px: 1000, avg_area_px: 500, total_area_cm2: null, avg_area_cm2: null, plants_count: 2 }},
+          {{ captured_at: '2026-11-25T09:00:00Z', total_area_px: 1500, avg_area_px: 750, total_area_cm2: null, avg_area_cm2: null, plants_count: 2 }},
         ];
-        const autoCal = prepareGrowthChartSeries(allCal, 'auto');
-        if (autoCal.unit !== 'cm2' || autoCal.points.length !== 2) throw new Error('auto calibrated must use cm2');
+        if (resolveDefaultGrowthChartMode(uncal) !== 'px') throw new Error('uncalibrated must default to px');
+        const defUncal = prepareGrowthChartSeries(uncal);
+        if (defUncal.unit !== 'px' || defUncal.points.length !== 2) throw new Error('default uncal must use px');
+        const cm2Uncal = prepareGrowthChartSeries(uncal, 'cm2');
+        if (cm2Uncal.unit !== 'cm2' || cm2Uncal.points.length !== 0) throw new Error('explicit cm2 with no calibrated must be empty');
         """
         res = subprocess.run(
             ["node", "--input-type=module", "-e", script],
