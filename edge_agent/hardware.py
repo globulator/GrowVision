@@ -302,18 +302,28 @@ class HardwareManager:
         if self.lock.locked():
             self.lock.release()
 
-    def get_pin_state(self, pin: int) -> bool:
-        """Возвращает логическое состояние пина (True = включено, False = выключено)."""
+    def get_pin_state(self, pin: int, default: bool = False) -> bool:
+        """Возвращает логическое состояние пина (True = включено, False = выключено).
+
+        Не инициализирует неизвестный RPi-пин с initial_value=False до чтения,
+        чтобы не перебить фактическое состояние реле.
+        """
         if self.mode == "rpi":
-            dev = self._get_gpio_device(pin)
-            if dev:
+            dev = self._gpio_devices.get(pin)
+            if dev is not None:
                 if hasattr(dev, "is_active"):
                     return bool(dev.is_active)
                 return bool(dev.value)
-            return False
-        return bool(self._mock_pins.get(pin, False))
+            if pin in self._pin_states:
+                return bool(self._pin_states[pin])
+            return bool(default)
+        if pin in self._mock_pins:
+            return bool(self._mock_pins[pin])
+        if pin in self._pin_states:
+            return bool(self._pin_states[pin])
+        return bool(default)
 
-    def _get_gpio_device(self, pin: int) -> Any:
+    def _get_gpio_device(self, pin: int, initial_value: bool = False) -> Any:
         """Получает или создает объект OutputDevice для указанного пина с учетом полярности."""
         if pin not in self._gpio_devices:
             try:
@@ -322,7 +332,7 @@ class HardwareManager:
                 self._gpio_devices[pin] = OutputDevice(
                     pin,
                     active_high=self.relay_active_high,
-                    initial_value=False,
+                    initial_value=initial_value,
                 )
             except Exception as e:
                 logger.error(f"Ошибка инициализации GPIO пина {pin}: {e}")
@@ -377,7 +387,7 @@ class HardwareManager:
         old_label = ("ON" if old_state else "OFF") if was_initialized else "UNINIT"
 
         if self.mode == "rpi":
-            dev = self._get_gpio_device(pin)
+            dev = self._get_gpio_device(pin, initial_value=norm_state)
             if dev:
                 if norm_state:
                     dev.on()
@@ -417,25 +427,41 @@ class HardwareManager:
         """Управляет вспышкой."""
         self.set_pin(pin, state, role="flash", source=source)
 
-    def test_relay(self, pins: list[int], duration: float = 3.0) -> None:
+    def test_relay(
+        self,
+        pins: list[int],
+        duration: float = 3.0,
+        initial_states: dict[int, bool] | None = None,
+    ) -> dict[int, bool]:
         """Кратковременный тест реле на указанных пинах с возвратом исходного состояния."""
         logger.info(f"[RELAY_TEST] Включение пинов {pins} на {duration} с")
-        prev_states = {pin: self.get_pin_state(pin) for pin in pins}
+        prev_states: dict[int, bool] = {}
+        roles_before: dict[int, str] = {}
         for pin in pins:
-            self.set_pin(
-                pin, True, role=self._pin_roles.get(pin, "gpio"), source="manual"
-            )
+            roles_before[pin] = self._pin_roles.get(pin, "gpio")
+            if pin in self._pin_states:
+                prev_states[pin] = bool(self._pin_states[pin])
+            elif self.mode == "rpi" and pin in self._gpio_devices:
+                prev_states[pin] = self.get_pin_state(pin)
+            elif self.mode == "mock" and pin in self._mock_pins:
+                prev_states[pin] = bool(self._mock_pins[pin])
+            elif initial_states is not None and pin in initial_states:
+                prev_states[pin] = bool(initial_states[pin])
+            else:
+                prev_states[pin] = False
+
         try:
+            for pin in pins:
+                self.set_pin(pin, True, role=roles_before[pin], source="manual")
             if duration > 0:
                 time.sleep(duration)
         finally:
             for pin, state in prev_states.items():
-                self.set_pin(
-                    pin, state, role=self._pin_roles.get(pin, "gpio"), source="manual"
-                )
+                self.set_pin(pin, state, role=roles_before[pin], source="manual")
             logger.info(
                 f"[RELAY_TEST] Пины {pins} возвращены в исходное состояние: {prev_states}"
             )
+        return dict(prev_states)
 
     @property
     def use_mock_cameras(self) -> bool:
