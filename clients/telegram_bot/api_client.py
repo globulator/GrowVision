@@ -512,11 +512,17 @@ class GrowVisionApiClient:
             return res.get("frames", [])
         return res if isinstance(res, list) else []
 
-    async def get_capture(self, user_id: int, capture_id: int) -> dict[str, Any]:
-        """Возвращает метаданные снимка."""
+    async def get_capture(self, user_id: int, capture_id: int | str) -> dict[str, Any]:
+        """Возвращает метаданные снимка (из БД по числовому ID или из эфемерного кэша)."""
+        cap_str = str(capture_id)
+        path = (
+            f"/api/control/captures/{cap_str}"
+            if cap_str.isdigit()
+            else f"/api/control/test-snapshots/{cap_str}"
+        )
         return await self._request(
             "GET",
-            f"/api/control/captures/{capture_id}",
+            path,
             user_id=user_id,
             timeout=15.0,
         )

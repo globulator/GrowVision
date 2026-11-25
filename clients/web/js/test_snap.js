@@ -2,7 +2,7 @@
 // Модальное окно тестового снимка с фиксом передачи target и слоями
 
 import { api } from './api.js';
-import { showToast } from './dialogs.js';
+import { showError, showToast } from './dialogs.js';
 import { getLoadingSpinnerHTML, getPlaceholderHTML } from './placeholders.js';
 
 let currentUnit = null;
@@ -27,10 +27,16 @@ export function openTestSnapModal(unit) {
     titleEl.textContent = `Тестовый снимок: ${unit.name}`;
   }
 
-  // Слой: показываем тумблер только для разработчика
+  // Слой: показываем тумблер только для разработчика и сбрасываем на оригинал
   const layerToggle = document.getElementById('test-snap-layer-container');
   if (layerToggle) {
     layerToggle.classList.toggle('hidden', currentRole !== 'developer');
+  }
+  const layerRawBtn = document.getElementById('test-snap-layer-raw');
+  const layerAnnBtn = document.getElementById('test-snap-layer-ann');
+  if (layerRawBtn && layerAnnBtn) {
+    layerRawBtn.classList.add('active');
+    layerAnnBtn.classList.remove('active');
   }
 
   modal.classList.remove('hidden');
@@ -119,7 +125,8 @@ function renderSnapImage() {
   previewBox.innerHTML = '';
   const img = document.createElement('img');
   img.className = 'snap-result-img';
-  img.src = `${url}?t=${Date.now()}`;
+  const sep = url.includes('?') ? '&' : '?';
+  img.src = `${url}${sep}t=${Date.now()}`;
   img.alt = 'Тестовый снимок';
   img.onerror = () => {
     previewBox.innerHTML = getPlaceholderHTML('D');
@@ -138,7 +145,7 @@ function renderSnapImage() {
   }
 }
 
-// Скачивание снимка как PNG
+// Скачивание тестового снимка (оригинал или разметка) из эфемерного кэша
 async function downloadSnapPng() {
   if (!currentSnapData || !currentUnit) return;
 
@@ -146,9 +153,23 @@ async function downloadSnapPng() {
     currentLayer === 'ann' && currentSnapData.annotated_image_url
       ? currentSnapData.annotated_image_url
       : currentSnapData.raw_image_url;
+  if (!url) return;
 
   try {
-    const res = await fetch(url);
+    const dlUrl = `${url}${url.includes('?') ? '&' : '?'}download=1`;
+    const res = await fetch(dlUrl, { credentials: 'same-origin' });
+    if (!res.ok) {
+      let detail = `Ошибка HTTP ${res.status}`;
+      try {
+        const errJson = await res.json();
+        if (errJson && errJson.detail) {
+          detail = errJson.detail;
+        }
+      } catch (_) {
+        // не JSON
+      }
+      throw new Error(detail);
+    }
     const blob = await res.blob();
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
@@ -157,7 +178,8 @@ async function downloadSnapPng() {
     const datePart = now.toISOString().slice(0, 10);
     const timePart = `${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}`;
     const safeName = (currentUnit.name || 'unit').replace(/[^a-zA-Z0-9а-яА-Я_-]/g, '_');
-    link.download = `growvision_${safeName}_snap_${datePart}_${timePart}.png`;
+    const layerTag = currentLayer === 'ann' ? 'ann' : 'raw';
+    link.download = `growvision_${safeName}_snap_${layerTag}_${datePart}_${timePart}.jpg`;
 
     document.body.appendChild(link);
     link.click();

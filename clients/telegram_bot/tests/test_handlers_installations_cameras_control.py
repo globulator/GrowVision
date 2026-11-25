@@ -255,6 +255,91 @@ async def test_control_snap_sends_album(bot_config: BotConfig, mock_bot):
 
 
 @pytest.mark.asyncio
+async def test_control_snap_ephemeral_snapshot_and_layer_toggle(
+    bot_config: BotConfig, mock_bot
+):
+    """Тестовый снимок с эфемерным snapshot_id (UUID) и переключением слоёв в боте."""
+    snap_id = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    ttl_expired = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/auth/me":
+            return httpx.Response(200, json={"role": "developer", "username": "Dev"})
+        if path == "/api/installations":
+            return httpx.Response(200, json=[{"id": 1, "name": "Базилик-1"}])
+        if path == "/api/system/status":
+            return httpx.Response(200, json={"settings": {"debug_mode": False}})
+        if path == "/api/control/snap":
+            return httpx.Response(
+                200,
+                json={
+                    "status": "done",
+                    "result_message": "Снимок готов",
+                    "captures": [
+                        {
+                            "snapshot_id": snap_id,
+                            "capture_id": snap_id,
+                            "ephemeral": True,
+                            "installation_id": 1,
+                            "camera_hardware_id": "usb-cam-1",
+                            "captured_at": "2026-11-25T12:00:00Z",
+                            "raw_url": f"/api/control/test-snapshots/{snap_id}/raw",
+                            "annotated_url": f"/api/control/test-snapshots/{snap_id}/annotated",
+                            "area_display": "15.4 см²",
+                        }
+                    ],
+                },
+            )
+        if path == f"/api/control/test-snapshots/{snap_id}":
+            if ttl_expired:
+                return httpx.Response(
+                    404, json={"detail": "Тестовый снимок не найден или истёк"}
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "snapshot_id": snap_id,
+                    "ephemeral": True,
+                    "raw_url": f"/api/control/test-snapshots/{snap_id}/raw",
+                    "annotated_url": f"/api/control/test-snapshots/{snap_id}/annotated",
+                },
+            )
+        if path == f"/api/control/test-snapshots/{snap_id}/raw":
+            return httpx.Response(200, content=b"\xff\xd8\xffraw_bytes\xff\xd9")
+        if path == f"/api/control/test-snapshots/{snap_id}/annotated":
+            return httpx.Response(200, content=b"\xff\xd8\xffann_bytes\xff\xd9")
+        return httpx.Response(404)
+
+    api_client = create_mock_api_client(bot_config, handler)
+    dp = build_dispatcher(bot_config, api_client)
+
+    # 1. Получаем эфемерный тестовый снимок
+    cb = create_test_callback_query("inst:snap:1")
+    await dp.feed_update(mock_bot, Update(update_id=40, callback_query=cb))
+
+    mock_bot.send_photo.assert_called_once()
+    kb = mock_bot.send_photo.call_args[1]["reply_markup"]
+    cb_data = kb.inline_keyboard[0][0].callback_data
+    assert cb_data == f"snap:layer:{snap_id}:ann"
+
+    # 2. Переключение на разметку по эфемерному snapshot_id
+    cb_toggle = create_test_callback_query(cb_data)
+    await dp.feed_update(mock_bot, Update(update_id=41, callback_query=cb_toggle))
+    mock_bot.edit_message_media.assert_called_once()
+    kb_after = mock_bot.edit_message_media.call_args[1]["reply_markup"]
+    assert kb_after.inline_keyboard[0][0].callback_data == f"snap:layer:{snap_id}:raw"
+
+    # 3. После истечения TTL (404) бот сообщает пользователю, что снимок устарел
+    ttl_expired = True
+    mock_bot.answer_callback_query.reset_mock()
+    cb_expired = create_test_callback_query(f"snap:layer:{snap_id}:raw")
+    await dp.feed_update(mock_bot, Update(update_id=42, callback_query=cb_expired))
+    mock_bot.answer_callback_query.assert_called_once()
+    assert "устарел" in mock_bot.answer_callback_query.call_args[1]["text"]
+
+
+@pytest.mark.asyncio
 async def test_system_status_and_interval(bot_config: BotConfig, mock_bot):
     """Проверка сводки статуса системы и изменения интервала с warning."""
 

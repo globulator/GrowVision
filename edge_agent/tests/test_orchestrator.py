@@ -456,3 +456,60 @@ def test_stage8_9_snap_fast_mock_execution_and_poll_interval(
     assert res.status == "done"
     assert "[SNAP] elapsed=" in res.debug_log_line
     assert t_elapsed < 1.0
+
+
+def test_snap_and_capture_test_set_is_test_true_and_skip_offline_queue(
+    orchestrator: EdgeOrchestrator,
+    dummy_client: DummyEdgeClient,
+    test_config: EdgeConfig,
+):
+    """SNAP и capture_test ставят is_test=True, не кладут кадр в offline_queue, а плановая — is_test=False."""
+    for cid, ctype in ((101, "SNAP"), (102, "capture_test")):
+        cmd = CommandItem(
+            id=cid,
+            command_type=ctype,
+            is_global=False,
+            installation=CommandInstallation(
+                id=10,
+                light_gpio_pin=17,
+                flash_gpio_pin=27,
+                camera_hardware_ids=["mock-usb-cam-1"],
+            ),
+        )
+        orchestrator.handle_command(cmd)
+        assert dummy_client.results[cid].status == "done"
+        last_meta = dummy_client.uploaded_captures[-1][0]
+        assert last_meta.is_test is True
+        assert last_meta.is_manual is True
+
+    # При сетевой ошибке тестовый SNAP НЕ попадает в offline_queue
+    dummy_client.fail_network_upload = True
+    cmd_err = CommandItem(
+        id=103,
+        command_type="SNAP",
+        is_global=False,
+        installation=CommandInstallation(
+            id=10,
+            light_gpio_pin=17,
+            flash_gpio_pin=27,
+            camera_hardware_ids=["mock-usb-cam-1"],
+        ),
+    )
+    orchestrator.handle_command(cmd_err)
+    assert dummy_client.results[103].status == "error"
+    assert get_queue_count(test_config.offline_queue_dir) == 0
+
+    # Плановая съёмка по-прежнему ставит is_test=False, is_manual=False
+    dummy_client.fail_network_upload = False
+    orchestrator.active_installations = [
+        HeartbeatActiveInstallation(
+            id=10,
+            light_gpio_pin=17,
+            flash_gpio_pin=27,
+            camera_hardware_ids=["mock-usb-cam-1"],
+        )
+    ]
+    orchestrator.trigger_scheduled_capture()
+    sched_meta = dummy_client.uploaded_captures[-1][0]
+    assert sched_meta.is_test is False
+    assert sched_meta.is_manual is False

@@ -325,18 +325,28 @@ def test_edge_snap_command_with_aruco_and_segmentation(e2e_uvicorn_server):
 
             assert cap["installation_id"] == inst_id
             assert cap["camera_id"] == cam["id"]
-            assert cap.get("raw_url") is not None
-            assert cap.get("annotated_url") is not None
+            assert cap.get("ephemeral") is True
+            assert cap.get("raw_url", "").startswith("/api/control/test-snapshots/")
+            assert cap.get("annotated_url", "").startswith(
+                "/api/control/test-snapshots/"
+            )
             assert cap.get("area_display") is not None
 
-            # Проверяем скачивание медиафайлов по HTTP
-            r_raw = client.get(cap["raw_url"], headers=dev_headers)
+            # Проверяем скачивание медиафайлов из эфемерного кэша по HTTP (включая download=1)
+            r_raw = client.get(f"{cap['raw_url']}?download=1", headers=dev_headers)
             assert r_raw.status_code == 200
+            assert "attachment;" in r_raw.headers.get("content-disposition", "")
             assert len(r_raw.content) > 50
 
             r_ann = client.get(cap["annotated_url"], headers=dev_headers)
             assert r_ann.status_code == 200
             assert len(r_ann.content) > 50
+
+            # Проверяем, что тестовый снимок НЕ попал в БД и media/
+            r_frames = client.get(f"/api/timelapse/{inst_id}/frames")
+            assert r_frames.status_code == 200
+            assert r_frames.json()["frames"] == []
+            assert list(srv["media_dir"].rglob("*.jpg")) == []
 
     finally:
         stop_edge_agent(proc)

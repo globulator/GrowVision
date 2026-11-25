@@ -309,31 +309,27 @@ def test_control_snap_lifecycle_and_debug_info(test_env, monkeypatch):
         db.commit()
         cam_id = cam.id
 
-    # Симулируем обработку RPi при ожидании команды
+    # Симулируем обработку RPi при ожидании команды (эфемерный тестовый снимок в памяти)
     async def mock_wait_command_result(cmd_id: int, timeout_sec: float, db: Session):
         db.expire_all()
         cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd_id).first()
         cmd.status = "done"
         cmd.result_message = "Снимок выполнен успешно"
         cmd.debug_log = "[INFO] [GPIO] Inst#1: light=0, flash=1 -> captured 1 frames"
-
-        # Создаем кадр в БД и связываем в app_state
-        cap = Capture(
-            installation_id=inst_id,
-            camera_id=cam_id,
-            captured_at=datetime.now(UTC),
-            is_manual=True,
-            aruco_area_px=1000.0,
-            raw_image_path=f"media/{inst_id}/raw_99.jpg",
-            annotated_image_path=f"media/{inst_id}/ann_99.jpg",
-        )
-        db.add(cap)
-        db.flush()
-        meas = PlantMeasurement(capture_id=cap.id, plant_index=0, area_px=2000.0)
-        db.add(meas)
         db.commit()
 
-        app_state.bind_command_capture(cmd_id, cap.id)
+        app_state.save_test_snapshot(
+            installation_id=inst_id,
+            camera_id=cam_id,
+            camera_hardware_id="cam-snap-1",
+            captured_at="2026-11-25T10:00:00Z",
+            raw_bytes=b"\xff\xd8\xffraw_jpeg\xff\xd9",
+            annotated_bytes=b"\xff\xd8\xffann_jpeg\xff\xd9",
+            area_display="50.0 см²",
+            measurements=[{"plant_index": 0, "area_px": 2000.0}],
+            aruco_area_px=1000.0,
+            command_id=cmd_id,
+        )
         return cmd
 
     monkeypatch.setattr(
@@ -353,7 +349,12 @@ def test_control_snap_lifecycle_and_debug_info(test_env, monkeypatch):
     assert len(data["captures"]) == 1
     cap_info = data["captures"][0]
     assert cap_info["installation_id"] == inst_id
-    assert cap_info["raw_url"] == f"/media/{inst_id}/raw_99.jpg"
+    assert cap_info["ephemeral"] is True
+    snap_id = cap_info["snapshot_id"]
+    assert cap_info["raw_url"] == f"/api/control/test-snapshots/{snap_id}/raw"
+    assert (
+        cap_info["annotated_url"] == f"/api/control/test-snapshots/{snap_id}/annotated"
+    )
     assert cap_info["area_display"] == "50.0 см²"
     assert "debug_info" in data
     assert (
@@ -361,8 +362,14 @@ def test_control_snap_lifecycle_and_debug_info(test_env, monkeypatch):
         == "[INFO] [GPIO] Inst#1: light=0, flash=1 -> captured 1 frames"
     )
 
-    # Проверяем, что app_state очищен
-    assert app_state.pop_captures_by_command(data["command_id"]) == []
+    # Проверяем, что в БД записей Capture / PlantMeasurement не создано
+    with session_factory() as db:
+        assert db.query(Capture).count() == 0
+        assert db.query(PlantMeasurement).count() == 0
+
+    # Проверяем, что связь команды в app_state очищена, но сам снимок доступен по TTL
+    assert app_state.pop_test_snapshots_by_command(data["command_id"]) == []
+    assert app_state.get_test_snapshot(snap_id) is not None
 
     # Biologist запрос: debug_info НЕ должен быть виден
     r_snap_bio = client.post(
