@@ -19,7 +19,8 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from server.api.deps import get_db, verify_edge_key
+from server.api.deps import format_utc_z, get_db, verify_edge_key
+from server.core.area import calculate_area_display
 from server.core.live_manager import live_manager
 from server.core.rgb import (
     apply_rgb_to_jpeg_bytes,
@@ -448,6 +449,29 @@ def receive_camera_controls_state(
     return {"status": "ok"}
 
 
+def _apply_saved_camera_rgb(
+    db: Session, hardware_id: str, raw_bytes: bytes
+) -> tuple[bytes, bool]:
+    """Применяет сохранённый RGB-профиль камеры к JPEG-байтам в памяти."""
+    rgb_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_rgb_{hardware_id}")
+        .first()
+    )
+    if rgb_setting and rgb_setting.value:
+        with contextlib.suppress(Exception):
+            rgb_vals = clamp_rgb_dict(json.loads(rgb_setting.value))
+            if not is_identity_rgb(rgb_vals):
+                filtered = apply_rgb_to_jpeg_bytes(
+                    raw_bytes,
+                    r=rgb_vals["r"],
+                    g=rgb_vals["g"],
+                    b=rgb_vals["b"],
+                )
+                return filtered, True
+    return raw_bytes, False
+
+
 @router.post(
     "/captures",
     dependencies=[Depends(verify_edge_key)],
@@ -461,6 +485,8 @@ async def edge_upload_capture(
     """3.4. POST /api/edge/captures.
 
     Загрузка исходного и размеченного кадров, создание записи кадра и замеров.
+    Тестовые снимки (meta.is_test=True или команда SNAP) не пишутся в БД и на диск,
+    а сохраняются в эфемерный in-memory кэш с TTL 10 минут.
     """
     # 1. Валидация метаданных
     try:
@@ -493,6 +519,45 @@ async def edge_upload_capture(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Установка не найдена",
+        )
+
+    # 4.5. Тестовые снимки (is_test=True или команда SNAP/CAPTURE_TEST) — только в памяти
+    is_test_capture = bool(meta.is_test)
+    if not is_test_capture and meta.command_id is not None:
+        cmd = db.query(EdgeCommand).filter(EdgeCommand.id == meta.command_id).first()
+        if cmd and cmd.command_type.upper() in ("SNAP", "CAPTURE_TEST"):
+            is_test_capture = True
+
+    if is_test_capture:
+        raw_bytes = await raw_image.read()
+        ann_bytes = await annotated_image.read()
+        raw_display_bytes, _ = _apply_saved_camera_rgb(
+            db, camera.hardware_id, raw_bytes
+        )
+        meas0 = next((m for m in meta.measurements if m.plant_index == 0), None)
+        area_display = calculate_area_display(
+            meas0.area_px if meas0 else None,
+            meta.aruco_area_px,
+            installation.aruco_size_mm,
+        )
+        snapshot = app_state.save_test_snapshot(
+            installation_id=meta.installation_id,
+            camera_id=camera.id,
+            camera_hardware_id=camera.hardware_id,
+            captured_at=format_utc_z(normalized_captured_at) or "",
+            raw_bytes=raw_display_bytes,
+            annotated_bytes=ann_bytes,
+            area_display=area_display,
+            measurements=[
+                {"plant_index": m.plant_index, "area_px": m.area_px}
+                for m in meta.measurements
+            ],
+            aruco_area_px=meta.aruco_area_px,
+            command_id=meta.command_id,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_201_CREATED,
+            content={"ephemeral": True, "snapshot_id": snapshot.snapshot_id},
         )
 
     # 5. Проверка дубликата по UNIQUE(installation_id, camera_id, captured_at)
@@ -545,25 +610,11 @@ async def edge_upload_capture(
     capture.annotated_image_path = f"media/{meta.installation_id}/{ann_filename}"
 
     # При наличии сохранённого RGB-профиля камеры создаём отфильтрованную копию, не трогая оригинал raw_...jpg
-    rgb_setting = (
-        db.query(SystemSetting)
-        .filter(SystemSetting.key == f"camera_rgb_{camera.hardware_id}")
-        .first()
-    )
-    if rgb_setting and rgb_setting.value:
-        with contextlib.suppress(Exception):
-            rgb_vals = clamp_rgb_dict(json.loads(rgb_setting.value))
-            if not is_identity_rgb(rgb_vals):
-                rgb_rel = get_rgb_variant_rel_path(capture.raw_image_path)
-                rgb_abs = resolve_media_abs_path(rgb_rel, get_media_dir())
-                rgb_abs.write_bytes(
-                    apply_rgb_to_jpeg_bytes(
-                        raw_bytes,
-                        r=rgb_vals["r"],
-                        g=rgb_vals["g"],
-                        b=rgb_vals["b"],
-                    )
-                )
+    filtered_bytes, has_rgb = _apply_saved_camera_rgb(db, camera.hardware_id, raw_bytes)
+    if has_rgb:
+        rgb_rel = get_rgb_variant_rel_path(capture.raw_image_path)
+        rgb_abs = resolve_media_abs_path(rgb_rel, get_media_dir())
+        rgb_abs.write_bytes(filtered_bytes)
 
     # Сохранение замеров растений
     for m in meta.measurements:

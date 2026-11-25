@@ -666,7 +666,13 @@ async def _execute_snap(
 
             if role == "developer":
                 # Разработчик получает фото с inline-кнопкой переключения «Исходник / Разметка»
-                cap_id = cap.get("capture_id") or cap.get("id") or cap_inst_id or 1
+                cap_id = (
+                    cap.get("snapshot_id")
+                    or cap.get("capture_id")
+                    or cap.get("id")
+                    or cap_inst_id
+                    or 1
+                )
                 snap_kb = get_snap_layer_keyboard(cap_id, current_layer="raw")
                 await callback.bot.send_photo(
                     chat_id=target_chat,
@@ -704,11 +710,11 @@ async def handle_toggle_snap_layer(
     api_client: GrowVisionApiClient,
 ) -> None:
     """Переключение между сырым кадром и разметкой на сообщении со снимком (Developer)."""
-    await callback.answer()
     parts = callback.data.split(":")
     if len(parts) < 4:
+        await callback.answer()
         return
-    cap_id = int(parts[2])
+    cap_id = parts[2]
     target_layer = parts[3]  # "raw" или "ann"
     user_id = callback.from_user.id if callback.from_user else 0
 
@@ -729,6 +735,18 @@ async def handle_toggle_snap_layer(
                 parse_mode="HTML",
             )
             await callback.message.edit_media(media=media, reply_markup=snap_kb)
+        await callback.answer()
+    except ApiError as exc:
+        logger.warning(f"Ошибка переключения слоя снимка: {exc}")
+        if exc.status_code == 404:
+            await callback.answer(
+                "Тестовый снимок устарел (прошло более 10 минут). Сделайте новый снимок.",
+                show_alert=True,
+            )
+        else:
+            await callback.answer(
+                f"Не удалось переключить слой: {exc}", show_alert=True
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"Ошибка переключения слоя снимка: {exc}")
         await callback.answer(f"Не удалось переключить слой: {exc}", show_alert=True)

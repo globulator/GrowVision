@@ -188,7 +188,7 @@ def get_control_panel_keyboard(
 
 
 def get_snap_layer_keyboard(
-    capture_id: int, current_layer: str = "raw"
+    capture_id: int | str, current_layer: str = "raw"
 ) -> InlineKeyboardMarkup:
     """Клавиатура переключения слоя исходник/разметка для ручного снимка (Developer)."""
     if current_layer == "raw":

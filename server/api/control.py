@@ -3,7 +3,7 @@ import json
 import time
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -11,7 +11,7 @@ from server.api import edge as edge_api
 from server.api.deps import format_utc_z, get_current_user, get_db, require_role
 from server.core.area import calculate_area_display
 from server.core.rgb import resolve_capture_display_rel_path
-from server.core.state import app_state
+from server.core.state import EphemeralSnapshot, app_state
 from server.core.system_status import (
     check_rpi_online,
     is_debug_mode,
@@ -152,6 +152,50 @@ def build_debug_info(
     }
 
 
+def _serialize_ephemeral_snapshot(snap: EphemeralSnapshot) -> dict[str, Any]:
+    """Сериализует эфемерный тестовый снимок из памяти для ответа клиентам."""
+    return {
+        "id": snap.snapshot_id,
+        "snapshot_id": snap.snapshot_id,
+        "capture_id": snap.snapshot_id,
+        "ephemeral": True,
+        "installation_id": snap.installation_id,
+        "camera_id": snap.camera_id,
+        "camera_hardware_id": snap.camera_hardware_id,
+        "captured_at": snap.captured_at,
+        "raw_url": f"/api/control/test-snapshots/{snap.snapshot_id}/raw",
+        "annotated_url": f"/api/control/test-snapshots/{snap.snapshot_id}/annotated",
+        "area_display": snap.area_display,
+        "measurements": snap.measurements,
+        "aruco_area_px": snap.aruco_area_px,
+    }
+
+
+def _build_test_snapshot_image_response(
+    snapshot_id: str,
+    layer: Literal["raw", "annotated"],
+    download: bool,
+) -> Response:
+    """Возвращает JPEG-байты эфемерного тестового снимка из оперативной памяти."""
+    snap = app_state.get_test_snapshot(snapshot_id)
+    if snap is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Тестовый снимок не найден или истёк",
+        )
+    content = snap.raw_bytes if layer == "raw" else snap.annotated_bytes
+    disposition = "attachment" if download else "inline"
+    filename = f"test_snap_{snapshot_id}_{layer}.jpg"
+    return Response(
+        content=content,
+        media_type="image/jpeg",
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
+    )
+
+
 @router.post("/snap", response_model=dict[str, Any])
 async def control_snap(
     body: SnapRequest,
@@ -190,44 +234,51 @@ async def control_snap(
 
     if finished_cmd.status == "error":
         app_state.pop_captures_by_command(finished_cmd.id)
+        app_state.pop_test_snapshots_by_command(finished_cmd.id, remove_snapshots=True)
         debug_info = build_debug_info(finished_cmd, current_user, db)
         if debug_info:
             resp["debug_info"] = debug_info
         return resp
 
-    # Получение ID созданных снимков и очистка app_state
-    capture_ids = app_state.pop_captures_by_command(finished_cmd.id)
-    captures = (
-        db.query(Capture)
-        .filter(Capture.id.in_(capture_ids))
-        .order_by(Capture.captured_at.asc(), Capture.id.asc())
-        .all()
-        if capture_ids
-        else []
-    )
+    # Получаем эфемерные снимки из оперативной памяти (без записи в БД и media/)
+    ephemeral_snapshots = app_state.pop_test_snapshots_by_command(finished_cmd.id)
+    legacy_capture_ids = app_state.pop_captures_by_command(finished_cmd.id)
 
-    captures_data = []
-    for cap in captures:
-        meas = next(
-            (m for m in cap.plant_measurements if m.plant_index == 0),
-            None,
+    captures_data: list[dict[str, Any]] = []
+    if ephemeral_snapshots:
+        ephemeral_snapshots.sort(key=lambda s: (s.captured_at, s.created_at))
+        captures_data = [
+            _serialize_ephemeral_snapshot(snap) for snap in ephemeral_snapshots
+        ]
+    elif legacy_capture_ids:
+        captures = (
+            db.query(Capture)
+            .filter(Capture.id.in_(legacy_capture_ids))
+            .order_by(Capture.captured_at.asc(), Capture.id.asc())
+            .all()
         )
-        area_display = calculate_area_display(
-            meas.area_px if meas else None,
-            cap.aruco_area_px,
-            cap.installation.aruco_size_mm if cap.installation else None,
-        )
-        captures_data.append(
-            {
-                "capture_id": cap.id,
-                "installation_id": cap.installation_id,
-                "camera_id": cap.camera_id,
-                "captured_at": format_utc_z(cap.captured_at),
-                "raw_url": f"/{resolve_capture_display_rel_path(cap.raw_image_path, edge_api.get_media_dir())}",
-                "annotated_url": f"/{cap.annotated_image_path}",
-                "area_display": area_display,
-            }
-        )
+        for cap in captures:
+            meas = next(
+                (m for m in cap.plant_measurements if m.plant_index == 0),
+                None,
+            )
+            area_display = calculate_area_display(
+                meas.area_px if meas else None,
+                cap.aruco_area_px,
+                cap.installation.aruco_size_mm if cap.installation else None,
+            )
+            captures_data.append(
+                {
+                    "capture_id": cap.id,
+                    "ephemeral": False,
+                    "installation_id": cap.installation_id,
+                    "camera_id": cap.camera_id,
+                    "captured_at": format_utc_z(cap.captured_at),
+                    "raw_url": f"/{resolve_capture_display_rel_path(cap.raw_image_path, edge_api.get_media_dir())}",
+                    "annotated_url": f"/{cap.annotated_image_path}",
+                    "area_display": area_display,
+                }
+            )
 
     resp["captures"] = captures_data
     debug_info = build_debug_info(finished_cmd, current_user, db)
@@ -237,14 +288,71 @@ async def control_snap(
     return resp
 
 
+@router.get("/test-snapshots/latest/{installation_id}", response_model=dict[str, Any])
+def get_latest_test_snapshot(
+    installation_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> dict[str, Any]:
+    """Возвращает метаданные последнего эфемерного снимка установки."""
+    snap = app_state.get_latest_test_snapshot_by_installation(installation_id)
+    if snap is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Тестовый снимок не найден или истёк",
+        )
+    return _serialize_ephemeral_snapshot(snap)
+
+
+@router.get("/test-snapshots/{snapshot_id}", response_model=dict[str, Any])
+def get_test_snapshot_info(
+    snapshot_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> dict[str, Any]:
+    """Возвращает метаданные эфемерного тестового снимка по snapshot_id."""
+    snap = app_state.get_test_snapshot(snapshot_id)
+    if snap is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Тестовый снимок не найден или истёк",
+        )
+    return _serialize_ephemeral_snapshot(snap)
+
+
+@router.get("/test-snapshots/{snapshot_id}/raw")
+def get_test_snapshot_raw(
+    snapshot_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    download: bool = Query(default=False),
+) -> Response:
+    """Отдаёт оригинальный JPEG тестового снимка из памяти (поддерживает download=1)."""
+    return _build_test_snapshot_image_response(snapshot_id, "raw", download)
+
+
+@router.get("/test-snapshots/{snapshot_id}/annotated")
+def get_test_snapshot_annotated(
+    snapshot_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    download: bool = Query(default=False),
+) -> Response:
+    """Отдаёт размеченный JPEG тестового снимка из памяти (поддерживает download=1)."""
+    return _build_test_snapshot_image_response(snapshot_id, "annotated", download)
+
+
 @router.get("/captures/{capture_id}", response_model=dict[str, Any])
 def get_capture_info(
-    capture_id: int,
+    capture_id: str,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> dict[str, Any]:
     """Возвращает информацию о снимке (для переключения слоев исходник/разметка)."""
-    cap = db.query(Capture).filter(Capture.id == capture_id).first()
+    snap = app_state.get_test_snapshot(capture_id)
+    if snap is not None:
+        return _serialize_ephemeral_snapshot(snap)
+
+    if not capture_id.isdigit():
+        raise HTTPException(status_code=404, detail="Снимок не найден")
+
+    cap = db.query(Capture).filter(Capture.id == int(capture_id)).first()
     if not cap:
         raise HTTPException(status_code=404, detail="Снимок не найден")
     return {

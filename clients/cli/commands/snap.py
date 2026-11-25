@@ -129,13 +129,21 @@ def snap_take(
                 f"[dim]Скачивание снимков в директорию {download_dir}...[/dim]"
             )
 
-            # Для скачивания статики используем HTTP-клиент
+            # Для скачивания статики и эфемерных снимков используем HTTP-клиент
             with client._get_client(timeout=30.0) as dl_client:
-                for cap in captures:
+                for idx, cap in enumerate(captures, start=1):
                     for url_key in ("raw_url", "annotated_url"):
                         rel_url = cap.get(url_key)
                         if rel_url:
                             filename = Path(rel_url).name
+                            if not Path(filename).suffix:
+                                snap_id = (
+                                    cap.get("snapshot_id")
+                                    or cap.get("capture_id")
+                                    or idx
+                                )
+                                layer = "raw" if url_key == "raw_url" else "ann"
+                                filename = f"snap_{snap_id}_{layer}.jpg"
                             dest_file = download_dir / filename
                             try:
                                 r_file = dl_client.get(rel_url)

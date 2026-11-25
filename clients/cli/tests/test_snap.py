@@ -56,6 +56,49 @@ def test_snap_take_success_and_download(
     assert (download_dir / "raw_1.jpg").read_bytes() == b"fake-image-bytes"
 
 
+def test_snap_take_ephemeral_download(
+    cli_runner, temp_session_file, mock_client_factory, tmp_path: Path
+):
+    """Команда snap take --download корректно скачивает эфемерные снимки с разными именами."""
+    download_dir = tmp_path / "ephemeral_downloads"
+    snap_id = "deadbeef12345678"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/control/snap":
+            return httpx.Response(
+                200,
+                json={
+                    "status": "done",
+                    "command_id": 89,
+                    "captures": [
+                        {
+                            "snapshot_id": snap_id,
+                            "capture_id": snap_id,
+                            "ephemeral": True,
+                            "installation_id": 1,
+                            "camera_id": 2,
+                            "captured_at": "2026-11-25T12:00:00Z",
+                            "area_display": "25.0 см²",
+                            "raw_url": f"/api/control/test-snapshots/{snap_id}/raw",
+                            "annotated_url": f"/api/control/test-snapshots/{snap_id}/annotated",
+                        }
+                    ],
+                },
+            )
+        if request.url.path == f"/api/control/test-snapshots/{snap_id}/raw":
+            return httpx.Response(200, content=b"ephemeral-raw")
+        if request.url.path == f"/api/control/test-snapshots/{snap_id}/annotated":
+            return httpx.Response(200, content=b"ephemeral-ann")
+        return httpx.Response(404)
+
+    mock_client_factory(handler)
+
+    res = cli_runner.invoke(app, ["snap", "take", "1", "--download", str(download_dir)])
+    assert res.exit_code == 0
+    assert (download_dir / f"snap_{snap_id}_raw.jpg").read_bytes() == b"ephemeral-raw"
+    assert (download_dir / f"snap_{snap_id}_ann.jpg").read_bytes() == b"ephemeral-ann"
+
+
 def test_snap_take_error_status(cli_runner, temp_session_file, mock_client_factory):
     """Команда snap take при статусе error."""
 

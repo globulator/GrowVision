@@ -145,6 +145,7 @@ class CaptureMeta(BaseModel):
     camera_hardware_id: str
     captured_at: datetime | str
     is_manual: bool = False
+    is_test: bool = False
     aruco_area_px: float | None = Field(default=None, gt=0)
     command_id: int | None = None
     measurements: list[PlantMeasurementMeta] = Field(default_factory=list)
