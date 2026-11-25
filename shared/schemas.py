@@ -68,6 +68,7 @@ class HeartbeatActiveInstallation(BaseModel):
     name: str | None = None
     culture_name: str | None = None
     aruco_size_mm: float | None = None
+    camera_rgb: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
 class HeartbeatResponse(BaseModel):
@@ -96,6 +97,7 @@ class CommandInstallation(BaseModel):
     name: str | None = None
     culture_name: str | None = None
     aruco_size_mm: float | None = None
+    camera_rgb: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
 class CommandItem(BaseModel):
@@ -148,6 +150,7 @@ class CaptureMeta(BaseModel):
     is_test: bool = False
     aruco_area_px: float | None = Field(default=None, gt=0)
     command_id: int | None = None
+    rgb_applied: bool = False
     measurements: list[PlantMeasurementMeta] = Field(default_factory=list)
 
 

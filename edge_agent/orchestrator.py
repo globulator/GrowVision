@@ -11,7 +11,7 @@ from edge_agent.config import EdgeConfig
 from edge_agent.hardware import HardwareManager, get_hardware_telemetry
 from edge_agent.live_stream import LiveStreamManager
 from edge_agent.offline_queue import flush_queue, get_queue_count, save_to_queue
-from edge_agent.vision import VisionPipeline
+from edge_agent.vision import VisionPipeline, apply_rgb_to_jpeg_bytes
 from shared.schemas import (
     CaptureMeta,
     CommandItem,
@@ -80,6 +80,8 @@ class EdgeOrchestrator:
 
         self._last_scheduled_hour: tuple[int, int, int, int] | None = None
         self.last_scheduled_debug_log_line: str | None = None
+        self._camera_rgb: dict[str, tuple[float, float, float]] = {}
+        self._last_server_rgb: dict[str, tuple[float, float, float]] = {}
 
     def start(self) -> None:
         """Запускает фоновые потоки оркестратора."""
@@ -151,9 +153,9 @@ class EdgeOrchestrator:
 
         try:
             for inst in new_insts:
-                self.hardware.set_light(inst.light_gpio_pin, True)
+                self.hardware.set_light(inst.light_gpio_pin, True, source="init")
                 if inst.flash_gpio_pin != inst.light_gpio_pin:
-                    self.hardware.set_flash(inst.flash_gpio_pin, False)
+                    self.hardware.set_flash(inst.flash_gpio_pin, False, source="init")
                 self._initialized_installations.add(
                     (inst.id, inst.light_gpio_pin, inst.flash_gpio_pin)
                 )
@@ -224,6 +226,7 @@ class EdgeOrchestrator:
 
             # Переводим реле активных установок в нормальное состояние (свет ВКЛ)
             self.init_installations_light()
+            self._sync_rgb_from_installations(self.active_installations)
 
             if getattr(self.live_stream, "is_running", False) and getattr(
                 self.live_stream, "active_camera_id", None
@@ -355,9 +358,9 @@ class EdgeOrchestrator:
         for inst in targets:
             pin = inst.flash_gpio_pin if is_flash else inst.light_gpio_pin
             if is_flash:
-                self.hardware.set_flash(pin, state)
+                self.hardware.set_flash(pin, state, source="manual")
             else:
-                self.hardware.set_light(pin, state)
+                self.hardware.set_light(pin, state, source="manual")
 
         state_str = "включен" if state else "выключен"
         msg = f"{target_name.capitalize()} успешно {state_str} на {len(targets)} установках"
@@ -564,10 +567,10 @@ class EdgeOrchestrator:
         same_pins = light_pin == flash_pin
         try:
             if not same_pins:
-                self.hardware.set_light(light_pin, False)
-                self.hardware.set_flash(flash_pin, True)
+                self.hardware.set_light(light_pin, False, source="capture_warmup")
+                self.hardware.set_flash(flash_pin, True, source="capture_warmup")
             else:
-                self.hardware.set_light(light_pin, True)
+                self.hardware.set_light(light_pin, True, source="capture_warmup")
 
             if self.config.hardware_mode != "mock":
                 switch_pause = (
@@ -585,8 +588,8 @@ class EdgeOrchestrator:
             return None
         finally:
             if not same_pins:
-                self.hardware.set_flash(flash_pin, False)
-            self.hardware.set_light(light_pin, True)
+                self.hardware.set_flash(flash_pin, False, source="capture_warmup")
+            self.hardware.set_light(light_pin, True, source="capture_warmup")
 
     def _capture_frame_for_camera(
         self, inst: Any, cam_hw_id: str, inst_delay: float, frame_idx: int
@@ -628,6 +631,69 @@ class EdgeOrchestrator:
             frame_index=frame_idx,
         )
 
+    @staticmethod
+    def _normalize_rgb_tuple(raw_rgb: Any) -> tuple[float, float, float]:
+        """Преобразует словарь/кортеж RGB в нормализованный кортеж (r, g, b) в [0.0, 1.0]."""
+        if isinstance(raw_rgb, dict):
+            vals = (raw_rgb.get("r", 1.0), raw_rgb.get("g", 1.0), raw_rgb.get("b", 1.0))
+        elif isinstance(raw_rgb, (tuple, list)) and len(raw_rgb) == 3:
+            vals = (raw_rgb[0], raw_rgb[1], raw_rgb[2])
+        else:
+            return (1.0, 1.0, 1.0)
+        res = []
+        for v in vals:
+            try:
+                num = float(v)
+            except (TypeError, ValueError):
+                num = 1.0
+            res.append(round(max(0.0, min(1.0, num)), 4))
+        return (res[0], res[1], res[2])
+
+    def _sync_rgb_from_installations(self, installations: list[Any]) -> None:
+        """Синхронизирует сохранённые RGB-коэффициенты камер из ответа сервера."""
+        for inst in installations:
+            cam_rgb_map = getattr(inst, "camera_rgb", None)
+            if not isinstance(cam_rgb_map, dict):
+                continue
+            for hw_id, raw_rgb in cam_rgb_map.items():
+                norm = self._normalize_rgb_tuple(raw_rgb)
+                if self._last_server_rgb.get(hw_id) != norm:
+                    self._last_server_rgb[hw_id] = norm
+                    self._camera_rgb[hw_id] = norm
+                    if (
+                        getattr(self.live_stream, "is_running", False)
+                        and getattr(self.live_stream, "active_camera_id", None) == hw_id
+                    ):
+                        self.live_stream.set_rgb_gains(*norm)
+
+    def _get_camera_rgb(self, inst: Any, cam_hw_id: str) -> tuple[float, float, float]:
+        """Возвращает актуальные RGB-коэффициенты для указанной камеры."""
+        if (
+            getattr(self.live_stream, "is_running", False)
+            and getattr(self.live_stream, "active_camera_id", None) == cam_hw_id
+        ):
+            live_gains = getattr(self.live_stream, "rgb_gains", None)
+            if isinstance(live_gains, (tuple, list)) and len(live_gains) == 3:
+                return self._normalize_rgb_tuple(live_gains)
+        if cam_hw_id in self._camera_rgb:
+            return self._camera_rgb[cam_hw_id]
+        cam_rgb_map = getattr(inst, "camera_rgb", None)
+        if isinstance(cam_rgb_map, dict) and cam_hw_id in cam_rgb_map:
+            norm = self._normalize_rgb_tuple(cam_rgb_map[cam_hw_id])
+            self._camera_rgb[cam_hw_id] = norm
+            return norm
+        return (1.0, 1.0, 1.0)
+
+    def _prepare_capture_rgb(
+        self, inst: Any, cam_hw_id: str, raw_bytes: bytes
+    ) -> tuple[bytes, bool]:
+        """Применяет программную RGB-коррекцию к кадру до CV-пайплайна и загрузки на сервер."""
+        r, g, b = self._get_camera_rgb(inst, cam_hw_id)
+        if abs(r - 1.0) < 1e-4 and abs(g - 1.0) < 1e-4 and abs(b - 1.0) < 1e-4:
+            return raw_bytes, False
+        corrected = apply_rgb_to_jpeg_bytes(raw_bytes, r=r, g=g, b=b)
+        return corrected, True
+
     def _handle_start_live(self, cmd: CommandItem) -> None:
         """Обработка команды START_LIVE."""
         payload = cmd.payload or {}
@@ -647,6 +713,24 @@ class EdgeOrchestrator:
 
         self._update_live_camera_context(hw_id, inst=cmd.installation)
         success = self.live_stream.start(hw_id, width=w, height=h, pixel_format=fmt)
+
+        raw_rgb = payload.get("rgb")
+        if isinstance(raw_rgb, dict):
+            norm_rgb = self._normalize_rgb_tuple(raw_rgb)
+            self._camera_rgb[hw_id] = norm_rgb
+            self._last_server_rgb[hw_id] = norm_rgb
+            self.live_stream.set_rgb_gains(*norm_rgb)
+        elif (
+            cmd.installation
+            and isinstance(getattr(cmd.installation, "camera_rgb", None), dict)
+            and hw_id in cmd.installation.camera_rgb
+        ):
+            norm_rgb = self._normalize_rgb_tuple(cmd.installation.camera_rgb[hw_id])
+            self._camera_rgb[hw_id] = norm_rgb
+            self._last_server_rgb[hw_id] = norm_rgb
+            self.live_stream.set_rgb_gains(*norm_rgb)
+        elif hw_id in self._camera_rgb:
+            self.live_stream.set_rgb_gains(*self._camera_rgb[hw_id])
         st = "done" if success else "error"
         msg = (
             f"Live-стрим запущен для {hw_id}"
@@ -721,6 +805,10 @@ class EdgeOrchestrator:
             r = float(rgb.get("r", 1.0))
             g = float(rgb.get("g", 1.0))
             b = float(rgb.get("b", 1.0))
+            if hw_id:
+                norm_rgb = self._normalize_rgb_tuple({"r": r, "g": g, "b": b})
+                self._camera_rgb[hw_id] = norm_rgb
+                self._last_server_rgb[hw_id] = norm_rgb
             self.live_stream.set_rgb_gains(r, g, b)
 
         from edge_agent.camera_controls import set_v4l2_control
@@ -742,7 +830,7 @@ class EdgeOrchestrator:
             cur_fmt = fmt or self.live_stream.current_format
             self.live_stream.start(hw_id, width=w, height=h, pixel_format=cur_fmt)
 
-        if hw_id and not is_mock:
+        if hw_id and not is_mock and (controls or fmt or res):
             # Перечитываем реальные контролы камеры (чтобы обновить flags=inactive для зависимых пар)
             self._sync_camera_controls_to_server(
                 hw_id,
@@ -802,11 +890,14 @@ class EdgeOrchestrator:
                     raw_bytes = self._capture_frame_for_camera(
                         inst, cam_hw_id, inst_delay, frame_idx
                     )
+                    prepared_raw_bytes, rgb_applied = self._prepare_capture_rgb(
+                        inst, cam_hw_id, raw_bytes
+                    )
 
                     now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    # 2. Компьютерное зрение
+                    # 2. Компьютерное зрение по скорректированному кадру
                     ann_bytes, aruco_area, measurements = self.vision.process_capture(
-                        raw_bytes,
+                        prepared_raw_bytes,
                         inst_name=getattr(inst, "name", None),
                         culture_name=getattr(inst, "culture_name", None),
                         camera_name=cam_hw_id,
@@ -823,13 +914,14 @@ class EdgeOrchestrator:
                         is_test=True,
                         aruco_area_px=aruco_area,
                         command_id=cmd.id,
+                        rgb_applied=rgb_applied,
                         measurements=measurements,
                     )
 
                     # 4. Загрузка кадра на сервер строго перед отправкой result
                     status_code, resp_body = self.client.upload_capture(
                         meta,
-                        raw_bytes,
+                        prepared_raw_bytes,
                         ann_bytes,
                     )
 
@@ -905,10 +997,13 @@ class EdgeOrchestrator:
                         raw_bytes = self._capture_frame_for_camera(
                             inst, cam_hw_id, inst_delay, frame_idx
                         )
+                        prepared_raw_bytes, rgb_applied = self._prepare_capture_rgb(
+                            inst, cam_hw_id, raw_bytes
+                        )
                         now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
                         ann_bytes, aruco_area, measurements = (
                             self.vision.process_capture(
-                                raw_bytes,
+                                prepared_raw_bytes,
                                 inst_name=getattr(inst, "name", None),
                                 culture_name=getattr(inst, "culture_name", None),
                                 camera_name=cam_hw_id,
@@ -924,12 +1019,13 @@ class EdgeOrchestrator:
                             is_manual=False,
                             aruco_area_px=aruco_area,
                             command_id=None,
+                            rgb_applied=rgb_applied,
                             measurements=measurements,
                         )
 
                         status_code, _ = self.client.upload_capture(
                             meta,
-                            raw_bytes,
+                            prepared_raw_bytes,
                             ann_bytes,
                         )
 
@@ -942,7 +1038,7 @@ class EdgeOrchestrator:
                             save_to_queue(
                                 self.config.offline_queue_dir,
                                 meta,
-                                raw_bytes,
+                                prepared_raw_bytes,
                                 ann_bytes,
                             )
                     except Exception as exc:  # noqa: BLE001

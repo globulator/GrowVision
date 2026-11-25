@@ -170,6 +170,7 @@ def edge_heartbeat(
                 name=inst.name,
                 culture_name=inst.culture_name,
                 aruco_size_mm=inst.aruco_size_mm,
+                camera_rgb=_load_installation_camera_rgb(db, cam_ids),
             )
         )
 
@@ -226,19 +227,22 @@ def edge_claim_command(
         active_installations = (
             db.query(Installation).filter(Installation.is_archived.is_(False)).all()
         )
-        installations_list = [
-            {
-                "id": inst.id,
-                "light_gpio_pin": inst.light_gpio_pin,
-                "flash_gpio_pin": inst.flash_gpio_pin,
-                "camera_hardware_ids": [c.hardware_id for c in inst.cameras],
-                "capture_delay_sec": inst.capture_delay_sec,
-                "name": inst.name,
-                "culture_name": inst.culture_name,
-                "aruco_size_mm": inst.aruco_size_mm,
-            }
-            for inst in active_installations
-        ]
+        installations_list = []
+        for inst in active_installations:
+            cam_ids = [c.hardware_id for c in inst.cameras]
+            installations_list.append(
+                {
+                    "id": inst.id,
+                    "light_gpio_pin": inst.light_gpio_pin,
+                    "flash_gpio_pin": inst.flash_gpio_pin,
+                    "camera_hardware_ids": cam_ids,
+                    "capture_delay_sec": inst.capture_delay_sec,
+                    "name": inst.name,
+                    "culture_name": inst.culture_name,
+                    "aruco_size_mm": inst.aruco_size_mm,
+                    "camera_rgb": _load_installation_camera_rgb(db, cam_ids),
+                }
+            )
         cmd_data = {
             "id": oldest_pending.id,
             "command_type": oldest_pending.command_type,
@@ -249,20 +253,21 @@ def edge_claim_command(
         }
     else:
         inst = oldest_pending.installation
-        inst_data = (
-            {
+        if inst:
+            cam_ids = [c.hardware_id for c in inst.cameras]
+            inst_data = {
                 "id": inst.id,
                 "light_gpio_pin": inst.light_gpio_pin,
                 "flash_gpio_pin": inst.flash_gpio_pin,
-                "camera_hardware_ids": [c.hardware_id for c in inst.cameras],
+                "camera_hardware_ids": cam_ids,
                 "capture_delay_sec": inst.capture_delay_sec,
                 "name": inst.name,
                 "culture_name": inst.culture_name,
                 "aruco_size_mm": inst.aruco_size_mm,
+                "camera_rgb": _load_installation_camera_rgb(db, cam_ids),
             }
-            if inst
-            else None
-        )
+        else:
+            inst_data = None
         cmd_data = {
             "id": oldest_pending.id,
             "command_type": oldest_pending.command_type,
@@ -449,6 +454,27 @@ def receive_camera_controls_state(
     return {"status": "ok"}
 
 
+def _load_installation_camera_rgb(
+    db: Session, hardware_ids: list[str]
+) -> dict[str, dict[str, float]]:
+    """Загружает сохранённые RGB-коэффициенты для списка камер установки."""
+    rgb_map: dict[str, dict[str, float]] = {}
+    if not hardware_ids:
+        return rgb_map
+    keys = [f"camera_rgb_{hw_id}" for hw_id in hardware_ids]
+    rows = db.query(SystemSetting).filter(SystemSetting.key.in_(keys)).all()
+    by_key = {row.key: row.value for row in rows}
+    for hw_id in hardware_ids:
+        raw_val = by_key.get(f"camera_rgb_{hw_id}")
+        if not raw_val:
+            continue
+        with contextlib.suppress(Exception):
+            parsed = json.loads(raw_val)
+            if isinstance(parsed, dict):
+                rgb_map[hw_id] = clamp_rgb_dict(parsed)
+    return rgb_map
+
+
 def _apply_saved_camera_rgb(
     db: Session, hardware_id: str, raw_bytes: bytes
 ) -> tuple[bytes, bool]:
@@ -531,9 +557,12 @@ async def edge_upload_capture(
     if is_test_capture:
         raw_bytes = await raw_image.read()
         ann_bytes = await annotated_image.read()
-        raw_display_bytes, _ = _apply_saved_camera_rgb(
-            db, camera.hardware_id, raw_bytes
-        )
+        if meta.rgb_applied:
+            raw_display_bytes = raw_bytes
+        else:
+            raw_display_bytes, _ = _apply_saved_camera_rgb(
+                db, camera.hardware_id, raw_bytes
+            )
         meas0 = next((m for m in meta.measurements if m.plant_index == 0), None)
         area_display = calculate_area_display(
             meas0.area_px if meas0 else None,
@@ -609,12 +638,15 @@ async def edge_upload_capture(
     capture.raw_image_path = f"media/{meta.installation_id}/{raw_filename}"
     capture.annotated_image_path = f"media/{meta.installation_id}/{ann_filename}"
 
-    # При наличии сохранённого RGB-профиля камеры создаём отфильтрованную копию, не трогая оригинал raw_...jpg
-    filtered_bytes, has_rgb = _apply_saved_camera_rgb(db, camera.hardware_id, raw_bytes)
-    if has_rgb:
-        rgb_rel = get_rgb_variant_rel_path(capture.raw_image_path)
-        rgb_abs = resolve_media_abs_path(rgb_rel, get_media_dir())
-        rgb_abs.write_bytes(filtered_bytes)
+    # При наличии сохранённого RGB-профиля камеры (и если edge_agent ещё не применял RGB) создаём отфильтрованную копию
+    if not meta.rgb_applied:
+        filtered_bytes, has_rgb = _apply_saved_camera_rgb(
+            db, camera.hardware_id, raw_bytes
+        )
+        if has_rgb:
+            rgb_rel = get_rgb_variant_rel_path(capture.raw_image_path)
+            rgb_abs = resolve_media_abs_path(rgb_rel, get_media_dir())
+            rgb_abs.write_bytes(filtered_bytes)
 
     # Сохранение замеров растений
     for m in meta.measurements:

@@ -43,6 +43,90 @@ CANDIDATE_FONTS = [
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 ]
 
+ARUCO_DICTIONARY_IDS: tuple[str, ...] = (
+    "DICT_4X4_50",
+    "DICT_5X5_50",
+    "DICT_6X6_50",
+    "DICT_ARUCO_ORIGINAL",
+)
+
+
+def apply_rgb_gains_to_bgr(
+    img: Any, r: float = 1.0, g: float = 1.0, b: float = 1.0
+) -> Any:
+    """Применяет программные коэффициенты R/G/B (0.0..1.0+) к OpenCV BGR-изображению."""
+    if img is None or not CV2_AVAILABLE:
+        return img
+    rg = max(0.0, float(r))
+    gg = max(0.0, float(g))
+    bg = max(0.0, float(b))
+    if abs(rg - 1.0) < 1e-4 and abs(gg - 1.0) < 1e-4 and abs(bg - 1.0) < 1e-4:
+        return img
+    out = img.copy()
+    if abs(bg - 1.0) >= 1e-4:
+        out[:, :, 0] = np.clip(out[:, :, 0].astype(np.float32) * bg, 0, 255).astype(
+            np.uint8
+        )
+    if abs(gg - 1.0) >= 1e-4:
+        out[:, :, 1] = np.clip(out[:, :, 1].astype(np.float32) * gg, 0, 255).astype(
+            np.uint8
+        )
+    if abs(rg - 1.0) >= 1e-4:
+        out[:, :, 2] = np.clip(out[:, :, 2].astype(np.float32) * rg, 0, 255).astype(
+            np.uint8
+        )
+    return out
+
+
+def apply_rgb_to_jpeg_bytes(
+    image_bytes: bytes, r: float = 1.0, g: float = 1.0, b: float = 1.0
+) -> bytes:
+    """Применяет программные коэффициенты R/G/B к JPEG-байтам до CV-анализа."""
+    rg = max(0.0, float(r))
+    gg = max(0.0, float(g))
+    bg = max(0.0, float(b))
+    if abs(rg - 1.0) < 1e-4 and abs(gg - 1.0) < 1e-4 and abs(bg - 1.0) < 1e-4:
+        return image_bytes
+    if not CV2_AVAILABLE:
+        return image_bytes
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return image_bytes
+    corrected = apply_rgb_gains_to_bgr(img, r=rg, g=gg, b=bg)
+    ok, enc = cv2.imencode(".jpg", corrected, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    return enc.tobytes() if ok else image_bytes
+
+
+def _build_aruco_detector_params() -> Any:
+    """Создаёт настроенные DetectorParameters для детекции с камеры и экрана монитора."""
+    if not CV2_AVAILABLE or not hasattr(cv2, "aruco"):
+        return None
+    if hasattr(cv2.aruco, "DetectorParameters"):
+        params = cv2.aruco.DetectorParameters()
+    elif hasattr(cv2.aruco, "DetectorParameters_create"):
+        params = cv2.aruco.DetectorParameters_create()
+    else:
+        return None
+
+    # Подстройка адаптивного порога и аппроксимации под неравномерный свет и экран монитора
+    params.adaptiveThreshWinSizeMin = 3
+    params.adaptiveThreshWinSizeMax = 35
+    params.adaptiveThreshWinSizeStep = 8
+    params.adaptiveThreshConstant = 7
+    params.minMarkerPerimeterRate = 0.015
+    params.maxMarkerPerimeterRate = 4.0
+    params.polygonalApproxAccuracyRate = 0.05
+    params.perspectiveRemovePixelPerCell = 8
+    params.perspectiveRemoveIgnoredMarginPerCell = 0.13
+    params.errorCorrectionRate = 0.6
+    if hasattr(cv2.aruco, "CORNER_REFINE_SUBPIX"):
+        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    params.cornerRefinementWinSize = 5
+    params.cornerRefinementMaxIterations = 30
+    params.cornerRefinementMinAccuracy = 0.1
+    return params
+
 
 def _get_pil_font(size: int) -> Any:
     """Возвращает FreeType TTF-шрифт с поддержкой кириллицы или безопасный default fallback."""
@@ -60,6 +144,110 @@ def _get_pil_font(size: int) -> Any:
         return None
 
 
+def _draw_bbox_rulers(
+    annotated: Any,
+    bx: int,
+    by: int,
+    bw: int,
+    bh: int,
+    h_val_str: str,
+    w_val_str: str,
+    img_w: int,
+    img_h: int,
+    tick_len: int,
+    thickness: int,
+    outline_thickness: int,
+    color_line: tuple[int, int, int],
+    color_outline: tuple[int, int, int],
+    adaptive_side: bool = False,
+) -> tuple[int, int, int, str, int, int, int, str, int, str, str]:
+    """Рисует вертикальную и горизонтальную линейки с засечками вокруг прямоугольника."""
+    v_side = "left"
+    if adaptive_side and bx < 70 and (bx + bw + tick_len + 25) < img_w:
+        v_side = "right"
+
+    if v_side == "left":
+        lx = max(tick_len + 5, bx - 15)
+    else:
+        lx = min(img_w - tick_len - 5, bx + bw + 15)
+    ly1, ly2 = by, by + bh
+
+    cv2.line(
+        annotated, (lx, ly1), (lx, ly2), color_outline, outline_thickness, cv2.LINE_AA
+    )
+    cv2.line(annotated, (lx, ly1), (lx, ly2), color_line, thickness, cv2.LINE_AA)
+    for y_tick in (ly1, (ly1 + ly2) // 2, ly2):
+        cv2.line(
+            annotated,
+            (lx - tick_len, y_tick),
+            (lx + tick_len, y_tick),
+            color_outline,
+            outline_thickness,
+            cv2.LINE_AA,
+        )
+        cv2.line(
+            annotated,
+            (lx - tick_len, y_tick),
+            (lx + tick_len, y_tick),
+            color_line,
+            thickness,
+            cv2.LINE_AA,
+        )
+
+    h_side = "bottom"
+    if adaptive_side and (by + bh + 40) > img_h and by >= 35:
+        h_side = "top"
+
+    bx1, bx2 = bx, bx + bw
+    if h_side == "bottom":
+        ly_bot = min(img_h - tick_len - 5, by + bh + 15)
+    else:
+        ly_bot = max(tick_len + 5, by - 15)
+
+    cv2.line(
+        annotated,
+        (bx1, ly_bot),
+        (bx2, ly_bot),
+        color_outline,
+        outline_thickness,
+        cv2.LINE_AA,
+    )
+    cv2.line(
+        annotated, (bx1, ly_bot), (bx2, ly_bot), color_line, thickness, cv2.LINE_AA
+    )
+    for x_tick in (bx1, (bx1 + bx2) // 2, bx2):
+        cv2.line(
+            annotated,
+            (x_tick, ly_bot - tick_len),
+            (x_tick, ly_bot + tick_len),
+            color_outline,
+            outline_thickness,
+            cv2.LINE_AA,
+        )
+        cv2.line(
+            annotated,
+            (x_tick, ly_bot - tick_len),
+            (x_tick, ly_bot + tick_len),
+            color_line,
+            thickness,
+            cv2.LINE_AA,
+        )
+
+    return (
+        lx,
+        ly1,
+        ly2,
+        h_val_str,
+        bx1,
+        bx2,
+        ly_bot,
+        w_val_str,
+        tick_len,
+        v_side,
+        h_side,
+    )
+
+
 def draw_cv_annotations(
     img: Any,
     contours_with_area: list[tuple[Any, float]],
@@ -69,10 +257,12 @@ def draw_cv_annotations(
     culture_name: str | None = None,
     camera_name: str | None = None,
     captured_at: str | None = None,
+    aruco_corners: Any = None,
 ) -> Any:
     """Накладывает улучшенную CV-разметку:
 
     - Линейка слева и снизу в см (при калибровке ArUco) или px, яркий фиолетовый (BGR: 240, 32, 160);
+    - Жёлтая рамка (BGR: 0, 255, 255) и фиолетовые линейки в px вокруг обнаруженного ArUco-маркера;
     - Красная точка в центре каждого найденного растения;
     - Метаданные в углах кадра с поддержкой кириллицы через Pillow TTF-шрифты;
     - Тонкая тёмная обводка ко всем элементам.
@@ -87,11 +277,13 @@ def draw_cv_annotations(
     font_scale = max(0.5, scale_ref / 1000.0)
     thickness = max(2, round(scale_ref / 400.0))
     outline_thickness = thickness + 2
+    tick_len = max(5, round(scale_ref / 120.0))
 
     # BGR цвета для OpenCV
     COLOR_PURPLE = (240, 32, 160)  # Яркий фиолетовый (BGR)
     COLOR_RED = (0, 0, 255)  # Красный
     COLOR_GREEN = (0, 220, 0)  # Зеленый контур
+    COLOR_ARUCO_YELLOW = (0, 255, 255)  # Жёлтая рамка ArUco (#FFFF00)
     COLOR_DARK = (15, 15, 15)  # Темная обводка
 
     # Расчет масштабного коэффициента калибровки ArUco
@@ -109,8 +301,51 @@ def draw_cv_annotations(
     else:
         area_str = f"{round(total_area_px)} px"
 
-    # Списки для отрисовки меток линеек: (lx, ly1, ly2, h_val_str, bx1, bx2, ly_bot, w_val_str, tick_len)
-    rulers_info: list[tuple[int, int, int, str, int, int, int, str, int]] = []
+    # Списки для отрисовки меток линеек
+    rulers_info: list[tuple[int, int, int, str, int, int, int, str, int, str, str]] = []
+
+    # 0. Жёлтая рамка и фиолетовые линейки в px вокруг обнаруженного ArUco-маркера
+    if aruco_corners is not None:
+        pts = np.asarray(aruco_corners, dtype=np.float32).reshape(-1, 2)
+        if len(pts) >= 4:
+            pts_int = np.round(pts).astype(np.int32)
+            cv2.polylines(
+                annotated,
+                [pts_int],
+                isClosed=True,
+                color=COLOR_DARK,
+                thickness=outline_thickness,
+                lineType=cv2.LINE_AA,
+            )
+            cv2.polylines(
+                annotated,
+                [pts_int],
+                isClosed=True,
+                color=COLOR_ARUCO_YELLOW,
+                thickness=thickness,
+                lineType=cv2.LINE_AA,
+            )
+            ax, ay, aw, ah = cv2.boundingRect(pts_int)
+            if aw > 0 and ah > 0:
+                rulers_info.append(
+                    _draw_bbox_rulers(
+                        annotated=annotated,
+                        bx=ax,
+                        by=ay,
+                        bw=aw,
+                        bh=ah,
+                        h_val_str=f"{ah} px",
+                        w_val_str=f"{aw} px",
+                        img_w=w,
+                        img_h=h,
+                        tick_len=tick_len,
+                        thickness=thickness,
+                        outline_thickness=outline_thickness,
+                        color_line=COLOR_PURPLE,
+                        color_outline=COLOR_DARK,
+                        adaptive_side=True,
+                    )
+                )
 
     # Геометрическая обработка каждого обнаруженного растения
     for cnt, _ in contours_with_area:
@@ -135,78 +370,26 @@ def draw_cv_annotations(
 
         # 3. Линейка слева и снизу
         bx, by, bw, bh = cv2.boundingRect(cnt)
-
-        # Линейка слева (вертикальная)
-        tick_len = max(5, round(scale_ref / 120.0))
-        lx = max(tick_len + 5, bx - 15)
-        ly1, ly2 = by, by + bh
-
-        cv2.line(
-            annotated, (lx, ly1), (lx, ly2), COLOR_DARK, outline_thickness, cv2.LINE_AA
-        )
-        cv2.line(annotated, (lx, ly1), (lx, ly2), COLOR_PURPLE, thickness, cv2.LINE_AA)
-        for y_tick in (ly1, (ly1 + ly2) // 2, ly2):
-            cv2.line(
-                annotated,
-                (lx - tick_len, y_tick),
-                (lx + tick_len, y_tick),
-                COLOR_DARK,
-                outline_thickness,
-                cv2.LINE_AA,
-            )
-            cv2.line(
-                annotated,
-                (lx - tick_len, y_tick),
-                (lx + tick_len, y_tick),
-                COLOR_PURPLE,
-                thickness,
-                cv2.LINE_AA,
-            )
-
         h_val_str = f"{bh / px_per_cm:.1f} см" if px_per_cm else f"{bh} px"
-
-        # Линейка снизу (горизонтальная)
-        bx1, bx2 = bx, bx + bw
-        ly_bot = min(h - tick_len - 5, by + bh + 15)
-
-        cv2.line(
-            annotated,
-            (bx1, ly_bot),
-            (bx2, ly_bot),
-            COLOR_DARK,
-            outline_thickness,
-            cv2.LINE_AA,
-        )
-        cv2.line(
-            annotated,
-            (bx1, ly_bot),
-            (bx2, ly_bot),
-            COLOR_PURPLE,
-            thickness,
-            cv2.LINE_AA,
-        )
-        for x_tick in (bx1, (bx1 + bx2) // 2, bx2):
-            cv2.line(
-                annotated,
-                (x_tick, ly_bot - tick_len),
-                (x_tick, ly_bot + tick_len),
-                COLOR_DARK,
-                outline_thickness,
-                cv2.LINE_AA,
-            )
-            cv2.line(
-                annotated,
-                (x_tick, ly_bot - tick_len),
-                (x_tick, ly_bot + tick_len),
-                COLOR_PURPLE,
-                thickness,
-                cv2.LINE_AA,
-            )
-
         w_val_str = f"{bw / px_per_cm:.1f} см" if px_per_cm else f"{bw} px"
-
         rulers_info.append(
-            (lx, ly1, ly2, h_val_str, bx1, bx2, ly_bot, w_val_str, tick_len)
+            _draw_bbox_rulers(
+                annotated=annotated,
+                bx=bx,
+                by=by,
+                bw=bw,
+                bh=bh,
+                h_val_str=h_val_str,
+                w_val_str=w_val_str,
+                img_w=w,
+                img_h=h,
+                tick_len=tick_len,
+                thickness=thickness,
+                outline_thickness=outline_thickness,
+                color_line=COLOR_PURPLE,
+                color_outline=COLOR_DARK,
+                adaptive_side=False,
+            )
         )
 
     # 4. Отрисовка текста (Pillow с поддержкой TTF кириллицы либо cv2 fallback)
@@ -238,15 +421,20 @@ def draw_cv_annotations(
             bx2,
             ly_bot,
             w_val_str,
-            tick_len,
+            r_tick_len,
+            v_side,
+            h_side,
         ) in rulers_info:
-            # Вертикальная линейка (слева)
+            # Вертикальная линейка
             bbox_h = draw.textbbox(
                 (0, 0), h_val_str, font=ruler_font, stroke_width=ruler_stroke_w
             )
             tw_h = bbox_h[2] - bbox_h[0]
             th_h = bbox_h[3] - bbox_h[1]
-            pos_x_h = max(5, lx - tw_h - tick_len - 4)
+            if v_side == "left":
+                pos_x_h = max(5, lx - tw_h - r_tick_len - 4)
+            else:
+                pos_x_h = min(w - tw_h - 5, lx + r_tick_len + 4)
             pos_y_h = max(2, (ly1 + ly2) // 2 - th_h // 2)
             draw.text(
                 (pos_x_h, pos_y_h),
@@ -257,14 +445,17 @@ def draw_cv_annotations(
                 stroke_fill=RGB_DARK,
             )
 
-            # Горизонтальная линейка (снизу)
+            # Горизонтальная линейка
             bbox_w = draw.textbbox(
                 (0, 0), w_val_str, font=ruler_font, stroke_width=ruler_stroke_w
             )
             tw_w = bbox_w[2] - bbox_w[0]
             th_w = bbox_w[3] - bbox_w[1]
-            pos_x_w = (bx1 + bx2) // 2 - tw_w // 2
-            pos_y_w = min(h - th_w - 5, ly_bot + tick_len + 4)
+            pos_x_w = max(5, min(w - tw_w - 5, (bx1 + bx2) // 2 - tw_w // 2))
+            if h_side == "bottom":
+                pos_y_w = min(h - th_w - 5, ly_bot + r_tick_len + 4)
+            else:
+                pos_y_w = max(5, ly_bot - th_w - r_tick_len - 4)
             draw.text(
                 (pos_x_w, pos_y_w),
                 w_val_str,
@@ -388,14 +579,26 @@ def draw_cv_annotations(
             bx2,
             ly_bot,
             w_val_str,
-            _,
+            r_tick_len,
+            v_side,
+            h_side,
         ) in rulers_info:
+            pos_x_h = (
+                max(5, lx - 55)
+                if v_side == "left"
+                else min(w - 65, lx + r_tick_len + 4)
+            )
             draw_text_with_outline(
-                h_val_str, (max(5, lx - 55), (ly1 + ly2) // 2), color=COLOR_PURPLE
+                h_val_str, (pos_x_h, (ly1 + ly2) // 2), color=COLOR_PURPLE
+            )
+            pos_y_w = (
+                min(h - 6, ly_bot + 18)
+                if h_side == "bottom"
+                else max(18, ly_bot - r_tick_len - 6)
             )
             draw_text_with_outline(
                 w_val_str,
-                ((bx1 + bx2) // 2 - 25, min(h - 6, ly_bot + 18)),
+                (max(5, (bx1 + bx2) // 2 - 25), pos_y_w),
                 color=COLOR_PURPLE,
             )
 
@@ -470,39 +673,79 @@ class VisionPipeline:
             return self.model_path.name
         return "none"
 
-    def detect_aruco(self, image_bytes: bytes) -> float | None:
-        """Обнаруживает ArUco-маркер и вычисляет его площадь в пикселях.
+    def _detect_aruco_in_gray(
+        self, gray_img: Any, params: Any
+    ) -> tuple[float | None, Any | None]:
+        """Ищет маркер ArUco по набору поддерживаемых словарей на полутоновом кадре."""
+        for dict_name in ARUCO_DICTIONARY_IDS:
+            dict_id = getattr(cv2.aruco, dict_name, None)
+            if dict_id is None:
+                continue
+            aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
+            if hasattr(cv2.aruco, "ArucoDetector"):
+                detector = (
+                    cv2.aruco.ArucoDetector(aruco_dict, params)
+                    if params is not None
+                    else cv2.aruco.ArucoDetector(aruco_dict)
+                )
+                corners, ids, _ = detector.detectMarkers(gray_img)
+            else:
+                corners, ids, _ = cv2.aruco.detectMarkers(
+                    gray_img,
+                    aruco_dict,
+                    parameters=params,
+                )
 
-        Возвращает None, если маркер не найден или если cv2 недоступен.
-        """
+            if ids is not None and len(corners) > 0:
+                # Выбираем маркер с наибольшей площадью, отсеивая мелкие ложные срабатывания
+                best_corners = max(
+                    (c[0] for c in corners),
+                    key=lambda pts: float(cv2.contourArea(pts)),
+                )
+                area = float(cv2.contourArea(best_corners))
+                if area >= 64.0:
+                    logger.debug(
+                        f"ArUco маркер ({dict_name}) обнаружен, площадь: {area:.1f} px"
+                    )
+                    return round(area, 1), best_corners.copy()
+        return None, None
+
+    def detect_aruco_details(
+        self, image_bytes: bytes
+    ) -> tuple[float | None, Any | None]:
+        """Обнаруживает ArUco-маркер и возвращает (площадь_px, углы_маркера)."""
         if not CV2_AVAILABLE:
-            return None
+            return None, None
 
         try:
             nparr = np.frombuffer(image_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if img is None:
-                return None
+                return None, None
 
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            params = _build_aruco_detector_params()
 
-            aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-            if hasattr(cv2.aruco, "ArucoDetector"):
-                detector = cv2.aruco.ArucoDetector(aruco_dict)
-                corners, ids, _ = detector.detectMarkers(gray)
-            else:
-                corners, ids, _ = cv2.aruco.detectMarkers(gray, aruco_dict)
+            area, corners = self._detect_aruco_in_gray(gray, params)
+            if area is not None:
+                return area, corners
 
-            if ids is not None and len(corners) > 0:
-                first_marker = corners[0][0]
-                area = float(cv2.contourArea(first_marker))
-                logger.debug(f"ArUco маркер обнаружен, площадь: {area:.1f} px")
-                return round(area, 1)
-
-            return None
+            # Второй проход для сложных условий (блики/низкий контраст/муар экрана монитора)
+            blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(blurred)
+            return self._detect_aruco_in_gray(enhanced, params)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Ошибка при детекции ArUco маркера: {e}")
-            return None
+            return None, None
+
+    def detect_aruco(self, image_bytes: bytes) -> float | None:
+        """Обнаруживает ArUco-маркер и вычисляет его площадь в пикселях.
+
+        Возвращает None, если маркер не найден или если cv2 недоступен.
+        """
+        area, _ = self.detect_aruco_details(image_bytes)
+        return area
 
     def segment_plants(
         self,
@@ -513,6 +756,7 @@ class VisionPipeline:
         culture_name: str | None = None,
         camera_name: str | None = None,
         captured_at: str | None = None,
+        aruco_corners: Any = None,
     ) -> tuple[bytes, list[PlantMeasurementMeta]]:
         """Выполняет сегментацию растений и отрисовку маски на кадре.
 
@@ -534,6 +778,7 @@ class VisionPipeline:
                 culture_name=culture_name,
                 camera_name=camera_name,
                 captured_at=captured_at,
+                aruco_corners=aruco_corners,
             )
 
         # 2. Боевой режим без загруженной ONNX модели / сессии:
@@ -550,6 +795,7 @@ class VisionPipeline:
                 culture_name=culture_name,
                 camera_name=camera_name,
                 captured_at=captured_at,
+                aruco_corners=aruco_corners,
             )
 
         try:
@@ -629,6 +875,7 @@ class VisionPipeline:
                 culture_name=culture_name,
                 camera_name=camera_name,
                 captured_at=captured_at,
+                aruco_corners=aruco_corners,
             )
 
             success, enc_img = cv2.imencode(".jpg", annotated)
@@ -647,6 +894,7 @@ class VisionPipeline:
                 culture_name=culture_name,
                 camera_name=camera_name,
                 captured_at=captured_at,
+                aruco_corners=aruco_corners,
             )
 
     def _segment_plants_hsv(
@@ -658,6 +906,7 @@ class VisionPipeline:
         culture_name: str | None = None,
         camera_name: str | None = None,
         captured_at: str | None = None,
+        aruco_corners: Any = None,
     ) -> tuple[bytes, list[PlantMeasurementMeta]]:
         """Сегментация растений в mock-режиме по цветовому порогу HSV."""
         if not CV2_AVAILABLE:
@@ -721,6 +970,7 @@ class VisionPipeline:
                 culture_name=culture_name,
                 camera_name=camera_name,
                 captured_at=captured_at,
+                aruco_corners=aruco_corners,
             )
 
             success, enc_img = cv2.imencode(".jpg", annotated)
@@ -771,7 +1021,7 @@ class VisionPipeline:
         aruco_size_mm: float | None = None,
     ) -> tuple[bytes, float | None, list[PlantMeasurementMeta]]:
         """Полная обработка кадра: детекция ArUco + сегментация растений."""
-        aruco_area = self.detect_aruco(image_bytes)
+        aruco_area, aruco_corners = self.detect_aruco_details(image_bytes)
         annotated_bytes, measurements = self.segment_plants(
             image_bytes,
             aruco_area_px=aruco_area,
@@ -780,5 +1030,6 @@ class VisionPipeline:
             culture_name=culture_name,
             camera_name=camera_name,
             captured_at=captured_at,
+            aruco_corners=aruco_corners,
         )
         return annotated_bytes, aruco_area, measurements

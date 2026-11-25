@@ -521,9 +521,20 @@ def start_camera_live(
     session.latency_ms = 0
     session._frame_times.clear()
     session.last_heartbeat = time.time()
+    session.started_at = time.time()
 
     cur_fmt, cur_res = _resolve_camera_format_and_resolution(db, cam.hardware_id)
     session.resolution = cur_res
+
+    saved_rgb = {"r": 1.0, "g": 1.0, "b": 1.0}
+    rgb_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_rgb_{cam.hardware_id}")
+        .first()
+    )
+    if rgb_setting and rgb_setting.value:
+        with contextlib.suppress(Exception):
+            saved_rgb = clamp_rgb_dict(json.loads(rgb_setting.value))
 
     parts = cur_res.split("x")
     w = int(parts[0]) if len(parts) == 2 else 1280
@@ -539,6 +550,7 @@ def start_camera_live(
                 "width": w,
                 "height": h,
                 "pixel_format": cur_fmt,
+                "rgb": saved_rgb,
             }
         ),
         status="pending",
@@ -638,6 +650,12 @@ async def _probe_ustreamer_online_state(session: Any) -> None:
                 )
                 if src is not None and "online" in src:
                     is_on = bool(src["online"])
+                    if not is_on and (
+                        session.last_frame_at == 0.0
+                        and (time.time() - getattr(session, "started_at", 0.0)) < 4.0
+                    ):
+                        # Камера прогревается при старте — не показываем ложный офлайн до первого кадра
+                        return
                     session.device_online = is_on
                     session.stream_error = None if is_on else "Камера отключена"
 
@@ -739,9 +757,19 @@ async def get_camera_live_snapshot(
     )
 
 
-async def _proxy_ustreamer_frames(session: Any):
+async def _proxy_ustreamer_frames(
+    session: Any,
+    shutdown_event: asyncio.Event | None = None,
+):
     """Читает MJPEG-поток напрямую из ustreamer и выдаёт отдельные JPEG-кадры."""
-    if not session.stream_url or session.mode != "raw" or not session.device_online:
+    shut_evt = shutdown_event or live_manager.shutdown_event
+    if (
+        shut_evt.is_set()
+        or live_manager.is_shutting_down
+        or not session.stream_url
+        or session.mode != "raw"
+        or not session.device_online
+    ):
         return
     stream_url = f"{session.stream_url.rstrip('/')}/stream"
     timeout = httpx.Timeout(connect=2.0, read=6.0, write=5.0, pool=2.0)
@@ -754,22 +782,51 @@ async def _proxy_ustreamer_frames(session: Any):
     ):
         if resp.status_code != 200:
             return
-        async for chunk in resp.aiter_bytes(chunk_size=32768):
-            if (
-                not session.is_active
-                or session.mode != "raw"
-                or not session.device_online
-            ):
-                break
+        byte_iter = resp.aiter_bytes(chunk_size=32768).__aiter__()
+        while (
+            not shut_evt.is_set()
+            and not live_manager.is_shutting_down
+            and session.is_active
+            and session.mode == "raw"
+            and session.device_online
+        ):
             if session.is_paused:
                 buf.clear()
                 return
+            next_task = asyncio.create_task(anext(byte_iter))
+            shut_task = asyncio.create_task(shut_evt.wait())
+            try:
+                done, pending = await asyncio.wait(
+                    {next_task, shut_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+            except BaseException:
+                for task in (next_task, shut_task):
+                    if not task.done():
+                        task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await task
+                raise
+
+            if shut_task in done or shut_evt.is_set() or live_manager.is_shutting_down:
+                break
+            try:
+                chunk = next_task.result()
+            except StopAsyncIteration:
+                break
+
             buf.extend(chunk)
             # Защита от разрастания буфера на некорректном потоке
             if len(buf) > 4 * 1024 * 1024:
                 buf.clear()
                 continue
             while True:
+                if shut_evt.is_set() or live_manager.is_shutting_down:
+                    return
                 start = buf.find(b"\xff\xd8")
                 if start == -1:
                     if len(buf) > 2:
@@ -791,8 +848,59 @@ async def _proxy_ustreamer_frames(session: Any):
                 yield frame
 
 
-async def _mjpeg_generator(hardware_id: str):
+async def _wait_for_frame_or_shutdown(
+    session: Any,
+    shut_evt: asyncio.Event,
+    last_frame_id: int,
+    timeout: float,
+) -> None:
+    """Ожидает новый кадр в condition или мгновенно просыпается при shutdown_event."""
+    if shut_evt.is_set() or live_manager.is_shutting_down or not session.is_active:
+        return
+
+    async def _wait_cond() -> None:
+        async with session.condition:
+            if (
+                session.frame_counter == last_frame_id
+                and session.is_active
+                and not shut_evt.is_set()
+                and not live_manager.is_shutting_down
+            ):
+                await session.condition.wait()
+
+    cond_task = asyncio.create_task(_wait_cond())
+    shut_task = asyncio.create_task(shut_evt.wait())
+    try:
+        done, pending = await asyncio.wait(
+            {cond_task, shut_task},
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        if cond_task in done:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                cond_task.result()
+    except BaseException:
+        for task in (cond_task, shut_task):
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+        raise
+
+
+async def _mjpeg_generator(
+    hardware_id: str,
+    shutdown_event: asyncio.Event | None = None,
+):
     """Низколатентный генератор потока MJPEG (прямое проксирование ustreamer или push-буфер)."""
+    shut_evt = shutdown_event or live_manager.shutdown_event
+    if shut_evt.is_set() or live_manager.is_shutting_down:
+        return
+
     session = live_manager.get_or_create(hardware_id)
     session.active_subscribers += 1
     session.is_active = True
@@ -801,7 +909,11 @@ async def _mjpeg_generator(hardware_id: str):
     proxy_backoff = 0.5
 
     try:
-        while session.is_active:
+        while (
+            session.is_active
+            and not shut_evt.is_set()
+            and not live_manager.is_shutting_down
+        ):
             # 1. В режиме 'raw' пробуем прямое проксирование от ustreamer
             now_m = time.monotonic()
             if (
@@ -813,7 +925,14 @@ async def _mjpeg_generator(hardware_id: str):
             ):
                 got_any = False
                 with contextlib.suppress(Exception):
-                    async for frame in _proxy_ustreamer_frames(session):
+                    proxy_stream = (
+                        _proxy_ustreamer_frames(session)
+                        if shut_evt is live_manager.shutdown_event
+                        else _proxy_ustreamer_frames(session, shutdown_event=shut_evt)
+                    )
+                    async for frame in proxy_stream:
+                        if shut_evt.is_set() or live_manager.is_shutting_down:
+                            break
                         got_any = True
                         proxy_backoff = 0.5
                         next_proxy_retry_at = 0.0
@@ -822,6 +941,8 @@ async def _mjpeg_generator(hardware_id: str):
                             + frame
                             + b"\r\n"
                         )
+                if shut_evt.is_set() or live_manager.is_shutting_down:
+                    break
                 if (
                     not got_any
                     and session.is_active
@@ -832,15 +953,21 @@ async def _mjpeg_generator(hardware_id: str):
                     proxy_backoff = min(5.0, proxy_backoff * 2.0)
 
             # 2. Режим 'annotated' или fallback через push-буфер от Edge-агента
+            if session.frame_counter == last_frame_id:
+                wait_timeout = (
+                    0.3 if (session.stream_url and session.mode == "raw") else 0.5
+                )
+                await _wait_for_frame_or_shutdown(
+                    session, shut_evt, last_frame_id, wait_timeout
+                )
+            if (
+                shut_evt.is_set()
+                or live_manager.is_shutting_down
+                or not session.is_active
+            ):
+                break
+
             async with session.condition:
-                if session.frame_counter == last_frame_id:
-                    wait_timeout = (
-                        0.3 if (session.stream_url and session.mode == "raw") else 0.5
-                    )
-                    with contextlib.suppress(TimeoutError):
-                        await asyncio.wait_for(
-                            session.condition.wait(), timeout=wait_timeout
-                        )
                 frame = (
                     session.latest_annotated_frame
                     if session.mode == "annotated"
@@ -850,7 +977,8 @@ async def _mjpeg_generator(hardware_id: str):
 
             if frame is not None and session.device_online:
                 yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
-            await asyncio.sleep(0.02)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(shut_evt.wait(), timeout=0.02)
     except asyncio.CancelledError:
         pass
     finally:
