@@ -4,8 +4,8 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 9.4
-- Название этапа: Съёмка без паузы Live, заглушка отключения камеры, переключатель «Оригинал/Разметка», улучшенные контролы V4L2/RGB (feColorMatrix, диалог сохранения) и вёрстка карточек
+- Текущий этап: 9.5
+- Название этапа: Эфемерные тестовые снимки (in-memory кэш TTL 10 мин без записи в БД и `server/media/`)
 - Режим: FAST (coordinator2 + builder2)
 - Статус: DONE
 - Итераций ревью: 0 из 3
@@ -18,13 +18,12 @@
 | — | — | — | — | — |
 
 ## Коммиты текущего этапа
-- 8e7bc52 feat(edge): live snapshot without pause, offline state and annotated mode
-- 0840c97 feat(server): live mode switch, offline status, rgb snapshot and gallery save
-- 59cc19f feat(web): live ux controls, feColorMatrix rgb, annotated toggle and card layout
-- Слияние stage-9/live-ux-controls-and-annotations в main, версия 0.7.3 (тег v0.7.3)
+- 55588b0 feat(server): эфемерный in-memory кэш тестовых снимков без записи в БД
+- 401fb18 feat(clients): поддержка эфемерных тестовых снимков в клиентах и тестах
+- Слияние stage-9/ephemeral-test-snapshots в main, версия 0.7.4 (тег v0.7.4)
 
 ## Последний вердикт ревью
-- Вердикт: PASS (по этапу 9.4, итераций ревью: 0/3)
+- Вердикт: PASS (по этапу 9.5, итераций ревью: 0/3)
 - Открытые дефекты: —
 
 ## Закрытые этапы
@@ -56,12 +55,13 @@
 - Этап 9.2: Live-стрим, реальные V4L2-контролы, фиксы по тесту на реальной RPi 5 (Logitech C270) и новый Live UI (принят после ревью, слит в main, версия 0.7.1)
 - Этап 9.3: Гибридный режим эмулятора с реальными V4L2-камерами, аннотации кадра при 0 растений и стабилизация Live/V4L2 (принят после ревью, слит в main, версия 0.7.2)
 - Этап 9.4: Съёмка без паузы Live, заглушка отключения, режим «Оригинал/Разметка», улучшенные контролы V4L2/RGB, диалог сохранения и вёрстка карточек (принят после ревью, слит в main, версия 0.7.3)
+- Этап 9.5: Эфемерные тестовые снимки (in-memory кэш TTL 10 мин без записи в БД и `server/media/`) (принят после ревью, слит в main, версия 0.7.4)
 
 ## История (последние 10 событий)
-- 2026-11-25: Запущен этап 9.3 в ветке stage-9/hybrid-mock-real-cameras-and-live-fix (coordinator2 + builder2)
-- 2026-11-25: Ветка stage-9/hybrid-mock-real-cameras-and-live-fix слита в main, поднята версия 0.7.2 (тег v0.7.2), этап 9.3 закрыт (DONE)
 - 2026-11-25: Запущен этап 9.4 в ветке stage-9/live-ux-controls-and-annotations (coordinator2 + builder2)
-- 2026-11-25: Реализованы захват через /snapshot без паузы, online:false, режим Оригинал/Разметка (8e7bc52, 0840c97)
-- 2026-11-25: Обновлён Live Web UI: toggle/segmented контролы, единицы, default-сброс, feColorMatrix RGB 0..1, диалог сохранения и flex-wrap карточек (59cc19f)
-- 2026-11-25: Пройдены проверки pytest (edge 91, server 94, bot 72, cli 51, целевые e2e 17) и ruff
 - 2026-11-25: Ветка stage-9/live-ux-controls-and-annotations слита в main, поднята версия 0.7.3 (тег v0.7.3), этап 9.4 закрыт (DONE)
+- 2026-11-25: Запущен этап 9.5 в ветке stage-9/ephemeral-test-snapshots (coordinator2 + builder2)
+- 2026-11-25: Реализован эфемерный in-memory кэш тестовых снимков с TTL 10 мин без записи в БД и `server/media/` (55588b0)
+- 2026-11-25: Обновлены Web UI, Telegram-бот, CLI и тесты под эфемерные тестовые снимки (401fb18)
+- 2026-11-25: Пройдены проверки pytest (edge 92, server 97, bot 73, cli 52, целевые e2e 31) и ruff
+- 2026-11-25: Ветка stage-9/ephemeral-test-snapshots слита в main, поднята версия 0.7.4 (тег v0.7.4), этап 9.5 закрыт (DONE)
