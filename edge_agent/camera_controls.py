@@ -80,6 +80,10 @@ def parse_v4l2_controls(stdout: str) -> list[dict[str, Any]]:
             ctype = ctrl_match.group(3)
             rest = ctrl_match.group(4)
 
+            if ctype not in ("int", "int64", "bool", "menu"):
+                current_ctrl = None
+                continue
+
             props: dict[str, Any] = {}
             for token in rest.split():
                 if "=" in token:

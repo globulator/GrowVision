@@ -26,6 +26,7 @@ def launch_edge_agent(
         "SERVER_URL": server_url,
         "EDGE_API_KEY": edge_key,
         "HARDWARE_MODE": "mock",
+        "MOCK_CAMERAS": "true",
         "OFFLINE_QUEUE_DIR": str(queue_dir),
         "CLAIM_POLL_INTERVAL_SEC": str(claim_poll_sec),
         "HEARTBEAT_INTERVAL_SEC": str(heartbeat_sec),
@@ -525,7 +526,7 @@ class DummyClient:
     def send_command_result(self, cmd_id, res):
         self.results[cmd_id] = res
 
-cfg = EdgeConfig(edge_api_key="test-key", hardware_mode="mock")
+cfg = EdgeConfig(edge_api_key="test-key", hardware_mode="mock", mock_cameras=True)
 client = DummyClient()
 orch = EdgeOrchestrator(config=cfg, client=client)
 

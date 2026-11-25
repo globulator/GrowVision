@@ -89,7 +89,7 @@ def test_live_stream_manager_lifecycle():
     mock_client = MagicMock()
     mock_client.send_live_frame.return_value = {"status": "ok", "active_subscribers": 1}
 
-    mgr = LiveStreamManager(client=mock_client)
+    mgr = LiveStreamManager(client=mock_client, mock_cameras=True)
 
     # 1. Запуск стрима
     mgr.start("cam_hw_1", width=640, height=480, pixel_format="MJPG")
@@ -139,7 +139,7 @@ def test_orchestrator_handles_live_commands():
     """Тест обработки команд START_LIVE, STOP_LIVE, SET_CAMERA_CONTROLS оркестратором."""
     mock_client = MagicMock()
     mock_hw = MagicMock()
-    cfg = EdgeConfig(hardware_mode="mock")
+    cfg = EdgeConfig(hardware_mode="mock", mock_cameras=True)
 
     orch = EdgeOrchestrator(config=cfg, client=mock_client, hardware=mock_hw)
     orch.live_stream = MagicMock()
@@ -235,7 +235,7 @@ def test_ustreamer_command_flags_and_no_fake_frame_in_rpi():
         idx = cmd.index("--device-timeout")
         assert cmd[idx + 1] == "5"
         assert "--quality" not in cmd
-        assert "-m" in cmd and cmd[cmd.index("-m") + 1] == "MJPG"
+        assert "-m" in cmd and cmd[cmd.index("-m") + 1] == "MJPEG"
 
         # Если ustreamer не отдал кадр (ошибка/таймаут), в rpi не подставляется синтетический кадр
         with patch("urllib.request.urlopen", side_effect=OSError("timeout")):
@@ -284,7 +284,7 @@ def test_apply_control_dependencies():
 
 def test_orchestrator_autocalibrate_summary_without_id_and_get_controls():
     """AUTOCALIBRATE_CAMERA не дублирует hardware_id в сообщении; GET_CAMERA_CONTROLS синхронизирует состояние."""
-    cfg = EdgeConfig(hardware_mode="mock")
+    cfg = EdgeConfig(hardware_mode="mock", mock_cameras=True)
     mock_client = MagicMock()
     orch = EdgeOrchestrator(config=cfg, client=mock_client)
 

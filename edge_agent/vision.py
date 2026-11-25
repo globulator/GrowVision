@@ -606,9 +606,10 @@ class VisionPipeline:
             measurements: list[PlantMeasurementMeta] = []
             annotated = img.copy()
 
-            color_mask = np.zeros_like(img)
-            color_mask[bin_mask_full > 0] = (0, 255, 0)
-            annotated = cv2.addWeighted(annotated, 1.0, color_mask, 0.4, 0)
+            if valid_contours_with_area:
+                color_mask = np.zeros_like(img)
+                color_mask[bin_mask_full > 0] = (0, 255, 0)
+                annotated = cv2.addWeighted(annotated, 1.0, color_mask, 0.4, 0)
 
             # Нумерация plant_index подряд с 0
             for plant_idx, (cnt, area) in enumerate(valid_contours_with_area):
@@ -695,15 +696,13 @@ class VisionPipeline:
 
             valid_contours_with_area.sort(key=lambda x: x[1], reverse=True)
 
-            if not valid_contours_with_area:
-                return image_bytes, []
-
             measurements: list[PlantMeasurementMeta] = []
             annotated = img.copy()
 
-            color_mask = np.zeros_like(img)
-            color_mask[mask > 0] = (0, 255, 0)
-            annotated = cv2.addWeighted(annotated, 1.0, color_mask, 0.4, 0)
+            if valid_contours_with_area:
+                color_mask = np.zeros_like(img)
+                color_mask[mask > 0] = (0, 255, 0)
+                annotated = cv2.addWeighted(annotated, 1.0, color_mask, 0.4, 0)
 
             for plant_idx, (cnt, area) in enumerate(valid_contours_with_area):
                 measurements.append(

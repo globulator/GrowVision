@@ -240,6 +240,7 @@ export async function openLiveModal(camera) {
   const pausedOverlay = document.getElementById('live-paused-overlay');
   const fpsEl = document.getElementById('live-fps');
   const latEl = document.getElementById('live-latency');
+  const resEl = document.getElementById('live-res');
   if (!modal) return;
 
   if (titleEl) {
@@ -247,6 +248,7 @@ export async function openLiveModal(camera) {
   }
   if (fpsEl) fpsEl.textContent = '0.0';
   if (latEl) latEl.textContent = '0';
+  if (resEl) resEl.textContent = '\u2014';
   if (pausedOverlay) pausedOverlay.classList.add('hidden');
 
   setLiveViewportState('loading');
@@ -254,8 +256,11 @@ export async function openLiveModal(camera) {
   modal.classList.remove('hidden');
 
   try {
-    await api.startLive(camera.id);
+    const startRes = await api.startLive(camera.id);
     if (!activeCamera || activeCamera.id !== camera.id) return;
+    if (resEl && startRes && startRes.resolution) {
+      resEl.textContent = startRes.resolution;
+    }
     attachStreamHandlers(camera.id);
   } catch (err) {
     setLiveViewportState('error', err.message || 'Ошибка запуска Live-стрима');
@@ -333,6 +338,10 @@ async function loadCameraControls(cameraId, refresh = false) {
     const data = await api.getCameraControls(cameraId, { refresh });
     if (!activeCamera || activeCamera.id !== cameraId) return;
     currentCameraControls = data;
+    const resEl = document.getElementById('live-res');
+    if (resEl && data && data.current_resolution && (!resEl.textContent || resEl.textContent === '\u2014')) {
+      resEl.textContent = data.current_resolution;
+    }
     renderLiveSettingsOverlay();
   } catch (_) {
     renderLiveSettingsOverlay();
@@ -828,7 +837,11 @@ export function initCameras() {
       if (!activeCamera || !activeCamera.id) return;
       setLiveViewportState('loading');
       try {
-        await api.startLive(activeCamera.id);
+        const startRes = await api.startLive(activeCamera.id);
+        const resEl = document.getElementById('live-res');
+        if (resEl && startRes && startRes.resolution) {
+          resEl.textContent = startRes.resolution;
+        }
         attachStreamHandlers(activeCamera.id);
       } catch (err) {
         setLiveViewportState('error', err.message || 'Стрим недоступен');

@@ -112,3 +112,83 @@ def test_cv_annotations_ruler_and_red_dot(mock_vision: VisionPipeline):
     assert np.any(red_mask), (
         "Красная точка должна присутствовать на аннотированном кадре"
     )
+
+
+def test_zero_plants_still_draws_metadata_and_zero_area(mock_vision: VisionPipeline):
+    """При 0 найденных растений возвращается аннотированный кадр с метаданными и 'Площадь: 0 px'."""
+    import cv2
+    import numpy as np
+
+    # Полностью чёрный кадр без зелёных растений и без ArUco
+    black_img = np.zeros((480, 640, 3), dtype=np.uint8)
+    ok, enc = cv2.imencode(".jpg", black_img)
+    assert ok
+    raw_bytes = enc.tobytes()
+
+    ann_bytes, aruco_area, measurements = mock_vision.process_capture(
+        raw_bytes,
+        inst_name="Теплица 1",
+        culture_name="Салат",
+        camera_name="cam-zero",
+        captured_at="2026-11-25T09:00:00Z",
+    )
+    assert aruco_area is None
+    assert measurements == []
+    assert ann_bytes != raw_bytes
+
+    ann_img = cv2.imdecode(np.frombuffer(ann_bytes, np.uint8), cv2.IMREAD_COLOR)
+    assert ann_img is not None
+    # В правом нижнем углу должна быть жёлтая надпись "Площадь: 0 px" (RGB yellow -> BGR B<60, G>150, R>150)
+    bottom_right = ann_img[410:480, 400:640]
+    yellow_pixels = (
+        (bottom_right[:, :, 2] > 150)
+        & (bottom_right[:, :, 1] > 150)
+        & (bottom_right[:, :, 0] < 80)
+    )
+    assert np.any(yellow_pixels), (
+        "При 0 растений на кадре должна отображаться надпись 'Площадь: 0 px'"
+    )
+    # В левом верхнем углу должны быть белые пиксели метаданных
+    top_left = ann_img[0:100, 0:300]
+    assert np.any(top_left > 200), "Метаданные в углу кадра должны отрисовываться"
+
+
+def test_onnx_branch_zero_plants_draws_metadata(tmp_path: Path):
+    """Основная ONNX-ветка segment_plants при пустой маске также отрисовывает метаданные и 'Площадь: 0 px'."""
+    from unittest.mock import MagicMock
+
+    import cv2
+    import numpy as np
+
+    pipeline = VisionPipeline(model_path=tmp_path / "dummy.onnx", mock_mode=False)
+    fake_input = MagicMock()
+    fake_input.name = "input"
+    fake_input.shape = [1, 3, 64, 64]
+    fake_session = MagicMock()
+    fake_session.get_inputs.return_value = [fake_input]
+    fake_session.run.return_value = [np.zeros((1, 1, 64, 64), dtype=np.float32)]
+    pipeline._session = fake_session
+    pipeline._model_loaded = True
+
+    black_img = np.zeros((480, 640, 3), dtype=np.uint8)
+    ok, enc = cv2.imencode(".jpg", black_img)
+    assert ok
+    raw_bytes = enc.tobytes()
+
+    ann_bytes, measurements = pipeline.segment_plants(
+        raw_bytes,
+        inst_name="Бокс ONNX",
+        culture_name="Укроп",
+        camera_name="cam-onnx",
+        captured_at="2026-11-25T09:00:00Z",
+    )
+    assert measurements == []
+    assert ann_bytes != raw_bytes
+    ann_img = cv2.imdecode(np.frombuffer(ann_bytes, np.uint8), cv2.IMREAD_COLOR)
+    assert ann_img is not None
+    bottom_right = ann_img[410:480, 400:640]
+    assert np.any(
+        (bottom_right[:, :, 2] > 150)
+        & (bottom_right[:, :, 1] > 150)
+        & (bottom_right[:, :, 0] < 80)
+    )

@@ -259,6 +259,7 @@ class HardwareManager:
         v4l_by_id_dir: Path | None = None,
         sys_dir: Path | None = None,
         mock_overlay_aruco: bool = True,
+        mock_cameras: bool = False,
     ):
         self.mode = mode.lower()
         if self.mode not in ("rpi", "mock"):
@@ -270,6 +271,7 @@ class HardwareManager:
         self.v4l_by_id_dir = v4l_by_id_dir or Path("/dev/v4l/by-id")
         self.sys_dir = sys_dir or Path("/sys")
         self.mock_overlay_aruco = mock_overlay_aruco
+        self.mock_cameras = bool(mock_cameras)
 
         self.lock = threading.Lock()
         self._gpio_devices: dict[int, Any] = {}
@@ -363,16 +365,59 @@ class HardwareManager:
                 f"[RELAY_TEST] Пины {pins} возвращены в исходное состояние: {prev_states}"
             )
 
+    @property
+    def use_mock_cameras(self) -> bool:
+        """True, если камеры эмулируются синтетикой (только mode='mock' и mock_cameras=True)."""
+        return self.mode == "mock" and self.mock_cameras
+
+    def resolve_device_path(self, camera_hardware_id: str) -> str | None:
+        """Возвращает реальный путь к видеоустройству (/dev/videoX) по hardware_id."""
+        if not camera_hardware_id:
+            return None
+        by_id_candidate = self.v4l_by_id_dir / camera_hardware_id
+        if by_id_candidate.exists():
+            return os.path.realpath(str(by_id_candidate))
+        by_path_candidate = self.v4l_by_id_dir.parent / "by-path" / camera_hardware_id
+        if by_path_candidate.exists():
+            return os.path.realpath(str(by_path_candidate))
+        if camera_hardware_id.startswith("video"):
+            dev_node = Path("/dev") / camera_hardware_id
+            if dev_node.exists():
+                return str(dev_node)
+        if camera_hardware_id.startswith("/dev/") and Path(camera_hardware_id).exists():
+            return camera_hardware_id
+        return None
+
+    def _is_capture_video_node(self, dev_node: str, sys_name: str) -> bool:
+        """Проверяет, является ли /dev/videoX реальной камерой (Video Capture, не ISP/кодек)."""
+        lower_name = sys_name.lower()
+        ignored_markers = ("pispbe", "bcm2835", "rpi-hevc", "v4l2loopback", "metadata")
+        if any(m in lower_name for m in ignored_markers):
+            return False
+        try:
+            res = subprocess.run(
+                ["v4l2-ctl", "-d", dev_node, "--info"],
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                check=False,
+            )
+            if res.returncode == 0 and res.stdout:
+                return "Video Capture" in res.stdout
+        except Exception:  # noqa: BLE001
+            return True
+        return False
+
     def scan_cameras(
         self,
         v4l_by_id_dir: Path | None = None,
         sys_dir: Path | None = None,
     ) -> list[DetectedCamera]:
-        """Сканирует подключенные камеры через /dev/v4l/by-id (*-video-index0)."""
+        """Сканирует подключенные камеры через /dev/v4l/by-id, by-path и sysfs."""
         search_dir = v4l_by_id_dir or self.v4l_by_id_dir
 
-        # В mock-режиме при системном пути по умолчанию всегда отдаем детерминированные моки
-        if self.mode == "mock" and (
+        # В режиме эмуляции камер при системном пути по умолчанию или пустом каталоге отдаем детерминированные моки
+        if self.use_mock_cameras and (
             search_dir == Path("/dev/v4l/by-id")
             or not search_dir.exists()
             or not list(search_dir.glob("*-video-index0"))
@@ -389,14 +434,18 @@ class HardwareManager:
             ]
 
         cameras: list[DetectedCamera] = []
+        seen_real_devs: set[str] = set()
         actual_sys_dir = sys_dir or self.sys_dir
+        use_v4l2 = not self.use_mock_cameras
+
         if search_dir.exists():
             for cam_file in sorted(search_dir.glob("*-video-index0")):
                 hw_id = cam_file.name
+                seen_real_devs.add(os.path.realpath(str(cam_file)))
                 clean_name = resolve_camera_name(
                     cam_file,
                     actual_sys_dir,
-                    use_v4l2=(self.mode == "rpi"),
+                    use_v4l2=use_v4l2,
                 )
                 cameras.append(
                     DetectedCamera(
@@ -404,6 +453,66 @@ class HardwareManager:
                         auto_name=clean_name,
                     )
                 )
+
+        # Дополнительно проверяем by-path (например, встроенные/CSI-камеры без by-id)
+        if use_v4l2:
+            by_path_dir = search_dir.parent / "by-path"
+            if by_path_dir.exists():
+                by_path_files = sorted(
+                    by_path_dir.glob("*-video-index0"),
+                    key=lambda p: ("usbv2-" in p.name, p.name),
+                )
+                for cam_file in by_path_files:
+                    real_dev = os.path.realpath(str(cam_file))
+                    if real_dev in seen_real_devs:
+                        continue
+                    seen_real_devs.add(real_dev)
+                    clean_name = resolve_camera_name(
+                        cam_file,
+                        actual_sys_dir,
+                        use_v4l2=True,
+                    )
+                    cameras.append(
+                        DetectedCamera(
+                            hardware_id=cam_file.name,
+                            auto_name=clean_name,
+                        )
+                    )
+
+            # Fallback на /sys/class/video4linux/video*, если в /dev/v4l/by-id и by-path ничего не найдено
+            if not cameras and search_dir == Path("/dev/v4l/by-id"):
+                v4l_sys_dir = actual_sys_dir / "class" / "video4linux"
+                if v4l_sys_dir.exists():
+                    for node_dir in sorted(v4l_sys_dir.glob("video*")):
+                        index_file = node_dir / "index"
+                        if index_file.exists():
+                            with contextlib.suppress(OSError):
+                                if (
+                                    index_file.read_text(encoding="utf-8").strip()
+                                    != "0"
+                                ):
+                                    continue
+                        dev_node = f"/dev/{node_dir.name}"
+                        if dev_node in seen_real_devs or not Path(dev_node).exists():
+                            continue
+                        raw_name = ""
+                        name_file = node_dir / "name"
+                        if name_file.exists():
+                            with contextlib.suppress(OSError):
+                                raw_name = name_file.read_text(
+                                    encoding="utf-8", errors="ignore"
+                                ).strip()
+                        if not self._is_capture_video_node(dev_node, raw_name):
+                            continue
+                        seen_real_devs.add(dev_node)
+                        cameras.append(
+                            DetectedCamera(
+                                hardware_id=node_dir.name,
+                                auto_name=clean_camera_name(
+                                    raw_name, fallback_hw_id=node_dir.name
+                                ),
+                            )
+                        )
 
         return cameras
 
@@ -416,7 +525,7 @@ class HardwareManager:
         if not force_refresh and camera_hardware_id in self._camera_profiles:
             return self._camera_profiles[camera_hardware_id]
 
-        if self.mode == "mock":
+        if self.use_mock_cameras:
             profile = CameraProfile(
                 hardware_id=camera_hardware_id,
                 max_width=1920,
@@ -437,14 +546,13 @@ class HardwareManager:
             self._camera_profiles[camera_hardware_id] = profile
             return profile
 
-        # Режим rpi:
-        cam_by_id_file = self.v4l_by_id_dir / camera_hardware_id
-        if not cam_by_id_file.exists():
+        # Реальная камера (режим rpi или гибридный режим mock_cameras=False):
+        real_dev_path = self.resolve_device_path(camera_hardware_id)
+        if not real_dev_path:
             profile = CameraProfile(hardware_id=camera_hardware_id)
             self._camera_profiles[camera_hardware_id] = profile
             return profile
 
-        real_dev_path = os.path.realpath(str(cam_by_id_file))
         profile = probe_camera_capabilities(
             real_dev_path, hardware_id=camera_hardware_id
         )
@@ -453,10 +561,9 @@ class HardwareManager:
 
     def calibrate_camera(self, camera_hardware_id: str) -> CameraProfile:
         """Выполняет автокалибровку камеры, обновляет кэш и возвращает профиль."""
-        if self.mode != "mock":
-            cam_by_id_file = self.v4l_by_id_dir / camera_hardware_id
-            if cam_by_id_file.exists():
-                real_dev_path = os.path.realpath(str(cam_by_id_file))
+        if not self.use_mock_cameras:
+            real_dev_path = self.resolve_device_path(camera_hardware_id)
+            if real_dev_path:
                 apply_power_line_frequency_50hz(real_dev_path)
 
         profile = self.get_camera_profile(camera_hardware_id, force_refresh=True)
@@ -472,7 +579,7 @@ class HardwareManager:
         frame_index: int | None = None,
     ) -> bytes:
         """Захватывает сырой кадр с указанной камеры (с прогревом и автоподбором качества)."""
-        if self.mode == "mock":
+        if self.use_mock_cameras:
             from edge_agent.synthetic import generate_synthetic_frame
 
             idx = frame_index if frame_index is not None else self._mock_frame_counter
@@ -484,7 +591,7 @@ class HardwareManager:
             self._mock_frame_counter += 1
             return frame
 
-        # В режиме RPi строгая проверка OpenCV
+        # Реальная камера (rpi или гибридный режим mock_cameras=False): строгая проверка OpenCV
         try:
             import cv2  # type: ignore
             import numpy as np  # type: ignore
@@ -493,14 +600,13 @@ class HardwareManager:
                 "В режиме HARDWARE_MODE=rpi необходима библиотека opencv-python-headless для захвата кадров."
             ) from exc
 
-        cam_by_id_file = self.v4l_by_id_dir / camera_hardware_id
-        if not cam_by_id_file.exists():
+        real_dev_path = self.resolve_device_path(camera_hardware_id)
+        if not real_dev_path:
             raise RuntimeError(
                 f"Камера с hardware_id '{camera_hardware_id}' не найдена в {self.v4l_by_id_dir}. "
                 "Откат на дефолтные устройства запрещен."
             )
 
-        real_dev_path = os.path.realpath(str(cam_by_id_file))
         apply_power_line_frequency_50hz(real_dev_path)
         profile = self.get_camera_profile(camera_hardware_id)
         logger.debug(
@@ -630,7 +736,7 @@ class HardwareManager:
                 if total_delay > 0:
                     time.sleep(total_delay)
 
-            effective_warmup = 0 if self.mode == "mock" else warmup_frames
+            effective_warmup = 0 if self.use_mock_cameras else warmup_frames
             return self.capture_frame(
                 camera_hardware_id,
                 warmup_frames=effective_warmup,
@@ -650,7 +756,9 @@ class HardwareManager:
         self._mock_pins.clear()
 
 
-def get_hardware_telemetry(gpio_mode: str = "mock") -> HeartbeatHardware:
+def get_hardware_telemetry(
+    gpio_mode: str = "mock", mock_cameras: bool = False
+) -> HeartbeatHardware:
     """Сбор аппаратной телеметрии хоста."""
     # 1. Модель платы
     board_model = "Raspberry Pi 5 Model B Rev 1.0 (Mock)"
@@ -725,4 +833,5 @@ def get_hardware_telemetry(gpio_mode: str = "mock") -> HeartbeatHardware:
         ram_total_mb=ram_total_mb,
         disk_free_gb=disk_free_gb,
         gpio_mode=gpio_mode,
+        mock_cameras=mock_cameras,
     )

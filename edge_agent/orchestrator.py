@@ -46,6 +46,7 @@ class EdgeOrchestrator:
             v4l_by_id_dir=config.v4l_by_id_dir,
             sys_dir=config.sys_dir,
             mock_overlay_aruco=config.mock_overlay_aruco,
+            mock_cameras=config.mock_cameras,
         )
         self.vision = vision or VisionPipeline(
             model_path=config.model_path,
@@ -55,6 +56,7 @@ class EdgeOrchestrator:
             mode=config.hardware_mode,
             v4l_by_id_dir=config.v4l_by_id_dir,
             client=self.client,
+            mock_cameras=config.mock_cameras,
         )
 
         self.running = threading.Event()
@@ -188,7 +190,10 @@ class EdgeOrchestrator:
             python_version=platform.python_version(),
             model_name=self.vision.get_model_name(),
         )
-        hardware_info = get_hardware_telemetry(gpio_mode=self.config.hardware_mode)
+        hardware_info = get_hardware_telemetry(
+            gpio_mode=self.config.hardware_mode,
+            mock_cameras=self.config.mock_cameras,
+        )
         queue_count = get_queue_count(self.config.offline_queue_dir)
         detected_cams = self.hardware.scan_cameras(
             v4l_by_id_dir=self.config.v4l_by_id_dir,
@@ -241,14 +246,18 @@ class EdgeOrchestrator:
 
     def _command_poll_loop(self) -> None:
         """Периодический цикл опроса команд."""
+        next_delay = self.config.command_poll_interval_sec
         while self.running.is_set():
-            time.sleep(self.config.command_poll_interval_sec)
+            time.sleep(next_delay)
             if not self.running.is_set():
                 break
+            next_delay = self.config.command_poll_interval_sec
             try:
                 commands = self.client.claim_command()
                 for cmd in commands:
                     self.handle_command(cmd)
+                if commands:
+                    next_delay = min(0.05, self.config.command_poll_interval_sec)
             except Exception as exc:  # noqa: BLE001
                 logger.error(f"Исключение в цикле опроса команд: {exc}")
 
@@ -451,10 +460,19 @@ class EdgeOrchestrator:
         """Возвращает реальный путь к /dev/videoX для указанного hardware_id."""
         if not hw_id:
             return "/dev/video0"
+        resolver = getattr(self.hardware, "resolve_device_path", None)
+        if callable(resolver):
+            resolved = resolver(hw_id)
+            if resolved:
+                return resolved
         candidate = self.config.v4l_by_id_dir / hw_id
         if candidate.exists():
             return os.path.realpath(str(candidate))
         return f"/dev/v4l/by-id/{hw_id}"
+
+    @property
+    def _use_mock_cameras(self) -> bool:
+        return self.config.hardware_mode == "mock" and self.config.mock_cameras
 
     def _query_and_sync_controls(
         self,
@@ -469,11 +487,13 @@ class EdgeOrchestrator:
             query_camera_formats_and_sizes,
         )
 
-        is_mock = self.config.hardware_mode == "mock"
+        is_mock = self._use_mock_cameras
         dev_path = self._resolve_camera_dev_path(hw_id)
         formats = query_camera_formats_and_sizes(dev_path, mock_mode=is_mock)
         controls = query_camera_controls(dev_path, mock_mode=is_mock)
-        if sync_to_server:
+        if sync_to_server and (
+            is_mock or formats or controls or current_format or current_resolution
+        ):
             self.client.send_camera_controls_state(
                 hardware_id=hw_id,
                 formats=formats,
@@ -526,13 +546,21 @@ class EdgeOrchestrator:
         )
         data: dict[str, str] | None = None
         stream_url = getattr(self.live_stream, "stream_url", None)
-        if isinstance(stream_url, str) and stream_url:
-            data = {"stream_url": stream_url}
+        actual_w = getattr(self.live_stream, "current_width", w)
+        actual_h = getattr(self.live_stream, "current_height", h)
+        actual_res = (
+            f"{actual_w}x{actual_h}"
+            if isinstance(actual_w, int) and isinstance(actual_h, int)
+            else f"{w}x{h}"
+        )
         if success:
+            data = {"resolution": actual_res}
+            if isinstance(stream_url, str) and stream_url:
+                data["stream_url"] = stream_url
             self._sync_camera_controls_to_server(
                 hw_id,
                 current_format=fmt,
-                current_resolution=f"{w}x{h}",
+                current_resolution=actual_res,
             )
         self.client.send_command_result(
             cmd.id,
@@ -589,7 +617,7 @@ class EdgeOrchestrator:
         from edge_agent.camera_controls import set_v4l2_control
 
         dev_path = self._resolve_camera_dev_path(hw_id)
-        is_mock = self.config.hardware_mode == "mock"
+        is_mock = self._use_mock_cameras
         for cname, cval in controls.items():
             set_v4l2_control(dev_path, cname, cval, mock_mode=is_mock)
 

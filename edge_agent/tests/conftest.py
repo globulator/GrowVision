@@ -24,6 +24,7 @@ def test_config(tmp_path: Path, tmp_queue_dir: Path) -> EdgeConfig:
         server_url="http://testserver:8000",
         edge_api_key="test-secret-key-123",
         hardware_mode="mock",
+        mock_cameras=True,
         heartbeat_interval_sec=0.1,
         claim_poll_interval_sec=0.1,
         offline_queue_dir=tmp_queue_dir,
@@ -37,7 +38,7 @@ def test_config(tmp_path: Path, tmp_queue_dir: Path) -> EdgeConfig:
 @pytest.fixture
 def mock_hardware() -> HardwareManager:
     """Менеджер оборудования в mock-режиме."""
-    hw = HardwareManager(mode="mock")
+    hw = HardwareManager(mode="mock", mock_cameras=True)
     yield hw
     hw.cleanup()
 
