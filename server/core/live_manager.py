@@ -11,6 +11,8 @@ class LiveCameraSession:
         self.hardware_id = hardware_id
         self.camera_id = camera_id
         self.latest_frame: bytes | None = None
+        self.latest_raw_frame: bytes | None = None
+        self.latest_annotated_frame: bytes | None = None
         self.frame_timestamp: float = time.time()
         self.last_frame_at: float = 0.0
         self.last_proxied_at: float = 0.0
@@ -20,11 +22,30 @@ class LiveCameraSession:
         self.latency_ms: int = 0
         self.is_paused: bool = False
         self.is_active: bool = False
+        self.mode: str = "raw"
+        self.device_online: bool = True
+        self.stream_error: str | None = None
+        self._last_state_probe_at: float = 0.0
         self.last_heartbeat: float = time.time()
         self.active_subscribers: int = 0
         self.frame_counter: int = 0
         self._frame_times: deque[float] = deque(maxlen=30)
         self.condition = asyncio.Condition()
+
+    def set_mode(self, mode: str) -> None:
+        """Переключает режим Live-потока ('raw' или 'annotated') со сбросом окна метрик."""
+        norm = "annotated" if str(mode).lower() == "annotated" else "raw"
+        if norm != self.mode:
+            self.mode = norm
+            self._frame_times.clear()
+            self.fps = 0.0
+            self.latency_ms = 0
+            self.last_proxied_at = 0.0
+            self.latest_frame = (
+                self.latest_annotated_frame
+                if norm == "annotated"
+                else self.latest_raw_frame
+            )
 
     def _update_fps_window(self, now: float) -> None:
         """Обновляет мгновенный FPS по скользящему окну последних кадров."""
@@ -44,6 +65,8 @@ class LiveCameraSession:
         resolution: str | None = None,
         latency_ms: int | None = None,
         stream_url: str | None = None,
+        frame_mode: str = "raw",
+        device_online: bool | None = None,
     ) -> None:
         """Принимает свежий кадр от агента, отбрасывая старые."""
         now = time.time()
@@ -51,13 +74,27 @@ class LiveCameraSession:
         self.is_active = True
         self.last_heartbeat = now
 
+        if device_online is not None:
+            self.device_online = bool(device_online)
+            self.stream_error = None if self.device_online else "Камера отключена"
+
         if resolution:
             self.resolution = resolution
         if stream_url:
             self.stream_url = stream_url
 
-        # При активном прямом проксировании не дублируем кадры в _frame_times и не затираем latency/frame
-        if (now - self.last_proxied_at) < 1.5:
+        norm_mode = "annotated" if str(frame_mode).lower() == "annotated" else "raw"
+        if norm_mode == "annotated":
+            self.latest_annotated_frame = frame_bytes
+        else:
+            self.latest_raw_frame = frame_bytes
+
+        # Отбрасываем кадры несоответствующего режима (переходный период при переключении)
+        if norm_mode != self.mode:
+            return
+
+        # При активном прямом проксировании raw-потока не дублируем кадры в _frame_times и не затираем latency/frame
+        if norm_mode == "raw" and (now - self.last_proxied_at) < 1.5:
             return
 
         self.latest_frame = frame_bytes
@@ -88,6 +125,8 @@ class LiveCameraSession:
         self.last_proxied_at = now
         self.last_heartbeat = now
         self.is_active = True
+        self.device_online = True
+        self.stream_error = None
         self.frame_counter += 1
         self.latency_ms = max(1, int(latency_ms))
         if not self.is_paused:
@@ -98,11 +137,19 @@ class LiveCameraSession:
         now = time.time()
         stale = self.last_frame_at > 0 and (now - self.last_frame_at) > 3.5
         effective_fps = (
-            self.fps if self.is_active and not self.is_paused and not stale else 0.0
+            self.fps
+            if self.is_active
+            and not self.is_paused
+            and self.device_online
+            and not stale
+            else 0.0
         )
         effective_lat = (
             self.latency_ms
-            if self.is_active and not stale and self.last_frame_at > 0
+            if self.is_active
+            and self.device_online
+            and not stale
+            and self.last_frame_at > 0
             else 0
         )
         return {
@@ -110,6 +157,9 @@ class LiveCameraSession:
             "camera_id": self.camera_id,
             "is_active": self.is_active,
             "is_paused": self.is_paused,
+            "mode": self.mode,
+            "device_online": self.device_online,
+            "stream_error": self.stream_error,
             "fps": effective_fps,
             "latency_ms": effective_lat,
             "resolution": self.resolution,
@@ -147,6 +197,11 @@ class LiveSessionManager:
             session.is_active = False
             session.stream_url = None
             session.latest_frame = None
+            session.latest_raw_frame = None
+            session.latest_annotated_frame = None
+            session.mode = "raw"
+            session.device_online = True
+            session.stream_error = None
             session.last_proxied_at = 0.0
             session.fps = 0.0
             session.latency_ms = 0

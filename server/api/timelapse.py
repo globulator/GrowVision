@@ -18,6 +18,7 @@ from server.api.deps import (
 from server.api.edge import get_media_dir
 from server.config import get_settings
 from server.core.area import calculate_area_display
+from server.core.rgb import resolve_capture_display_rel_path
 from server.db.models import Camera, Capture, Installation, User
 from shared.logger import get_logger
 
@@ -89,7 +90,7 @@ def get_timelapse_frames(
                 "capture_id": cap.id,
                 "camera_id": cap.camera_id,
                 "captured_at": format_utc_z(cap.captured_at),
-                "raw_url": f"/{cap.raw_image_path}",
+                "raw_url": f"/{resolve_capture_display_rel_path(cap.raw_image_path, get_media_dir())}",
                 "annotated_url": f"/{cap.annotated_image_path}",
                 "area_display": area_display,
             }
@@ -187,9 +188,11 @@ def generate_timelapse_video(
         check_conflicting_cameras(captures, db)
 
     # Кадры с отсутствующими файлами пропускаются
+    media_dir = get_media_dir()
     valid_captures: list[tuple[Capture, Path]] = []
     for cap in captures:
-        file_path = get_frame_file_path(cap.raw_image_path)
+        rel_path = resolve_capture_display_rel_path(cap.raw_image_path, media_dir)
+        file_path = get_frame_file_path(rel_path)
         if file_path.is_file():
             valid_captures.append((cap, file_path))
 

@@ -22,6 +22,7 @@ let isPlaying = false;
 let playTimer = null;
 let currentLoadId = 0;
 let isEncodingGif = false;
+let galleryCacheBuster = Date.now();
 
 // Жесты: дабл-тап и свайпы
 let lastTapTime = 0;
@@ -36,6 +37,7 @@ export async function openGalleryModal(unit) {
   currentUnit = unit;
   currentLayer = 'raw';
   isPlaying = false;
+  galleryCacheBuster = Date.now();
   clearInterval(playTimer);
 
   const modal = document.getElementById('modal-gallery');
@@ -227,7 +229,8 @@ async function loadCameraFrames() {
             resolve(img);
           }
         };
-        img.src = url;
+        const sep = url.includes('?') ? '&' : '?';
+        img.src = url ? `${url}${sep}t=${galleryCacheBuster}` : '';
       }
       tryLoad();
     });

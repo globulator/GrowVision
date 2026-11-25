@@ -7,8 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
+from server.api import edge as edge_api
 from server.api.deps import format_utc_z, get_current_user, get_db, require_role
 from server.core.area import calculate_area_display
+from server.core.rgb import resolve_capture_display_rel_path
 from server.core.state import app_state
 from server.core.system_status import (
     check_rpi_online,
@@ -221,7 +223,7 @@ async def control_snap(
                 "installation_id": cap.installation_id,
                 "camera_id": cap.camera_id,
                 "captured_at": format_utc_z(cap.captured_at),
-                "raw_url": f"/{cap.raw_image_path}",
+                "raw_url": f"/{resolve_capture_display_rel_path(cap.raw_image_path, edge_api.get_media_dir())}",
                 "annotated_url": f"/{cap.annotated_image_path}",
                 "area_display": area_display,
             }
@@ -250,7 +252,7 @@ def get_capture_info(
         "installation_id": cap.installation_id,
         "camera_id": cap.camera_id,
         "captured_at": format_utc_z(cap.captured_at),
-        "raw_url": f"/{cap.raw_image_path}",
+        "raw_url": f"/{resolve_capture_display_rel_path(cap.raw_image_path, edge_api.get_media_dir())}",
         "annotated_url": f"/{cap.annotated_image_path}",
     }
 

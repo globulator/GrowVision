@@ -194,6 +194,8 @@ class EdgeAPIClient:
         resolution: str = "1280x720",
         latency_ms: int | None = None,
         stream_url: str | None = None,
+        device_online: bool = True,
+        frame_mode: str = "raw",
     ) -> dict[str, Any] | None:
         """Отправляет свежий кадр Live-стрима: POST /api/edge/cameras/{hardware_id}/live-frame."""
         url = f"/api/edge/cameras/{hardware_id}/live-frame"
@@ -202,6 +204,8 @@ class EdgeAPIClient:
             "X-Timestamp": str(frame_timestamp or time.time()),
             "X-Paused": "1" if is_paused else "0",
             "X-Resolution": resolution,
+            "X-Device-Online": "1" if device_online else "0",
+            "X-Frame-Mode": frame_mode,
         }
         if latency_ms is not None:
             headers["X-Latency-Ms"] = str(max(0, int(latency_ms)))

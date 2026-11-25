@@ -1,10 +1,13 @@
 import contextlib
+import json
 import os
 import shutil
 import socket
 import subprocess
 import threading
 import time
+import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -38,11 +41,13 @@ class LiveStreamManager:
         v4l_by_id_dir: Any = None,
         client: Any = None,
         mock_cameras: bool = False,
+        vision: Any = None,
     ):
         self.mode = mode.lower()
         self.v4l_by_id_dir = Path(v4l_by_id_dir) if v4l_by_id_dir else None
         self.client = client
         self.mock_cameras = bool(mock_cameras)
+        self.vision = vision
 
         self.lock = threading.Lock()
         self._cap_lock = threading.Lock()
@@ -56,8 +61,11 @@ class LiveStreamManager:
         self.stream_url: str | None = None
         self.is_running: bool = False
         self.is_paused: bool = False
+        self.device_online: bool = True
+        self.stream_mode: str = "raw"
         self.last_activity_time: float = time.time()
         self.rgb_gains: tuple[float, float, float] = (1.0, 1.0, 1.0)
+        self._camera_context: dict[str, Any] = {}
 
         self._last_frame: bytes | None = None
         self._push_thread: threading.Thread | None = None
@@ -65,6 +73,9 @@ class LiveStreamManager:
         self._mock_counter: int = 0
         self._last_send_rtt_ms: float = 0.0
         self._resolution_verified: bool = False
+        self._last_state_check_at: float = 0.0
+        self._consecutive_read_errors: int = 0
+        self._last_offline_notify_at: float = 0.0
 
     @property
     def use_mock_cameras(self) -> bool:
@@ -133,7 +144,122 @@ class LiveStreamManager:
 
     def set_rgb_gains(self, r: float, g: float, b: float) -> None:
         """Устанавливает программные коэффициенты усиления R/G/B."""
-        self.rgb_gains = (max(0.1, float(r)), max(0.1, float(g)), max(0.1, float(b)))
+        self.rgb_gains = (max(0.0, float(r)), max(0.0, float(g)), max(0.0, float(b)))
+
+    def set_stream_mode(self, mode: str) -> None:
+        """Переключает режим Live-потока ('raw' или 'annotated')."""
+        norm = "annotated" if str(mode).lower() == "annotated" else "raw"
+        if norm != self.stream_mode:
+            self.stream_mode = norm
+            logger.info(f"[LIVE] Режим потока переключён на {norm}")
+
+    def set_camera_context(
+        self,
+        inst_name: str | None = None,
+        culture_name: str | None = None,
+        aruco_size_mm: float | None = None,
+    ) -> None:
+        """Сохраняет контекст установки для CV-разметки в Live-режиме."""
+        self._camera_context = {
+            "inst_name": inst_name,
+            "culture_name": culture_name,
+            "aruco_size_mm": aruco_size_mm,
+        }
+
+    def _fetch_ustreamer_state(self, timeout: float = 1.0) -> dict[str, Any] | None:
+        """Запрашивает локальный /state у ustreamer."""
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{self.current_port}/state")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                    if isinstance(data, dict):
+                        return data
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
+    @staticmethod
+    def _parse_ustreamer_online(state_data: dict[str, Any] | None) -> bool | None:
+        """Извлекает флаг online источника из ответа ustreamer /state."""
+        if not isinstance(state_data, dict):
+            return None
+        result = (
+            state_data.get("result")
+            if isinstance(state_data.get("result"), dict)
+            else state_data
+        )
+        source = (
+            result.get("source")
+            if isinstance(result, dict) and isinstance(result.get("source"), dict)
+            else None
+        )
+        if source is not None and "online" in source:
+            return bool(source["online"])
+        if isinstance(result, dict) and "online" in result:
+            return bool(result["online"])
+        return None
+
+    def capture_ustreamer_snapshot(
+        self, camera_hardware_id: str, timeout: float = 2.5
+    ) -> bytes | None:
+        """Забирает свежий JPEG через локальный /snapshot ustreamer без паузы стрима."""
+        if (
+            not self.is_running
+            or self.is_paused
+            or self.active_camera_id != camera_hardware_id
+        ):
+            return None
+        if self.process is None or self.process.poll() is not None:
+            return None
+
+        state_data = self._fetch_ustreamer_state(timeout=min(1.0, timeout))
+        online_flag = self._parse_ustreamer_online(state_data)
+        if online_flag is False:
+            self.device_online = False
+            logger.warning(
+                f"[LIVE] Камера {camera_hardware_id} offline по /state ustreamer"
+            )
+            return None
+        if online_flag is True:
+            self.device_online = True
+
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self.current_port}/snapshot"
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = resp.read()
+                    if data and data.startswith(b"\xff\xd8"):
+                        return data
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[LIVE] Ошибка /snapshot ustreamer: {exc}")
+        return None
+
+    def _annotate_frame(self, raw_frame: bytes) -> bytes:
+        """Накладывает CV-разметку через VisionPipeline для режима 'Разметка'."""
+        vision = self.vision
+        if vision is None:
+            from edge_agent.vision import VisionPipeline
+
+            vision = VisionPipeline(mock_mode=(self.mode == "mock"))
+            self.vision = vision
+
+        try:
+            now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            ann_bytes, _, _ = vision.process_capture(
+                raw_frame,
+                inst_name=self._camera_context.get("inst_name"),
+                culture_name=self._camera_context.get("culture_name"),
+                camera_name=self.active_camera_id,
+                captured_at=now_str,
+                aruco_size_mm=self._camera_context.get("aruco_size_mm"),
+            )
+            return ann_bytes
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[LIVE] Ошибка CV-разметки кадра: {exc}")
+            return raw_frame
 
     def apply_rgb_gains(self, img: Any) -> Any:
         """Применяет программные коэффициенты R/G/B к OpenCV кадру (BGR)."""
@@ -285,6 +411,11 @@ class LiveStreamManager:
 
             self.is_running = True
             self.is_paused = False
+            self.device_online = True
+            self.stream_mode = "raw"
+            self._consecutive_read_errors = 0
+            self._last_state_check_at = 0.0
+            self._last_offline_notify_at = 0.0
 
             # Запуск фонового воркера отправки кадров на сервер и watchdog
             self._push_thread = threading.Thread(
@@ -310,7 +441,10 @@ class LiveStreamManager:
         self._last_frame = None
         self.is_running = False
         self.is_paused = False
+        self.device_online = True
+        self.stream_mode = "raw"
         self._resolution_verified = False
+        self._consecutive_read_errors = 0
 
     def stop(self) -> None:
         """Останавливает Live-стрим."""
@@ -360,22 +494,19 @@ class LiveStreamManager:
                 self.current_height = int(actual_h)
                 self._resolution_verified = True
 
-            if self.rgb_gains != (1.0, 1.0, 1.0):
-                img = self.apply_rgb_gains(img)
-
             success, enc = cv2.imencode(".jpg", img)
             if not success:
                 return None
             return enc.tobytes()
 
     def _generate_frame(self) -> bytes | None:
-        """Генерирует или считывает свежий кадр с применением RGB-коррекции."""
+        """Генерирует или считывает свежий кадр (с CV-разметкой в режиме annotated)."""
         if self.is_paused and self._last_frame:
             return self._last_frame
 
         raw_frame: bytes | None = None
 
-        # 1. Попытка забрать из ustreamer /snapshot при его наличии
+        # 1. Попытка забрать из ustreamer /snapshot и проверить /state при его наличии
         if self.process is not None:
             if self.process.poll() is not None:
                 logger.warning(
@@ -388,9 +519,22 @@ class LiveStreamManager:
                 self.process = None
                 self.stream_url = None
             else:
-                with contextlib.suppress(Exception):
-                    import urllib.request
+                now_m = time.monotonic()
+                if (now_m - self._last_state_check_at) >= 0.5:
+                    self._last_state_check_at = now_m
+                    state_data = self._fetch_ustreamer_state(timeout=0.8)
+                    online_flag = self._parse_ustreamer_online(state_data)
+                    if online_flag is False:
+                        self.device_online = False
+                        return self._last_frame if self.is_paused else None
+                    if online_flag is True:
+                        self.device_online = True
+                        self._consecutive_read_errors = 0
 
+                if not self.device_online:
+                    return self._last_frame if self.is_paused else None
+
+                with contextlib.suppress(Exception):
                     req = urllib.request.Request(
                         f"http://127.0.0.1:{self.current_port}/snapshot"
                     )
@@ -398,8 +542,14 @@ class LiveStreamManager:
                         if resp.status == 200:
                             raw_frame = resp.read()
                 if raw_frame is None:
+                    self._consecutive_read_errors += 1
+                    if self._consecutive_read_errors >= 3:
+                        self.device_online = False
                     # Пока ustreamer работает, не открываем /dev/videoX параллельно во избежание конфликта V4L2
                     return self._last_frame if self.is_paused else None
+
+                self.device_online = True
+                self._consecutive_read_errors = 0
 
                 if not self._resolution_verified:
                     with contextlib.suppress(Exception):
@@ -420,33 +570,27 @@ class LiveStreamManager:
             if not self.use_mock_cameras:
                 raw_frame = self._capture_opencv_frame()
                 if raw_frame is None:
+                    self._consecutive_read_errors += 1
+                    if self._consecutive_read_errors >= 3:
+                        self.device_online = False
                     return self._last_frame if self.is_paused else None
-                self._last_frame = raw_frame
-                return raw_frame
+                self.device_online = True
+                self._consecutive_read_errors = 0
+            else:
+                from edge_agent.synthetic import generate_synthetic_frame
 
-            from edge_agent.synthetic import generate_synthetic_frame
+                raw_frame = generate_synthetic_frame(
+                    frame_index=self._mock_counter,
+                    camera_id=self.active_camera_id or "live-cam",
+                    width=self.current_width,
+                    height=self.current_height,
+                )
+                self._mock_counter += 1
+                self.device_online = True
 
-            raw_frame = generate_synthetic_frame(
-                frame_index=self._mock_counter,
-                camera_id=self.active_camera_id or "live-cam",
-                width=self.current_width,
-                height=self.current_height,
-            )
-            self._mock_counter += 1
-
-        # 3. Применение программной RGB-коррекции
-        if self.rgb_gains != (1.0, 1.0, 1.0):
-            with contextlib.suppress(Exception):
-                import cv2
-                import numpy as np
-
-                nparr = np.frombuffer(raw_frame, np.uint8)
-                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                if img is not None:
-                    img = self.apply_rgb_gains(img)
-                    success, enc = cv2.imencode(".jpg", img)
-                    if success:
-                        raw_frame = enc.tobytes()
+        # 3. CV-разметка в режиме 'annotated'
+        if self.stream_mode == "annotated" and raw_frame is not None:
+            raw_frame = self._annotate_frame(raw_frame)
 
         self._last_frame = raw_frame
         return raw_frame
@@ -472,6 +616,27 @@ class LiveStreamManager:
             frame_bytes = self._generate_frame()
             cap_ms = (time.perf_counter() - cap_t0) * 1000.0
             if frame_bytes is None:
+                if (
+                    not self.device_online
+                    and self.client
+                    and self.active_camera_id
+                    and (time.monotonic() - self._last_offline_notify_at) >= 0.5
+                ):
+                    self._last_offline_notify_at = time.monotonic()
+                    with contextlib.suppress(Exception):
+                        res = self.client.send_live_frame(
+                            hardware_id=self.active_camera_id,
+                            frame_bytes=b"",
+                            frame_timestamp=time.time(),
+                            is_paused=self.is_paused,
+                            resolution=f"{self.current_width}x{self.current_height}",
+                            latency_ms=0,
+                            stream_url=self.stream_url,
+                            device_online=False,
+                            frame_mode=self.stream_mode,
+                        )
+                        if isinstance(res, dict) and res.get("mode"):
+                            self.set_stream_mode(str(res["mode"]))
                 time.sleep(0.1)
                 continue
 
@@ -490,23 +655,29 @@ class LiveStreamManager:
                         resolution=f"{self.current_width}x{self.current_height}",
                         latency_ms=est_latency_ms,
                         stream_url=self.stream_url,
+                        device_online=self.device_online,
+                        frame_mode=self.stream_mode,
                     )
                     self._last_send_rtt_ms = (time.perf_counter() - send_t0) * 1000.0
-                    if res and res.get("active_subscribers", 0) > 0:
-                        self.touch()
-                        consecutive_idle_sec = 0.0
-                    else:
-                        consecutive_idle_sec += max(0.04, time.time() - loop_start)
-                        if consecutive_idle_sec >= 120.0:
-                            logger.info(
-                                "[LIVE] Нет активных подписчиков в браузере более 120 с, автоостановка"
-                            )
-                            self.stop()
-                            break
+                    if isinstance(res, dict):
+                        if res.get("mode"):
+                            self.set_stream_mode(str(res["mode"]))
+                        if res.get("active_subscribers", 0) > 0:
+                            self.touch()
+                            consecutive_idle_sec = 0.0
+                        else:
+                            consecutive_idle_sec += max(0.04, time.time() - loop_start)
+                            if consecutive_idle_sec >= 120.0:
+                                logger.info(
+                                    "[LIVE] Нет активных подписчиков в браузере более 120 с, автоостановка"
+                                )
+                                self.stop()
+                                break
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(f"[LIVE] Ошибка отправки кадра на сервер: {exc}")
 
-            # Регулировка FPS: целевой FPS ~25 (интервал ~40 мс)
+            # Регулировка FPS: в режиме 'annotated' ограничиваем 3.3 FPS, в 'raw' ~25 FPS
+            target_interval = 0.3 if self.stream_mode == "annotated" else 0.04
             elapsed = time.time() - loop_start
-            sleep_time = max(0.01, 0.04 - elapsed)
+            sleep_time = max(0.01, target_interval - elapsed)
             time.sleep(sleep_time)

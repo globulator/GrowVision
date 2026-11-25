@@ -1,3 +1,4 @@
+import contextlib
 import json
 import time
 from datetime import UTC, datetime
@@ -20,6 +21,13 @@ from sqlalchemy.orm import Session
 
 from server.api.deps import get_db, verify_edge_key
 from server.core.live_manager import live_manager
+from server.core.rgb import (
+    apply_rgb_to_jpeg_bytes,
+    clamp_rgb_dict,
+    get_rgb_variant_rel_path,
+    is_identity_rgb,
+    resolve_media_abs_path,
+)
 from server.core.state import app_state
 from server.core.timeouts import expire_stale_commands
 from server.db.models import (
@@ -536,6 +544,27 @@ async def edge_upload_capture(
     capture.raw_image_path = f"media/{meta.installation_id}/{raw_filename}"
     capture.annotated_image_path = f"media/{meta.installation_id}/{ann_filename}"
 
+    # При наличии сохранённого RGB-профиля камеры создаём отфильтрованную копию, не трогая оригинал raw_...jpg
+    rgb_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_rgb_{camera.hardware_id}")
+        .first()
+    )
+    if rgb_setting and rgb_setting.value:
+        with contextlib.suppress(Exception):
+            rgb_vals = clamp_rgb_dict(json.loads(rgb_setting.value))
+            if not is_identity_rgb(rgb_vals):
+                rgb_rel = get_rgb_variant_rel_path(capture.raw_image_path)
+                rgb_abs = resolve_media_abs_path(rgb_rel, get_media_dir())
+                rgb_abs.write_bytes(
+                    apply_rgb_to_jpeg_bytes(
+                        raw_bytes,
+                        r=rgb_vals["r"],
+                        g=rgb_vals["g"],
+                        b=rgb_vals["b"],
+                    )
+                )
+
     # Сохранение замеров растений
     for m in meta.measurements:
         db.add(
@@ -570,10 +599,29 @@ async def receive_live_frame(
     x_resolution: Annotated[str | None, Header(alias="X-Resolution")] = None,
     x_latency_ms: Annotated[str | None, Header(alias="X-Latency-Ms")] = None,
     x_stream_url: Annotated[str | None, Header(alias="X-Stream-Url")] = None,
+    x_device_online: Annotated[str | None, Header(alias="X-Device-Online")] = None,
+    x_frame_mode: Annotated[str | None, Header(alias="X-Frame-Mode")] = None,
 ) -> dict[str, Any]:
     """Прием свежего кадра Live-стрима от Edge-агента."""
+    session = live_manager.get_or_create(hardware_id)
+    device_online: bool | None = None
+    if x_device_online is not None:
+        device_online = x_device_online in ("1", "true", "True")
+        session.device_online = device_online
+        session.stream_error = None if device_online else "Камера отключена"
+
     body_bytes = await request.body()
     if not body_bytes:
+        if device_online is not None:
+            session.is_active = True
+            session.last_heartbeat = time.time()
+            async with session.condition:
+                session.condition.notify_all()
+            return {
+                "status": "ok",
+                "active_subscribers": session.active_subscribers,
+                "mode": session.mode,
+            }
         return {"status": "error", "message": "empty body"}
 
     raw_ts = x_timestamp or x_frame_timestamp
@@ -589,10 +637,10 @@ async def receive_live_frame(
 
     is_paused = x_paused in ("1", "true", "True")
     res = x_resolution or "1280x720"
+    frame_mode = x_frame_mode or "raw"
 
     stream_url = _normalize_stream_url(x_stream_url, request)
 
-    session = live_manager.get_or_create(hardware_id)
     session.push_frame(
         body_bytes,
         frame_timestamp=ts,
@@ -600,6 +648,8 @@ async def receive_live_frame(
         resolution=res,
         latency_ms=latency_ms,
         stream_url=stream_url,
+        frame_mode=frame_mode,
+        device_online=device_online,
     )
 
     async with session.condition:
@@ -608,4 +658,5 @@ async def receive_live_frame(
     return {
         "status": "ok",
         "active_subscribers": session.active_subscribers,
+        "mode": session.mode,
     }
