@@ -125,6 +125,25 @@ export function getRandomLoadingPhrase() {
 }
 
 /**
+ * Возвращает HTML фирменной заглушки для модалки создания/редактирования установки.
+ */
+export function getUnitEditorPlaceholderHTML(caption = 'Растение ещё не готово к фотосессии...') {
+  return `
+    <div class="media-placeholder category-a unit-editor-placeholder">
+      <div class="placeholder-icon-wrap">
+        <svg viewBox="0 0 64 64" width="52" height="52" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 22H22L26 16H38L42 22H50C52.2 22 54 23.8 54 26V48C54 50.2 52.2 52 50 52H14C11.8 52 10 50.2 10 48V26C10 23.8 11.8 22 14 22Z" />
+          <path d="M32 43V33" />
+          <path d="M32 35C32 30 26 28 24 28C24 34 28 36 32 36Z" />
+          <path d="M32 33C34 29 39 28 40 28C40 33 36 35 32 36" />
+        </svg>
+      </div>
+      <p class="placeholder-caption">${caption}</p>
+    </div>
+  `.trim();
+}
+
+/**
  * Возвращает HTML фирменного лоадера GrowVision (анимация ростка + случайная фраза).
  */
 export function getLoadingSpinnerHTML(phrase = getRandomLoadingPhrase()) {

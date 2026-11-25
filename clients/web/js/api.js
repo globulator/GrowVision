@@ -132,7 +132,54 @@ export const api = {
     }),
 
   // Установки
-  getInstallations: () => request('/api/installations'),
+  getInstallations: (includeArchived = false) =>
+    request(includeArchived ? '/api/installations?include_archived=true' : '/api/installations'),
+  createInstallation: (payload) =>
+    request('/api/installations', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  patchInstallation: (instId, payload) =>
+    request(`/api/installations/${Number(instId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  archiveInstallation: (instId) =>
+    request(`/api/installations/${Number(instId)}/archive`, {
+      method: 'POST',
+    }),
+  unarchiveInstallation: (instId) =>
+    request(`/api/installations/${Number(instId)}/unarchive`, {
+      method: 'POST',
+    }),
+  deleteInstallation: (instId) =>
+    request(`/api/installations/${Number(instId)}`, {
+      method: 'DELETE',
+    }),
+
+  // Настройки системы и управление светом/реле
+  getSystemSettings: () => request('/api/system/settings'),
+  patchSystemSettings: (payload) =>
+    request('/api/system/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  getRelays: () => request('/api/control/relays'),
+  controlLightMain: (target, state) =>
+    request('/api/control/light/main', {
+      method: 'POST',
+      body: JSON.stringify({ target, state: Boolean(state) }),
+    }),
+  controlLightFlash: (target, state) =>
+    request('/api/control/light/flash', {
+      method: 'POST',
+      body: JSON.stringify({ target, state: Boolean(state) }),
+    }),
+  controlRelayTest: (target = 'all') =>
+    request('/api/control/relay-test', {
+      method: 'POST',
+      body: JSON.stringify({ target }),
+    }),
 
   // Кадры установки (исправлен 404 URL)
   getInstallationFrames: (instId, limit = 500) =>
@@ -165,6 +212,16 @@ export const api = {
 
   // Камеры и Live-режим
   getCameras: () => request('/api/cameras'),
+  bindCamera: (cameraId, installationId) =>
+    request(`/api/cameras/${Number(cameraId)}/bind`, {
+      method: 'POST',
+      body: JSON.stringify({
+        installation_id:
+          installationId === null || installationId === undefined || installationId === ''
+            ? null
+            : Number(installationId),
+      }),
+    }),
   startLive: (cameraId) =>
     request(`/api/cameras/${Number(cameraId)}/live/start`, { method: 'POST' }),
   stopLive: (cameraId) =>

@@ -22,11 +22,17 @@ import {
 } from './test_snap.js';
 import { initRpiSetup, updateRpiRole } from './rpi_setup.js';
 import {
+  closeLightControlModal,
+  initLightControl,
+  updateLightRole,
+} from './light_control.js';
+import {
   initCameras,
   updateCamerasRole,
   openLiveModal,
   closeCamerasModal,
   closeLiveModal,
+  setCamerasChangedHandler,
   setLiveProfileSavedHandler,
 } from './cameras.js';
 import {
@@ -35,6 +41,14 @@ import {
   setUnitActionHandlers,
   updateUnitsRole,
 } from './units.js';
+import {
+  closeUnitEditorModal,
+  initUnitEditor,
+  openUnitCreateModal,
+  openUnitEditModal,
+  setUnitEditorRole,
+  setUnitSavedHandler,
+} from './unit_editor.js';
 
 let currentUser = null; // { authenticated: bool, role: 'guest'|'biologist'|'developer', login: string|null }
 let backgroundPollingTimer = null;
@@ -89,9 +103,11 @@ function updateHeaderUi() {
 // Применение роли ко всем компонентам
 function applyRole(role) {
   updateUnitsRole(role);
+  setUnitEditorRole(role);
   setGalleryRole(role);
   setTestSnapRole(role);
   updateRpiRole(role);
+  updateLightRole(role);
   updateCamerasRole(role);
   updateHeaderUi();
 }
@@ -124,6 +140,8 @@ async function performLogout() {
     closeTestSnapModal();
     closeCamerasModal();
     closeLiveModal();
+    closeUnitEditorModal();
+    closeLightControlModal();
     await loadAndRenderUnits();
     showToast('Вы вышли из системы');
   } catch (err) {
@@ -140,6 +158,8 @@ function handleSessionExpired() {
     closeTestSnapModal();
     closeCamerasModal();
     closeLiveModal();
+    closeUnitEditorModal();
+    closeLightControlModal();
     loadAndRenderUnits();
     showError('Сессия завершена. Войдите снова.', 'Сессия');
   }
@@ -224,10 +244,18 @@ async function bootstrap() {
   initDialogs();
   initAuth();
   initUnits();
+  initUnitEditor();
   initGallery();
   initTestSnap();
   initRpiSetup();
+  initLightControl();
   initCameras();
+  setUnitSavedHandler(async () => {
+    await loadAndRenderUnits({ bustCache: true });
+  });
+  setCamerasChangedHandler(async () => {
+    await loadAndRenderUnits();
+  });
   setLiveProfileSavedHandler(async (scope) => {
     if (scope === 'all_gallery') {
       await loadAndRenderUnits();
@@ -254,6 +282,8 @@ async function bootstrap() {
         openLiveModal(unit.cameras[0]);
       }
     },
+    onCreateUnit: () => openUnitCreateModal(),
+    onEditUnit: (unit) => openUnitEditModal(unit),
   });
 
   const logoutBtn = document.getElementById('header-btn-logout');
