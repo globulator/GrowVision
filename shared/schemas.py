@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+SegmentationMode = Literal["auto", "onnx", "hsv"]
+
 
 class DetectedCamera(BaseModel):
     """Информация об обнаруженной камере."""
@@ -69,6 +71,7 @@ class HeartbeatActiveInstallation(BaseModel):
     culture_name: str | None = None
     aruco_size_mm: float | None = None
     camera_rgb: dict[str, dict[str, float]] = Field(default_factory=dict)
+    camera_segmentation_modes: dict[str, SegmentationMode] = Field(default_factory=dict)
 
 
 class HeartbeatResponse(BaseModel):
@@ -98,6 +101,7 @@ class CommandInstallation(BaseModel):
     culture_name: str | None = None
     aruco_size_mm: float | None = None
     camera_rgb: dict[str, dict[str, float]] = Field(default_factory=dict)
+    camera_segmentation_modes: dict[str, SegmentationMode] = Field(default_factory=dict)
 
 
 class CommandItem(BaseModel):

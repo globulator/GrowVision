@@ -24,6 +24,7 @@ class LiveCameraSession:
         self.is_paused: bool = False
         self.is_active: bool = False
         self.mode: str = "raw"
+        self.segmentation_mode: str = "auto"
         self.device_online: bool = True
         self.color_marker_detected: bool = False
         self.stream_error: str | None = None
@@ -49,6 +50,11 @@ class LiveCameraSession:
                 if norm == "annotated"
                 else self.latest_raw_frame
             )
+
+    def set_segmentation_mode(self, mode: str) -> None:
+        """Устанавливает режим сегментации ('auto', 'onnx' или 'hsv')."""
+        raw = str(mode or "auto").strip().lower()
+        self.segmentation_mode = raw if raw in ("auto", "onnx", "hsv") else "auto"
 
     def _update_fps_window(self, now: float) -> None:
         """Обновляет мгновенный FPS по скользящему окну последних кадров."""
@@ -161,6 +167,7 @@ class LiveCameraSession:
             "is_active": self.is_active,
             "is_paused": self.is_paused,
             "mode": self.mode,
+            "segmentation_mode": self.segmentation_mode,
             "device_online": self.device_online,
             "color_marker_detected": self.color_marker_detected,
             "stream_error": self.stream_error,

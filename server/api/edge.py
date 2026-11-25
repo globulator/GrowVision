@@ -45,6 +45,7 @@ from shared.schemas import (
     HeartbeatActiveInstallation,
     HeartbeatRequest,
     HeartbeatResponse,
+    SegmentationMode,
 )
 
 router = APIRouter(prefix="/api/edge", tags=["edge"])
@@ -171,6 +172,9 @@ def edge_heartbeat(
                 culture_name=inst.culture_name,
                 aruco_size_mm=inst.aruco_size_mm,
                 camera_rgb=_load_installation_camera_rgb(db, cam_ids),
+                camera_segmentation_modes=_load_installation_camera_seg_modes(
+                    db, cam_ids
+                ),
             )
         )
 
@@ -241,6 +245,9 @@ def edge_claim_command(
                     "culture_name": inst.culture_name,
                     "aruco_size_mm": inst.aruco_size_mm,
                     "camera_rgb": _load_installation_camera_rgb(db, cam_ids),
+                    "camera_segmentation_modes": _load_installation_camera_seg_modes(
+                        db, cam_ids
+                    ),
                 }
             )
         cmd_data = {
@@ -265,6 +272,9 @@ def edge_claim_command(
                 "culture_name": inst.culture_name,
                 "aruco_size_mm": inst.aruco_size_mm,
                 "camera_rgb": _load_installation_camera_rgb(db, cam_ids),
+                "camera_segmentation_modes": _load_installation_camera_seg_modes(
+                    db, cam_ids
+                ),
             }
         else:
             inst_data = None
@@ -461,6 +471,86 @@ def receive_camera_controls_state(
     )
     db.commit()
     return {"status": "ok"}
+
+
+def normalize_segmentation_mode(raw_val: Any) -> SegmentationMode:
+    """Нормализует режим сегментации камеры к 'auto', 'onnx' или 'hsv'."""
+    val = str(raw_val or "auto").strip().lower()
+    if val == "onnx":
+        return "onnx"
+    if val == "hsv":
+        return "hsv"
+    return "auto"
+
+
+def _load_installation_camera_seg_modes(
+    db: Session, hardware_ids: list[str]
+) -> dict[str, SegmentationMode]:
+    """Загружает сохранённые режимы сегментации для списка камер установки."""
+    modes_map: dict[str, SegmentationMode] = {}
+    if not hardware_ids:
+        return modes_map
+    keys = [f"camera_seg_mode_{hw_id}" for hw_id in hardware_ids]
+    rows = db.query(SystemSetting).filter(SystemSetting.key.in_(keys)).all()
+    by_key = {row.key: row.value for row in rows}
+    for hw_id in hardware_ids:
+        raw_val = by_key.get(f"camera_seg_mode_{hw_id}")
+        modes_map[hw_id] = normalize_segmentation_mode(raw_val)
+    return modes_map
+
+
+@router.get(
+    "/camera-settings",
+    dependencies=[Depends(verify_edge_key)],
+)
+def get_edge_camera_settings(
+    db: Annotated[Session, Depends(get_db)],
+    hardware_id: str | None = None,
+) -> dict[str, Any]:
+    """Возвращает сохранённые настройки камер (RGB-коэффициенты и segmentation_mode) для Edge-агента."""
+    if hardware_id:
+        hw_ids = [hardware_id]
+    else:
+        hw_ids = [c.hardware_id for c in db.query(Camera).all()]
+        # Дополняем любыми камерами из SystemSetting, если ещё не привязаны
+        rgb_prefix = "camera_rgb_"
+        seg_prefix = "camera_seg_mode_"
+        for row in (
+            db.query(SystemSetting)
+            .filter(
+                (SystemSetting.key.like(f"{rgb_prefix}%"))
+                | (SystemSetting.key.like(f"{seg_prefix}%"))
+            )
+            .all()
+        ):
+            if row.key.startswith(rgb_prefix):
+                cand = row.key[len(rgb_prefix) :]
+            elif row.key.startswith(seg_prefix):
+                cand = row.key[len(seg_prefix) :]
+            else:
+                continue
+            if cand and cand not in hw_ids:
+                hw_ids.append(cand)
+
+    rgb_map = _load_installation_camera_rgb(db, hw_ids)
+    seg_map = _load_installation_camera_seg_modes(db, hw_ids)
+    cameras_cfg: dict[str, dict[str, Any]] = {}
+    for hw_id in hw_ids:
+        cameras_cfg[hw_id] = {
+            "rgb": rgb_map.get(hw_id, {"r": 1.0, "g": 1.0, "b": 1.0}),
+            "segmentation_mode": seg_map.get(hw_id, "auto"),
+        }
+
+    resp: dict[str, Any] = {"cameras": cameras_cfg}
+    if hardware_id:
+        entry = cameras_cfg.get(
+            hardware_id,
+            {"rgb": {"r": 1.0, "g": 1.0, "b": 1.0}, "segmentation_mode": "auto"},
+        )
+        resp["hardware_id"] = hardware_id
+        resp["rgb"] = entry["rgb"]
+        resp["segmentation_mode"] = entry["segmentation_mode"]
+    return resp
 
 
 def _load_installation_camera_rgb(
@@ -732,6 +822,7 @@ async def receive_live_frame(
                 "status": "ok",
                 "active_subscribers": session.active_subscribers,
                 "mode": session.mode,
+                "segmentation_mode": session.segmentation_mode,
             }
         return {"status": "error", "message": "empty body"}
 
@@ -770,4 +861,5 @@ async def receive_live_frame(
         "status": "ok",
         "active_subscribers": session.active_subscribers,
         "mode": session.mode,
+        "segmentation_mode": session.segmentation_mode,
     }

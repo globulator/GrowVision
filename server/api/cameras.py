@@ -29,6 +29,7 @@ from server.core.state import app_state
 from server.core.system_status import check_rpi_online, is_debug_mode, is_rpi_online
 from server.db.models import Camera, EdgeCommand, Installation, SystemSetting, User
 from shared.markers import generate_aruco_marker_svg, generate_color_marker_svg
+from shared.schemas import SegmentationMode
 
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
 
@@ -504,6 +505,7 @@ class CameraControlsPatch(BaseModel):
     format: str | None = None
     resolution: str | None = None
     rgb: dict[str, float] | None = None
+    segmentation_mode: SegmentationMode | None = None
 
 
 class CameraControlsSaveRequest(BaseModel):
@@ -516,6 +518,7 @@ class CameraControlsSaveRequest(BaseModel):
     format: str | None = None
     resolution: str | None = None
     rgb: dict[str, float] | None = None
+    segmentation_mode: SegmentationMode | None = None
 
 
 class LiveModeRequest(BaseModel):
@@ -574,6 +577,16 @@ def start_camera_live(
         with contextlib.suppress(Exception):
             saved_rgb = clamp_rgb_dict(json.loads(rgb_setting.value))
 
+    seg_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_seg_mode_{cam.hardware_id}")
+        .first()
+    )
+    saved_seg_mode = edge_api.normalize_segmentation_mode(
+        seg_setting.value if seg_setting else None
+    )
+    session.set_segmentation_mode(saved_seg_mode)
+
     parts = cur_res.split("x")
     w = int(parts[0]) if len(parts) == 2 else 1280
     h = int(parts[1]) if len(parts) == 2 else 720
@@ -589,6 +602,7 @@ def start_camera_live(
                 "height": h,
                 "pixel_format": cur_fmt,
                 "rgb": saved_rgb,
+                "segmentation_mode": saved_seg_mode,
             }
         ),
         status="pending",
@@ -602,6 +616,7 @@ def start_camera_live(
         "hardware_id": cam.hardware_id,
         "resolution": f"{w}x{h}",
         "format": cur_fmt,
+        "segmentation_mode": saved_seg_mode,
     }
 
 
@@ -714,12 +729,21 @@ async def get_camera_live_status(
     session = live_manager.get(cam.hardware_id)
     if not session:
         _, cur_res = _resolve_camera_format_and_resolution(db, cam.hardware_id)
+        seg_setting = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == f"camera_seg_mode_{cam.hardware_id}")
+            .first()
+        )
+        saved_seg_mode = edge_api.normalize_segmentation_mode(
+            seg_setting.value if seg_setting else None
+        )
         return {
             "hardware_id": cam.hardware_id,
             "camera_id": cam.id,
             "is_active": False,
             "is_paused": False,
             "mode": "raw",
+            "segmentation_mode": saved_seg_mode,
             "device_online": True,
             "color_marker_detected": False,
             "stream_error": None,
@@ -1152,6 +1176,15 @@ async def get_camera_controls(
             if isinstance(parsed_rgb, dict):
                 rgb = clamp_rgb_dict(parsed_rgb)
 
+    seg_setting = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key == f"camera_seg_mode_{cam.hardware_id}")
+        .first()
+    )
+    segmentation_mode = edge_api.normalize_segmentation_mode(
+        seg_setting.value if seg_setting else None
+    )
+
     cur_fmt, cur_res = _resolve_camera_format_and_resolution(
         db, cam.hardware_id, formats=formats
     )
@@ -1162,6 +1195,7 @@ async def get_camera_controls(
         "formats": formats,
         "controls": controls,
         "rgb": rgb,
+        "segmentation_mode": segmentation_mode,
         "current_format": cur_fmt,
         "current_resolution": cur_res,
     }
@@ -1174,9 +1208,10 @@ def _persist_camera_controls_profile(
     fmt: str | None,
     resolution: str | None,
     rgb: dict[str, float] | None,
+    segmentation_mode: str | None = None,
     enqueue_edge_command: bool = True,
-) -> tuple[list[dict[str, Any]] | None, dict[str, float]]:
-    """Сохраняет настройки формата, разрешения, V4L2-контролов и RGB в профиль камеры."""
+) -> tuple[list[dict[str, Any]] | None, dict[str, float], SegmentationMode]:
+    """Сохраняет настройки формата, разрешения, V4L2-контролов, RGB и segmentation_mode в профиль камеры."""
     now = datetime.now(UTC)
     if fmt:
         _upsert_setting(db, f"camera_format_{cam.hardware_id}", fmt, now)
@@ -1185,6 +1220,23 @@ def _persist_camera_controls_profile(
         active_session = live_manager.get(cam.hardware_id)
         if active_session:
             active_session.resolution = resolution
+
+    saved_seg_mode: SegmentationMode
+    if segmentation_mode is not None:
+        saved_seg_mode = edge_api.normalize_segmentation_mode(segmentation_mode)
+        _upsert_setting(db, f"camera_seg_mode_{cam.hardware_id}", saved_seg_mode, now)
+        active_session = live_manager.get(cam.hardware_id)
+        if active_session:
+            active_session.set_segmentation_mode(saved_seg_mode)
+    else:
+        existing_seg_setting = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == f"camera_seg_mode_{cam.hardware_id}")
+            .first()
+        )
+        saved_seg_mode = edge_api.normalize_segmentation_mode(
+            existing_seg_setting.value if existing_seg_setting else None
+        )
 
     clamped_rgb: dict[str, float]
     if rgb is not None:
@@ -1239,6 +1291,9 @@ def _persist_camera_controls_profile(
                     "format": fmt,
                     "resolution": resolution,
                     "rgb": clamped_rgb if rgb is not None else None,
+                    "segmentation_mode": saved_seg_mode
+                    if segmentation_mode is not None
+                    else None,
                 }
             ),
             status="pending",
@@ -1246,7 +1301,7 @@ def _persist_camera_controls_profile(
         db.add(cmd)
 
     db.commit()
-    return updated_controls, clamped_rgb
+    return updated_controls, clamped_rgb, saved_seg_mode
 
 
 @router.patch("/{camera_id}/controls", response_model=dict[str, Any])
@@ -1256,7 +1311,7 @@ def update_camera_controls(
     current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
-    """Применение настроек V4L2, смена разрешения/формата и RGB-коррекции."""
+    """Применение настроек V4L2, смена разрешения/формата, RGB-коррекции и segmentation_mode."""
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
     if not cam:
         raise HTTPException(
@@ -1264,13 +1319,14 @@ def update_camera_controls(
             detail="Камера не найдена",
         )
 
-    updated_controls, clamped_rgb = _persist_camera_controls_profile(
+    updated_controls, clamped_rgb, saved_seg_mode = _persist_camera_controls_profile(
         db=db,
         cam=cam,
         controls=body.controls,
         fmt=body.format,
         resolution=body.resolution,
         rgb=body.rgb,
+        segmentation_mode=body.segmentation_mode,
         enqueue_edge_command=True,
     )
 
@@ -1281,6 +1337,7 @@ def update_camera_controls(
         "format": body.format,
         "resolution": body.resolution,
         "rgb": clamped_rgb if body.rgb is not None else None,
+        "segmentation_mode": saved_seg_mode,
     }
     if updated_controls is not None:
         resp["controls"] = updated_controls
@@ -1303,15 +1360,20 @@ def save_camera_controls(
         )
 
     has_changes = bool(
-        body.controls or body.format or body.resolution or body.rgb is not None
+        body.controls
+        or body.format
+        or body.resolution
+        or body.rgb is not None
+        or body.segmentation_mode is not None
     )
-    updated_controls, saved_rgb = _persist_camera_controls_profile(
+    updated_controls, saved_rgb, saved_seg_mode = _persist_camera_controls_profile(
         db=db,
         cam=cam,
         controls=body.controls,
         fmt=body.format,
         resolution=body.resolution,
         rgb=body.rgb,
+        segmentation_mode=body.segmentation_mode,
         enqueue_edge_command=has_changes,
     )
 
@@ -1330,6 +1392,7 @@ def save_camera_controls(
         "camera_id": cam.id,
         "hardware_id": cam.hardware_id,
         "rgb": saved_rgb,
+        "segmentation_mode": saved_seg_mode,
         "updated_captures": updated_captures,
     }
     if updated_controls is not None:
