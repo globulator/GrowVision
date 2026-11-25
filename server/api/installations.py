@@ -1,3 +1,4 @@
+import json
 import shutil
 from typing import Annotated, Any
 
@@ -22,16 +23,21 @@ from server.api.deps import (
 )
 from server.core.area import calculate_area_display
 from server.core.light_state import (
+    compute_active_pin_states,
     delete_installation_light_settings,
     get_installation_channel_pins,
     get_installation_light_snapshot,
     set_individual_light_state,
     set_installation_channel_color,
     set_installation_channel_pins,
+    set_installation_day_night_settings,
+    sync_app_state_pins,
 )
 from server.core.rgb import resolve_capture_display_rel_path
 from server.core.state import app_state
-from server.db.models import Capture, Installation, SystemSetting, User
+from server.core.system_status import is_rpi_online
+from server.db.models import Capture, EdgeCommand, Installation, SystemSetting, User
+from shared.light_cycle import normalize_hhmm, validate_day_night_window
 from shared.pins import (
     DEFAULT_COLOR_HEX,
     format_gpio_pins,
@@ -99,6 +105,9 @@ class InstallationPatch(BaseModel):
     flash_color: str | None = None
     aruco_size_mm: float | None = Field(default=None, gt=0)
     capture_delay_sec: float | None = Field(default=None, ge=0.0, le=30.0)
+    day_night_enabled: bool | None = Field(default=None, strict=True)
+    day_start: str | None = None
+    day_end: str | None = None
 
     @field_validator(
         "name",
@@ -107,6 +116,9 @@ class InstallationPatch(BaseModel):
         "flash_gpio_pin",
         "light_color",
         "flash_color",
+        "day_night_enabled",
+        "day_start",
+        "day_end",
     )
     @classmethod
     def validate_not_null(cls, v: Any, info: ValidationInfo) -> Any:
@@ -121,7 +133,15 @@ class InstallationPatch(BaseModel):
             return format_gpio_pins(pins)
         if info.field_name in ("light_color", "flash_color"):
             return normalize_hex_color(v)
+        if info.field_name in ("day_start", "day_end"):
+            return normalize_hhmm(v, field_label=info.field_name)
         return v
+
+    @model_validator(mode="after")
+    def validate_day_night_pair(self) -> "InstallationPatch":
+        if self.day_start is not None and self.day_end is not None:
+            validate_day_night_window(self.day_start, self.day_end)
+        return self
 
 
 def get_installation_last_capture_info(
@@ -486,6 +506,57 @@ def patch_installation(
 
     if "capture_delay_sec" in update_data:
         inst.capture_delay_sec = update_data["capture_delay_sec"]
+
+    day_night_keys = {"day_night_enabled", "day_start", "day_end"}
+    if day_night_keys & set(update_data.keys()):
+        active_insts = (
+            db.query(Installation)
+            .filter(Installation.is_archived.is_(False))
+            .order_by(Installation.id.asc())
+            .all()
+        )
+        before_pins = compute_active_pin_states(db, active_insts)
+        try:
+            set_installation_day_night_settings(
+                db,
+                inst.id,
+                enabled=update_data.get("day_night_enabled"),
+                day_start=update_data.get("day_start"),
+                day_end=update_data.get("day_end"),
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        db.commit()
+        if not inst.is_archived:
+            after_pins = compute_active_pin_states(db, active_insts)
+            sync_app_state_pins(after_pins)
+            snap = get_installation_light_snapshot(db, inst)
+            changed = any(
+                before_pins.get(p) != snap["light_state"] for p in snap["light_pins"]
+            )
+            if changed and is_rpi_online(db)[0]:
+                cmd_payload = {
+                    "state": snap["light_state"],
+                    "individual_state": snap["individual_light_state"],
+                    "mode": snap["global_light_mode"],
+                    "pins": snap["light_pins"],
+                    "color": snap["light_color"],
+                    "pin_states": {
+                        str(p): snap["light_state"] for p in snap["light_pins"]
+                    },
+                }
+                db.add(
+                    EdgeCommand(
+                        command_type="LIGHT_MAIN",
+                        installation_id=inst.id,
+                        is_global=False,
+                        payload=json.dumps(cmd_payload),
+                        status="pending",
+                    )
+                )
 
     db.commit()
     db.refresh(inst)

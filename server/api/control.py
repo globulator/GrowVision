@@ -12,14 +12,19 @@ from server.api.deps import format_utc_z, get_current_user, get_db, require_role
 from server.core.area import calculate_area_display
 from server.core.light_state import (
     LightMode,
+    build_light_main_command_payload,
     compute_active_pin_states,
+    compute_effective_main_light_state,
     compute_effective_state,
+    get_global_day_night_settings,
     get_global_light_mode,
     get_installation_channel_pins,
     get_installation_light_snapshot,
+    set_global_day_night_settings,
     set_global_light_mode,
     set_individual_light_state,
     set_installation_channel_color,
+    set_installation_day_night_settings,
     sync_app_state_pins,
 )
 from server.core.rgb import resolve_capture_display_rel_path
@@ -30,6 +35,7 @@ from server.core.system_status import (
     validate_target_value,
 )
 from server.db.models import Capture, EdgeCommand, Installation, SystemSetting, User
+from shared.light_cycle import normalize_hhmm, validate_day_night_window
 from shared.pins import format_gpio_pins, normalize_hex_color
 
 router = APIRouter(prefix="/api/control", tags=["control"])
@@ -97,6 +103,44 @@ class RelayTestRequest(BaseModel):
     @classmethod
     def validate_target(cls, v: Any) -> int | Literal["all"]:
         return validate_target_value(v)
+
+
+class DayNightRequest(BaseModel):
+    """Тело запроса POST /api/control/day-night."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    target: int | Literal["all"]
+    enabled: bool | None = Field(default=None, strict=True)
+    day_start: str | None = None
+    day_end: str | None = None
+
+    @field_validator("target", mode="before")
+    @classmethod
+    def validate_target(cls, v: Any) -> int | Literal["all"]:
+        return validate_target_value(v)
+
+    @field_validator("day_start")
+    @classmethod
+    def validate_day_start(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return normalize_hhmm(v, field_label="day_start")
+
+    @field_validator("day_end")
+    @classmethod
+    def validate_day_end(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return normalize_hhmm(v, field_label="day_end")
+
+    @model_validator(mode="after")
+    def validate_fields(self) -> "DayNightRequest":
+        if self.enabled is None and self.day_start is None and self.day_end is None:
+            raise ValueError("Необходимо указать enabled, day_start или day_end")
+        if self.day_start is not None and self.day_end is not None:
+            validate_day_night_window(self.day_start, self.day_end)
+        return self
 
 
 def validate_target_and_resolve(
@@ -516,7 +560,21 @@ async def _execute_light_control(
     )
     next_ind_state = bool(body.state) if body.state is not None else current_ind_state
     global_mode = get_global_light_mode(db, is_flash=is_flash)
-    eff_state = compute_effective_state(global_mode, next_ind_state)
+    if is_flash:
+        eff_state = compute_effective_state(global_mode, next_ind_state)
+        is_locked = bool(snap["flash_locked"])
+        lock_reason: str | None = "Заблокировано" if is_locked else None
+    else:
+        eff_state = compute_effective_main_light_state(
+            global_day_night_enabled=snap["global_day_night_enabled"],
+            global_is_day=(snap["global_day_night_phase"] == "day"),
+            global_light_mode=global_mode,
+            inst_day_night_enabled=snap["day_night_enabled"],
+            inst_is_day=(snap["day_night_phase"] == "day"),
+            individual_light_state=next_ind_state,
+        )
+        is_locked = bool(snap["light_locked"])
+        lock_reason = snap["light_lock_reason"]
 
     # Изменение только цвета при эффективно выключенном канале:
     # сохраняем цвет в БД, не включая лампу!
@@ -540,7 +598,8 @@ async def _execute_light_control(
             "result_message": f"Цвет сохранён ({next_color}), канал выключен",
             "individual_state": next_ind_state,
             "effective_state": eff_state,
-            "locked": global_mode != "default",
+            "locked": is_locked,
+            "lock_reason": lock_reason,
             "color": next_color,
             "pins": channel_pins,
             "is_rgb": len(channel_pins) == 3,
@@ -603,7 +662,8 @@ async def _execute_light_control(
         "result_message": finished_cmd.result_message or "OK",
         "individual_state": next_ind_state,
         "effective_state": eff_state,
-        "locked": global_mode != "default",
+        "locked": is_locked,
+        "lock_reason": lock_reason,
         "color": next_color,
         "pins": channel_pins,
         "is_rgb": len(channel_pins) == 3,
@@ -727,15 +787,171 @@ async def control_relay_test(
     return resp
 
 
-@router.get("/relays", response_model=dict[str, Any])
-def get_relays_status(
+def _is_control_rpi_online(db: Session) -> bool:
+    """Проверяет онлайн RPi через check_rpi_online без падения в 503."""
+    try:
+        check_rpi_online(db)
+        return True
+    except HTTPException:
+        return False
+
+
+def apply_day_night_settings(
+    db: Session,
+    target: int | Literal["all"],
+    *,
+    enabled: bool | None = None,
+    day_start: str | None = None,
+    day_end: str | None = None,
+) -> dict[str, Any]:
+    """Сохраняет настройки цикла День/Ночь, обновляет app_state и ставит LIGHT_MAIN при изменении."""
+    active_insts = (
+        db.query(Installation)
+        .filter(Installation.is_archived.is_(False))
+        .order_by(Installation.id.asc())
+        .all()
+    )
+    before_pins = compute_active_pin_states(db, active_insts)
+
+    if target == "all":
+        try:
+            g_dn = set_global_day_night_settings(
+                db, enabled=enabled, day_start=day_start, day_end=day_end
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        db.commit()
+
+        after_pins = compute_active_pin_states(db, active_insts)
+        sync_app_state_pins(after_pins)
+        light_pin_states, cmd_payload = build_light_main_command_payload(
+            db, active_insts
+        )
+        changed = any(before_pins.get(p) != val for p, val in light_pin_states.items())
+        cmd_id: int | None = None
+        delivery_status = "unchanged"
+        if changed and active_insts:
+            if _is_control_rpi_online(db):
+                cmd = EdgeCommand(
+                    command_type="LIGHT_MAIN",
+                    installation_id=None,
+                    is_global=True,
+                    payload=json.dumps(cmd_payload),
+                    status="pending",
+                )
+                db.add(cmd)
+                db.commit()
+                db.refresh(cmd)
+                cmd_id = cmd.id
+                delivery_status = "queued"
+            else:
+                delivery_status = "offline"
+
+        relays_snapshot = _build_relays_snapshot(db)
+        return {
+            "status": "done",
+            "target": "all",
+            "command_id": cmd_id,
+            "delivery_status": delivery_status,
+            "changed": changed,
+            "global_day_night_enabled": g_dn["enabled"],
+            "global_day_start": g_dn["day_start"],
+            "global_day_end": g_dn["day_end"],
+            "global_day_night_phase": g_dn["phase"],
+            "global_light_locked": bool(g_dn["enabled"]),
+            "pin_states": {
+                str(k): v for k, v in app_state.get_all_pin_states().items()
+            },
+            **relays_snapshot,
+        }
+
+    inst_id, _, _ = validate_target_and_resolve(target, db)
+    inst = db.query(Installation).filter(Installation.id == inst_id).first()
+    assert inst is not None
+
+    try:
+        set_installation_day_night_settings(
+            db, inst.id, enabled=enabled, day_start=day_start, day_end=day_end
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    db.commit()
+
+    after_pins = compute_active_pin_states(db, active_insts)
+    sync_app_state_pins(after_pins)
+    snap = get_installation_light_snapshot(db, inst)
+    changed = any(before_pins.get(p) != snap["light_state"] for p in snap["light_pins"])
+    cmd_id = None
+    delivery_status = "unchanged"
+    if changed:
+        if _is_control_rpi_online(db):
+            cmd_payload = {
+                "state": snap["light_state"],
+                "individual_state": snap["individual_light_state"],
+                "mode": snap["global_light_mode"],
+                "pins": snap["light_pins"],
+                "color": snap["light_color"],
+                "pin_states": {
+                    p_str: snap["light_state"] for p_str in map(str, snap["light_pins"])
+                },
+            }
+            cmd = EdgeCommand(
+                command_type="LIGHT_MAIN",
+                installation_id=inst.id,
+                is_global=False,
+                payload=json.dumps(cmd_payload),
+                status="pending",
+            )
+            db.add(cmd)
+            db.commit()
+            db.refresh(cmd)
+            cmd_id = cmd.id
+            delivery_status = "queued"
+        else:
+            delivery_status = "offline"
+
+    return {
+        "status": "done",
+        "target": inst.id,
+        "installation_id": inst.id,
+        "command_id": cmd_id,
+        "delivery_status": delivery_status,
+        "changed": changed,
+        "light_gpio_pin": format_gpio_pins(snap["light_pins"]),
+        "flash_gpio_pin": format_gpio_pins(snap["flash_pins"]),
+        **snap,
+        "pin_states": {str(k): v for k, v in app_state.get_all_pin_states().items()},
+    }
+
+
+@router.post("/day-night", response_model=dict[str, Any])
+def control_day_night(
+    body: DayNightRequest,
     current_user: Annotated[User, Depends(require_role("developer"))],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
-    """Возвращает текущие состояния GPIO-пинов, режимы света/вспышки, активные установки и capture_delay_sec."""
+    """POST /api/control/day-night (Developer): настройка глобального или индивидуального цикла дня и ночи."""
+    return apply_day_night_settings(
+        db,
+        body.target,
+        enabled=body.enabled,
+        day_start=body.day_start,
+        day_end=body.day_end,
+    )
+
+
+def _build_relays_snapshot(db: Session) -> dict[str, Any]:
+    """Собирает актуальный срез состояния реле, глобальных режимов и цикла дня/ночи."""
     pins = {str(k): v for k, v in app_state.get_all_pin_states().items()}
     global_light_mode = get_global_light_mode(db, is_flash=False)
     global_flash_mode = get_global_light_mode(db, is_flash=True)
+    global_day_night = get_global_day_night_settings(db)
 
     active_insts = (
         db.query(Installation)
@@ -750,6 +966,7 @@ def get_relays_status(
             inst,
             global_light_mode=global_light_mode,
             global_flash_mode=global_flash_mode,
+            global_day_night=global_day_night,
         )
         for p in snap["light_pins"]:
             pins[str(p)] = snap["light_state"]
@@ -776,7 +993,18 @@ def get_relays_status(
                 "light_state": snap["light_state"],
                 "flash_state": snap["flash_state"],
                 "light_locked": snap["light_locked"],
+                "light_lock_reason": snap["light_lock_reason"],
                 "flash_locked": snap["flash_locked"],
+                "day_night_enabled": snap["day_night_enabled"],
+                "day_start": snap["day_start"],
+                "day_end": snap["day_end"],
+                "day_night_phase": snap["day_night_phase"],
+                "day_night_locked": snap["day_night_locked"],
+                "global_day_night_enabled": snap["global_day_night_enabled"],
+                "global_day_start": snap["global_day_start"],
+                "global_day_end": snap["global_day_end"],
+                "global_day_night_phase": snap["global_day_night_phase"],
+                "global_light_locked": snap["global_light_locked"],
             }
         )
 
@@ -789,7 +1017,11 @@ def get_relays_status(
     light_state = (
         any(item["light_state"] for item in installations_relays)
         if installations_relays
-        else (global_light_mode != "off")
+        else (
+            global_day_night["is_day"]
+            if global_day_night["enabled"]
+            else (global_light_mode != "off")
+        )
     )
     flash_pins_items = [
         item
@@ -803,10 +1035,27 @@ def get_relays_status(
         "installations": installations_relays,
         "global_light_mode": global_light_mode,
         "global_flash_mode": global_flash_mode,
+        "global_day_night_enabled": global_day_night["enabled"],
+        "global_day_start": global_day_night["day_start"],
+        "global_day_end": global_day_night["day_end"],
+        "global_day_night_phase": global_day_night["phase"],
+        "global_light_locked": bool(global_day_night["enabled"]),
+        "global_light_lock_reason": (
+            "Цикл дня/ночи" if global_day_night["enabled"] else None
+        ),
         "light_state": light_state,
         "flash_state": flash_state,
         "capture_delay_sec": capture_delay_sec,
     }
+
+
+@router.get("/relays", response_model=dict[str, Any])
+def get_relays_status(
+    current_user: Annotated[User, Depends(require_role("developer"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Возвращает текущие состояния GPIO-пинов, режимы света/вспышки, цикл дня/ночи и capture_delay_sec."""
+    return _build_relays_snapshot(db)
 
 
 @router.get("/relays/{installation_id}", response_model=dict[str, Any])

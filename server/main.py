@@ -20,6 +20,11 @@ from server.api.edge_setup import router as edge_setup_router
 from server.api.installations import router as installations_router
 from server.api.system import router as system_router
 from server.api.timelapse import router as timelapse_router
+from server.core.light_state import (
+    compute_active_pin_states,
+    sync_app_state_pins,
+    sync_day_night_phases_step,
+)
 from server.core.live_manager import live_manager
 from server.core.timeouts import expire_stale_commands
 from server.db.database import SessionLocal, init_db
@@ -45,6 +50,22 @@ async def cleanup_timeouts_task() -> None:
             logger.warning("Ошибка фоновой очистки таймаутов: %s", e)
 
 
+async def day_night_sync_task() -> None:
+    """Фоновая синхронизация фаз цикла День/Ночь раз в 20 секунд."""
+    while True:
+        try:
+            await asyncio.sleep(20)
+            db = SessionLocal()
+            try:
+                sync_day_night_phases_step(db)
+            finally:
+                db.close()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Ошибка фоновой синхронизации цикла День/Ночь: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Жизненный цикл приложения: инициализация БД, пинов, сигналов и фоновых задач."""
@@ -67,25 +88,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             orig_handlers[sig] = signal.getsignal(sig)
             signal.signal(sig, _shutdown_signal_handler)
 
-    # Инициализация состояния пинов активных установок: свет ON, вспышка OFF
+    # Инициализация состояния пинов активных установок с учётом 5-уровневой иерархии
     db = SessionLocal()
     try:
-        from server.core.state import app_state
         from server.db.models import Installation
 
         active_installations = (
             db.query(Installation).filter(Installation.is_archived.is_(False)).all()
         )
-        for inst in active_installations:
-            app_state.set_pin_state(inst.light_gpio_pin, True)
-            if inst.flash_gpio_pin != inst.light_gpio_pin:
-                app_state.set_pin_state(inst.flash_gpio_pin, False)
+        sync_app_state_pins(compute_active_pin_states(db, active_installations))
     except Exception as e:  # noqa: BLE001
         logger.warning("Ошибка инициализации состояния пинов: %s", e)
     finally:
         db.close()
 
     task = asyncio.create_task(cleanup_timeouts_task())
+    day_night_task = asyncio.create_task(day_night_sync_task())
     try:
         yield
     finally:
@@ -94,11 +112,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             for sig, handler in orig_handlers.items():
                 if signal.getsignal(sig) is _shutdown_signal_handler:
                     signal.signal(sig, handler)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for bg_task in (task, day_night_task):
+            bg_task.cancel()
+            try:
+                await bg_task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(
