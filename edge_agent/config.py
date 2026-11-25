@@ -56,6 +56,7 @@ class EdgeConfig(BaseModel):
     server_url: str = Field(default="http://127.0.0.1:8000")
     edge_api_key: str = Field(default="")
     hardware_mode: Literal["rpi", "mock"] = Field(default="mock")
+    mock_cameras: bool = Field(default=False)
     heartbeat_interval_sec: float = Field(default=30.0, gt=0)
     command_poll_interval_sec: float = Field(default=0.5, gt=0)
     offline_queue_dir: Path = Field(default=DEFAULT_OFFLINE_QUEUE_DIR)
@@ -192,6 +193,9 @@ def load_config(env_path: Path | str | None = None) -> EdgeConfig:
     mock_aruco_raw = (get_val("MOCK_OVERLAY_ARUCO", "true") or "true").lower()
     mock_overlay_aruco = mock_aruco_raw in ("true", "1", "yes")
 
+    mock_cameras_raw = (get_val("MOCK_CAMERAS", "false") or "false").lower()
+    mock_cameras = mock_cameras_raw in ("true", "1", "yes")
+
     try:
         relay_switch_delay_ms = int(get_val("RELAY_SWITCH_DELAY_MS", "200") or 200)
     except ValueError:
@@ -220,6 +224,7 @@ def load_config(env_path: Path | str | None = None) -> EdgeConfig:
         server_url=server_url.rstrip("/"),
         edge_api_key=edge_api_key,
         hardware_mode=hardware_mode,
+        mock_cameras=mock_cameras,
         heartbeat_interval_sec=heartbeat_interval,
         command_poll_interval_sec=command_poll_interval,
         offline_queue_dir=queue_dir,

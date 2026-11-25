@@ -125,6 +125,7 @@ def test_orchestrator_test_interval_warning_and_debug_log(monkeypatch, caplog):
         server_url="http://127.0.0.1:8000",
         edge_api_key="test_key",
         hardware_mode="mock",
+        mock_cameras=True,
         test_capture_interval_sec=12,
     )
 

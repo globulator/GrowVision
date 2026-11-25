@@ -13,7 +13,12 @@ def main() -> None:
     logger = setup_logger("edge_agent", debug_mode=config.debug_mode)
     logger.info("=" * 60)
     logger.info("GrowVision Edge Agent запускается...")
-    logger.info(f"Режим железа: {config.hardware_mode.upper()}")
+    cam_mode = (
+        "MOCK"
+        if (config.hardware_mode == "mock" and config.mock_cameras)
+        else "REAL (V4L2)"
+    )
+    logger.info(f"Режим железа: {config.hardware_mode.upper()}, камеры: {cam_mode}")
     logger.info(f"Сервер: {config.server_url}")
     logger.info("=" * 60)
 

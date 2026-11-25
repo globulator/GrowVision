@@ -37,6 +37,7 @@ class HeartbeatHardware(BaseModel):
     ram_total_mb: int
     disk_free_gb: float
     gpio_mode: str
+    mock_cameras: bool = False
 
 
 class HeartbeatRequest(BaseModel):

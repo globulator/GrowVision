@@ -11,6 +11,7 @@ def test_default_config():
     assert cfg.server_url == "http://127.0.0.1:8000"
     assert cfg.edge_api_key == ""
     assert cfg.hardware_mode == "mock"
+    assert cfg.mock_cameras is False
     assert cfg.heartbeat_interval_sec == 30.0
     assert cfg.command_poll_interval_sec == 0.5
     assert cfg.claim_poll_interval_sec == 0.5
@@ -71,6 +72,7 @@ def test_load_config_from_file(tmp_path: Path):
     assert cfg.server_url == "https://custom-server.local:8443"
     assert cfg.edge_api_key == "custom-key-999"
     assert cfg.hardware_mode == "mock"
+    assert cfg.mock_cameras is False
     assert cfg.model_path == Path("/opt/models/custom_seg.onnx")
     assert cfg.model_name == "custom_seg.onnx"
     assert cfg.heartbeat_interval_sec == 15.0
@@ -94,6 +96,7 @@ def test_load_config_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert cfg.server_url == "http://override-server:9000"
     assert cfg.edge_api_key == "override-key"
     assert cfg.hardware_mode == "mock"
+    assert cfg.mock_cameras is False
     assert cfg.command_poll_interval_sec == 3.5
     assert cfg.debug_mode is True
 
@@ -124,3 +127,21 @@ def test_hardware_mode_auto(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.delenv("HARDWARE_MODE", raising=False)
     cfg = load_config(env_path=tmp_path / "empty.env")
     assert cfg.hardware_mode in ("rpi", "mock")
+
+
+def test_load_config_mock_cameras_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Проверка загрузки MOCK_CAMERAS из env и .env файла (по умолчанию False)."""
+    monkeypatch.delenv("MOCK_CAMERAS", raising=False)
+    env_file = tmp_path / "hybrid.env"
+    env_file.write_text("HARDWARE_MODE=mock\n", encoding="utf-8")
+    cfg_default = load_config(env_path=env_file)
+    assert cfg_default.hardware_mode == "mock"
+    assert cfg_default.mock_cameras is False
+
+    env_file.write_text("HARDWARE_MODE=mock\nMOCK_CAMERAS=true\n", encoding="utf-8")
+    cfg_file_true = load_config(env_path=env_file)
+    assert cfg_file_true.mock_cameras is True
+
+    monkeypatch.setenv("MOCK_CAMERAS", "false")
+    cfg_env_false = load_config(env_path=env_file)
+    assert cfg_env_false.mock_cameras is False

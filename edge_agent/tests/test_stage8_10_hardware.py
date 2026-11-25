@@ -68,7 +68,7 @@ def test_probe_camera_capabilities_fallback_on_error():
 
 def test_hardware_manager_calibrate_camera_in_mock():
     """В mock-режиме calibrate_camera возвращает детерминированный профиль максимального качества."""
-    mgr = HardwareManager(mode="mock")
+    mgr = HardwareManager(mode="mock", mock_cameras=True)
     profile = mgr.calibrate_camera("mock-usb-cam-1")
     assert profile.hardware_id == "mock-usb-cam-1"
     assert profile.max_width == 1920
@@ -90,6 +90,7 @@ def test_orchestrator_handle_autocalibrate_camera_command():
         server_url="http://test-server:8000",
         edge_api_key="test-key",
         hardware_mode="mock",
+        mock_cameras=True,
     )
     client_mock = MagicMock()
     orch = EdgeOrchestrator(cfg, client=client_mock)
