@@ -4,8 +4,8 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 10
-- Название этапа: Перспективная калибровка ArUco, счётчик кустов, цветовой маркер (синяя рамка) и автоцветокоррекция, генерация SVG-маркеров, график роста в галерее и стабильный оверлей Live
+- Текущий этап: 10.1
+- Название этапа: Подавление шумов HSV-сегментации, устойчивая детекция цветового маркера с предпросмотром ROI и упрощённый переключатель графика роста («В см²» / «В px»)
 - Режим: FAST (coordinator2 + builder2)
 - Статус: DONE
 - Итераций ревью: 0 из 3
@@ -18,12 +18,13 @@
 | — | — | — | — | — |
 
 ## Коммиты текущего этапа
-- 69d6d74 feat(vision): perspective ArUco calibration, color marker detection and SVG generators
-- ffd31b3 feat(server,web): metric storage, growth chart, auto-color API, SVG endpoints and stable Live overlay
-- Слияние stage-10/aruco-metric-color-marker-and-gallery-chart в main, версия 0.8.0 (тег v0.8.0)
+- e210746 fix(edge_agent): harden HSV noise filtering, color marker detection and preview ROI
+- a51f021 feat(server): support auto color calibration preview mode without overwriting profile
+- 77d8ac1 feat(web): add auto color preview bar in Live and simplify gallery chart units
+- Слияние stage-10/fix-hsv-noise-color-marker-and-chart в main, версия 0.8.1 (тег v0.8.1)
 
 ## Последний вердикт ревью
-- Вердикт: PASS (по этапу 10, итераций ревью: 0/3)
+- Вердикт: PASS (по этапу 10.1, итераций ревью: 0/3)
 - Открытые дефекты: —
 
 ## Закрытые этапы
@@ -58,6 +59,7 @@
 - Этап 9.5: Эфемерные тестовые снимки (in-memory кэш TTL 10 мин без записи в БД и `server/media/`) (принят после ревью, слит в main, версия 0.7.4)
 - Этап 9.6: INFO-логи GPIO, shutdown_event сервера, RGB на edge_agent до CV, ArUco с жёлтой рамкой/линейками, double-buffer галереи и стартовое окно Live (принят после ревью, слит в main, версия 0.7.5)
 - Этап 10: Перспективная калибровка ArUco, цветовой маркер и автоцветокоррекция, SVG-маркеры для печати, график роста в галерее и стабильный оверлей Live (принят после ревью, слит в main, версия 0.8.0)
+- Этап 10.1: Подавление шумов HSV-сегментации, устойчивая детекция цветового маркера с предпросмотром ROI и упрощённый переключатель графика роста (принят после ревью, слит в main, версия 0.8.1)
 
 ## История (последние 10 событий)
 - 2026-11-25: Запущен этап 9.6 в ветке stage-9/edge-rgb-aruco-gpio-and-ui-polish (coordinator2 + builder2)
@@ -67,3 +69,6 @@
 - 2026-11-25: Добавлены колонки PlantMeasurement, график роста без скачков единиц, автоцветокоррекция Live и стабильный оверлей отключения (ffd31b3)
 - 2026-11-25: Пройдены проверки pytest (edge 102, server 108, bot 73, cli 52, целевые e2e 16) и ruff
 - 2026-11-25: Ветка stage-10/aruco-metric-color-marker-and-gallery-chart слита в main, поднята версия 0.8.0 (тег v0.8.0), этап 10 закрыт (DONE)
+- 2026-11-25: Запущен этап 10.1 в ветке stage-10/fix-hsv-noise-color-marker-and-chart (coordinator2 + builder2)
+- 2026-11-25: Подавлен тёмный шум HSV, добавлена устойчивая детекция цветового маркера с preview ROI и переключатель графика «В см²» / «В px» (e210746, a51f021, 77d8ac1)
+- 2026-11-25: Ветка stage-10/fix-hsv-noise-color-marker-and-chart слита в main, пройдены проверки pytest и ruff, версия 0.8.1 (тег v0.8.1), этап 10.1 закрыт (DONE)
