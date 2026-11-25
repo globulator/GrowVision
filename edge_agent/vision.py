@@ -1600,9 +1600,21 @@ class VisionPipeline:
 
         mode = self._normalize_segmentation_mode(segmentation_mode)
 
-        # 1. Явный HSV-режим либо auto в mock_mode без подставленной сессии
+        # 1. Явный HSV-режим либо auto в mock_mode без доступного ONNX-файла/сессии
+        has_loadable_onnx_in_mock = bool(
+            ORT_AVAILABLE
+            and ort is not None
+            and self.model_path is not None
+            and self.model_path.is_file()
+            and not (
+                self._session_load_failed and self._last_failed_path == self.model_path
+            )
+        )
         if mode == "hsv" or (
-            mode == "auto" and self.mock_mode and self._session is None
+            mode == "auto"
+            and self.mock_mode
+            and self._session is None
+            and not has_loadable_onnx_in_mock
         ):
             return self._segment_plants_hsv(
                 image_bytes,
@@ -1616,8 +1628,10 @@ class VisionPipeline:
                 color_marker_corners=color_marker_corners,
             )
 
-        # 2. Ленивая загрузка ONNX-сессии (при mode=='onnx' разрешаем и в mock_mode)
-        session = self._ensure_session(allow_in_mock=(mode == "onnx"))
+        # 2. Ленивая загрузка ONNX-сессии (в mock_mode разрешаем при mode=='onnx' или наличии .onnx в auto)
+        session = self._ensure_session(
+            allow_in_mock=(mode == "onnx" or has_loadable_onnx_in_mock)
+        )
         if session is None:
             return self._segment_plants_hsv(
                 image_bytes,

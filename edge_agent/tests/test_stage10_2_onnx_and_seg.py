@@ -142,6 +142,52 @@ def test_onnx_lazy_loading_caching_and_measurements(tmp_path: Path):
         assert fake_session.run.call_count == 2
 
 
+def test_mock_mode_auto_uses_onnx_when_model_exists_and_hsv_when_missing(
+    tmp_path: Path,
+):
+    """При mock_mode=True и существующем .onnx mode='auto' использует ONNX, а без файла уходит в HSV."""
+    model_file = tmp_path / "plant_seg.onnx"
+    model_file.write_bytes(b"fake-onnx-binary")
+
+    fake_input = MagicMock()
+    fake_input.name = "images"
+    fake_input.shape = [1, 3, 64, 64]
+    pred = np.full((1, 1, 64, 64), -6.0, dtype=np.float32)
+    pred[0, 0, 20:44, 20:44] = 6.0
+
+    fake_session = MagicMock()
+    fake_session.get_inputs.return_value = [fake_input]
+    fake_session.run.return_value = [pred]
+
+    # Красный кадр не даёт контуров в HSV, но даёт 1 контур через ONNX-маску
+    red_scene = np.full((240, 320, 3), (20, 20, 200), dtype=np.uint8)
+    red_bytes = _encode_jpg(red_scene)
+
+    with (
+        patch("edge_agent.vision.ORT_AVAILABLE", True),
+        patch("edge_agent.vision.ort") as mock_ort,
+    ):
+        mock_ort.InferenceSession.return_value = fake_session
+        vp_with_model = VisionPipeline(model_path=model_file, mock_mode=True)
+        _, meas_onnx = vp_with_model.segment_plants(red_bytes, segmentation_mode="auto")
+        assert len(meas_onnx) == 1
+        mock_ort.InferenceSession.assert_called_once_with(
+            str(model_file),
+            providers=["CPUExecutionProvider"],
+        )
+
+    # При отсутствии файла в mock_mode=True mode='auto' безопасно уходит в HSV без падения
+    green_scene = np.full((240, 320, 3), 25, dtype=np.uint8)
+    cv2.circle(green_scene, (160, 120), 40, (25, 190, 35), -1)
+    vp_missing = VisionPipeline(model_path=tmp_path / "absent.onnx", mock_mode=True)
+    _, meas_red = vp_missing.segment_plants(red_bytes, segmentation_mode="auto")
+    assert meas_red == []
+    _, meas_green = vp_missing.segment_plants(
+        _encode_jpg(green_scene), segmentation_mode="auto"
+    )
+    assert len(meas_green) == 1
+
+
 def test_onnx_missing_or_corrupted_falls_back_to_hsv_with_warning(
     tmp_path: Path, caplog
 ):
