@@ -171,16 +171,25 @@ class WebMeResponse(BaseModel):
 
     authenticated: bool
     role: str
+    id: int | None = None
     login: str | None = None
+    client_type: str | None = None
     external_id: str | None = None
+    telegram_username: str | None = None
+    authorized_at: str | None = None
+    last_active_at: str | None = None
     bot_username: str | None = None
 
 
 class MeResponse(BaseModel):
     """Ответ на GET /api/auth/me."""
 
+    id: int
     login: str
     role: str
+    client_type: str
+    external_id: str
+    telegram_username: str | None = None
     authorized_at: str
     last_active_at: str
 
@@ -225,6 +234,77 @@ class SessionInfo(BaseModel):
     authorized_at: str
     last_active_at: str
     logged_out_at: str | None = None
+    telegram_username: str | None = None
+    is_current: bool = False
+
+
+def _extract_numeric_tg_id(client_type: str, external_id: str | None) -> int | None:
+    """Извлекает числовой telegram_id из external_id для telegram/web сессий."""
+    if client_type not in ("telegram", "web") or not external_id:
+        return None
+    ext = external_id.strip()
+    if ext.isdigit() or (ext.startswith("-") and ext[1:].isdigit()):
+        return int(ext)
+    return None
+
+
+def _get_telegram_username_map(users: list[User], db: Session) -> dict[int, str]:
+    """Возвращает словарь {telegram_id: username} по списку пользователей."""
+    tg_ids = {
+        tid
+        for u in users
+        if (tid := _extract_numeric_tg_id(u.client_type, u.external_id)) is not None
+    }
+    if not tg_ids:
+        return {}
+    contacts = (
+        db.query(TelegramContact).filter(TelegramContact.telegram_id.in_(tg_ids)).all()
+    )
+    return {int(c.telegram_id): c.username.lstrip("@") for c in contacts if c.username}
+
+
+def _get_telegram_username(user: User, db: Session) -> str | None:
+    """Возвращает telegram_username для одного пользователя, если он известен."""
+    tid = _extract_numeric_tg_id(user.client_type, user.external_id)
+    if tid is None:
+        return None
+    return _get_telegram_username_map([user], db).get(tid)
+
+
+def _build_me_response(user: User, db: Session) -> MeResponse:
+    """Собирает ответ профиля текущей сессии."""
+    return MeResponse(
+        id=user.id,
+        login=user.login,
+        role=user.role,
+        client_type=user.client_type,
+        external_id=user.external_id,
+        telegram_username=_get_telegram_username(user, db),
+        authorized_at=format_utc_z(user.authorized_at) or "",
+        last_active_at=format_utc_z(user.last_active_at) or "",
+    )
+
+
+def _build_session_info(
+    user: User,
+    current_user_id: int,
+    tg_usernames: dict[int, str],
+) -> SessionInfo:
+    """Собирает элемент списка сессий для разработчика."""
+    tid = _extract_numeric_tg_id(user.client_type, user.external_id)
+    return SessionInfo(
+        id=user.id,
+        client_type=user.client_type,
+        external_id=user.external_id,
+        login=user.login,
+        role=user.role,
+        is_active=user.is_active,
+        authorized_at=format_utc_z(user.authorized_at) or "",
+        last_active_at=format_utc_z(user.last_active_at) or "",
+        logged_out_at=format_utc_z(user.logged_out_at),
+        telegram_username=tg_usernames.get(tid) if tid is not None else None,
+        is_current=user.id == current_user_id,
+    )
 
 
 def generate_invite_code(length: int = 6) -> str:
@@ -384,19 +464,13 @@ def auth_logout(
 @router.get("/me", response_model=MeResponse)
 def auth_me(
     current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
 ) -> MeResponse:
     """4.1. GET /api/auth/me.
 
     Информация о текущей сессии пользователя.
     """
-    auth_at = format_utc_z(current_user.authorized_at) or ""
-    last_act = format_utc_z(current_user.last_active_at) or ""
-    return MeResponse(
-        login=current_user.login,
-        role=current_user.role,
-        authorized_at=auth_at,
-        last_active_at=last_act,
-    )
+    return _build_me_response(current_user, db)
 
 
 @router.patch("/me", response_model=MeResponse)
@@ -412,12 +486,7 @@ def update_me(
     current_user.login = body.login
     db.commit()
     db.refresh(current_user)
-    return MeResponse(
-        login=current_user.login,
-        role=current_user.role,
-        authorized_at=format_utc_z(current_user.authorized_at) or "",
-        last_active_at=format_utc_z(current_user.last_active_at) or "",
-    )
+    return _build_me_response(current_user, db)
 
 
 # ================== Telegram синхронизация и доставка кодов ==================
@@ -964,8 +1033,13 @@ def auth_web_me(
             return WebMeResponse(
                 authenticated=True,
                 role=user.role,
+                id=user.id,
                 login=user.login,
+                client_type=user.client_type,
                 external_id=user.external_id,
+                telegram_username=_get_telegram_username(user, db),
+                authorized_at=format_utc_z(user.authorized_at),
+                last_active_at=format_utc_z(user.last_active_at),
                 bot_username=bot_username,
             )
     return WebMeResponse(
@@ -1067,20 +1141,8 @@ def list_sessions(
 ) -> list[SessionInfo]:
     """Список всех сессий пользователей (активных и неактивных)."""
     users = db.query(User).order_by(User.last_active_at.desc()).all()
-    return [
-        SessionInfo(
-            id=u.id,
-            client_type=u.client_type,
-            external_id=u.external_id,
-            login=u.login,
-            role=u.role,
-            is_active=u.is_active,
-            authorized_at=format_utc_z(u.authorized_at) or "",
-            last_active_at=format_utc_z(u.last_active_at) or "",
-            logged_out_at=format_utc_z(u.logged_out_at),
-        )
-        for u in users
-    ]
+    tg_usernames = _get_telegram_username_map(users, db)
+    return [_build_session_info(u, current_user.id, tg_usernames) for u in users]
 
 
 @router.post("/sessions/{session_id}/terminate", response_model=dict[str, bool])
@@ -1119,14 +1181,5 @@ def rename_session_user(
     target_user.login = body.login
     db.commit()
     db.refresh(target_user)
-    return SessionInfo(
-        id=target_user.id,
-        client_type=target_user.client_type,
-        external_id=target_user.external_id,
-        login=target_user.login,
-        role=target_user.role,
-        is_active=target_user.is_active,
-        authorized_at=format_utc_z(target_user.authorized_at) or "",
-        last_active_at=format_utc_z(target_user.last_active_at) or "",
-        logged_out_at=format_utc_z(target_user.logged_out_at),
-    )
+    tg_usernames = _get_telegram_username_map([target_user], db)
+    return _build_session_info(target_user, current_user.id, tg_usernames)

@@ -20,10 +20,14 @@ let rpiLivePing = null;
 
 let rpiTelemBoard = null;
 let rpiTelemVersions = null;
+let rpiTelemModel = null;
 let rpiTelemCpu = null;
 let rpiTelemRam = null;
 let rpiTelemDisk = null;
+let rpiTelemUptime = null;
 let rpiTelemQueue = null;
+let rpiTelemCameras = null;
+let rpiTelemCaptureSettings = null;
 
 let setupForm = null;
 let serverUrlInput = null;
@@ -49,10 +53,14 @@ export function initRpiSetup() {
 
   rpiTelemBoard = document.getElementById('rpi-telem-board');
   rpiTelemVersions = document.getElementById('rpi-telem-versions');
+  rpiTelemModel = document.getElementById('rpi-telem-model');
   rpiTelemCpu = document.getElementById('rpi-telem-cpu');
   rpiTelemRam = document.getElementById('rpi-telem-ram');
   rpiTelemDisk = document.getElementById('rpi-telem-disk');
+  rpiTelemUptime = document.getElementById('rpi-telem-uptime');
   rpiTelemQueue = document.getElementById('rpi-telem-queue');
+  rpiTelemCameras = document.getElementById('rpi-telem-cameras');
+  rpiTelemCaptureSettings = document.getElementById('rpi-telem-capture-settings');
 
   setupForm = document.getElementById('rpi-setup-form');
   serverUrlInput = document.getElementById('rpi-server-url');
@@ -125,6 +133,22 @@ async function updateStatusSilent() {
   }
 }
 
+export function formatUptime(uptimeSec) {
+  if (uptimeSec === null || uptimeSec === undefined) return '—';
+  const total = Number(uptimeSec);
+  if (!Number.isFinite(total) || total < 0) return '—';
+  const sec = Math.floor(total);
+  const days = Math.floor(sec / 86400);
+  const hours = Math.floor((sec % 86400) / 3600);
+  const mins = Math.floor((sec % 3600) / 60);
+  const secs = sec % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  if (days > 0) return `${days}д ${pad(hours)}ч ${pad(mins)}м`;
+  if (hours > 0) return `${hours}ч ${pad(mins)}м`;
+  if (mins > 0) return `${mins}м ${pad(secs)}с`;
+  return `${secs}с`;
+}
+
 function applyStatusData(statusData) {
   const isOnline = statusData && statusData.rpi_connection === 'online';
 
@@ -167,11 +191,13 @@ function applyStatusData(statusData) {
   const sw = telem && telem.software ? telem.software : null;
   const serverVer = (statusData && statusData.server_version) || '—';
   const edgeVer = (sw && sw.edge_version) || '—';
+  const modelName = (sw && sw.model_name) || '—';
+  const boardModel = (hw && hw.board_model) || (telem && telem.board_model) || '';
 
   if (rpiTelemBoard) {
-    if (isOnline && hw && hw.board_model) {
-      rpiTelemBoard.textContent = hw.board_model;
-      rpiTelemBoard.title = hw.board_model;
+    if (isOnline && boardModel) {
+      rpiTelemBoard.textContent = boardModel;
+      rpiTelemBoard.title = boardModel;
     } else {
       rpiTelemBoard.textContent = isOnline ? 'Raspberry Pi' : 'Офлайн';
     }
@@ -182,18 +208,35 @@ function applyStatusData(statusData) {
     rpiTelemVersions.title = `Версия Edge: ${edgeVer}, Версия сервера: ${serverVer}`;
   }
 
+  if (rpiTelemModel) {
+    rpiTelemModel.textContent = isOnline ? modelName : '—';
+    rpiTelemModel.title = isOnline ? modelName : '';
+  }
+
   if (rpiTelemCpu) {
-    if (isOnline && hw && typeof hw.cpu_usage_percent !== 'undefined') {
+    if (
+      isOnline &&
+      hw &&
+      (typeof hw.cpu_usage_percent === 'number' || typeof hw.cpu_temp_c === 'number')
+    ) {
+      const cpuStr =
+        typeof hw.cpu_usage_percent === 'number' ? `${hw.cpu_usage_percent}%` : '—';
       const tempStr =
-        typeof hw.cpu_temp_c !== 'undefined' ? ` / ${hw.cpu_temp_c}°C` : '';
-      rpiTelemCpu.textContent = `${hw.cpu_usage_percent}%${tempStr}`;
+        typeof hw.cpu_temp_c === 'number' ? ` / ${hw.cpu_temp_c}°C` : '';
+      rpiTelemCpu.textContent = `${cpuStr}${tempStr}`;
     } else {
       rpiTelemCpu.textContent = '—';
     }
   }
 
   if (rpiTelemRam) {
-    if (isOnline && hw && hw.ram_used_mb && hw.ram_total_mb) {
+    if (
+      isOnline &&
+      hw &&
+      typeof hw.ram_used_mb === 'number' &&
+      typeof hw.ram_total_mb === 'number' &&
+      hw.ram_total_mb > 0
+    ) {
       const pct = Math.round((hw.ram_used_mb / hw.ram_total_mb) * 100);
       rpiTelemRam.textContent = `${hw.ram_used_mb} / ${hw.ram_total_mb} МБ (${pct}%)`;
     } else {
@@ -202,21 +245,55 @@ function applyStatusData(statusData) {
   }
 
   if (rpiTelemDisk) {
-    if (isOnline && hw && typeof hw.disk_free_gb !== 'undefined') {
+    if (isOnline && hw && typeof hw.disk_free_gb === 'number') {
       rpiTelemDisk.textContent = `${hw.disk_free_gb} ГБ свободно`;
     } else {
       rpiTelemDisk.textContent = '—';
     }
   }
 
+  if (rpiTelemUptime) {
+    const uptimeRaw =
+      hw && hw.uptime_sec !== undefined && hw.uptime_sec !== null
+        ? hw.uptime_sec
+        : telem && telem.uptime_sec;
+    rpiTelemUptime.textContent = isOnline ? formatUptime(uptimeRaw) : '—';
+  }
+
   if (rpiTelemQueue) {
-    if (isOnline && telem && typeof telem.offline_queue_count !== 'undefined') {
+    if (isOnline && telem && typeof telem.offline_queue_count === 'number') {
       const q = telem.offline_queue_count;
       rpiTelemQueue.textContent = `${q} кадров`;
       rpiTelemQueue.style.color = q > 0 ? '#f59e0b' : 'var(--text-main)';
     } else {
       rpiTelemQueue.textContent = '0 кадров';
       rpiTelemQueue.style.color = 'var(--text-main)';
+    }
+  }
+
+  if (rpiTelemCameras) {
+    const cams = statusData && statusData.cameras_summary;
+    if (cams && typeof cams.total === 'number') {
+      rpiTelemCameras.textContent = `${cams.total} / ${cams.online ?? 0} / ${cams.bound ?? 0}`;
+      rpiTelemCameras.title = `Всего: ${cams.total}, онлайн: ${cams.online ?? 0}, офлайн: ${cams.offline ?? 0}, привязано: ${cams.bound ?? 0}, свободно: ${cams.unbound ?? 0}`;
+    } else {
+      rpiTelemCameras.textContent = '—';
+      rpiTelemCameras.title = '';
+    }
+  }
+
+  if (rpiTelemCaptureSettings) {
+    const cfg = statusData && statusData.settings;
+    if (cfg) {
+      const interval = cfg.capture_interval_hours ?? 1;
+      const delay = cfg.capture_delay_sec ?? 1.5;
+      const dbg = cfg.debug_mode ? 'debug вкл' : 'debug выкл';
+      const summary = `${interval} ч · задержка ${delay} с · ${dbg}`;
+      rpiTelemCaptureSettings.textContent = summary;
+      rpiTelemCaptureSettings.title = summary;
+    } else {
+      rpiTelemCaptureSettings.textContent = '—';
+      rpiTelemCaptureSettings.title = '';
     }
   }
 

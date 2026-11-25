@@ -44,7 +44,7 @@
     <div class="header-right">
       <!-- Постоянный индикатор роли -->
       <span id="header-role-badge" class="role-badge role-guest">Гость</span>
-      <span id="header-user-name" class="user-name hidden"></span>
+      <button type="button" id="header-user-name" class="user-name user-name-btn hidden" title="Учётная запись" aria-label="Учётная запись"></button>
 
       <!-- Слот разработчика: кнопки подключения Raspberry Pi и управления светом -->
       <div id="header-dev-slot" class="dev-slot hidden">
@@ -418,6 +418,16 @@
             <div id="gallery-chart-empty" class="gallery-chart-empty hidden">Нет данных для построения графика</div>
             <div id="gallery-chart-tooltip" class="gallery-chart-tooltip hidden"></div>
           </div>
+          <div class="gallery-chart-footer">
+            <button type="button" id="gallery-chart-export-csv" class="btn btn-secondary btn-compact" title="Скачать замеры в CSV" aria-label="Скачать замеры в CSV">
+              <svg class="icon-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              <span>Скачать</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -523,6 +533,11 @@
             </div>
 
             <div class="rpi-metric-card">
+              <span class="rpi-metric-label">Модель CV</span>
+              <span id="rpi-telem-model" class="rpi-metric-value">—</span>
+            </div>
+
+            <div class="rpi-metric-card">
               <span class="rpi-metric-label">CPU / Темп.</span>
               <span id="rpi-telem-cpu" class="rpi-metric-value">Нет данных</span>
             </div>
@@ -538,8 +553,23 @@
             </div>
 
             <div class="rpi-metric-card">
+              <span class="rpi-metric-label">Аптайм агента</span>
+              <span id="rpi-telem-uptime" class="rpi-metric-value">—</span>
+            </div>
+
+            <div class="rpi-metric-card">
               <span class="rpi-metric-label">Очередь кадров</span>
               <span id="rpi-telem-queue" class="rpi-metric-value">0 кадров</span>
+            </div>
+
+            <div class="rpi-metric-card">
+              <span class="rpi-metric-label">Камеры (всего / онлайн / привязано)</span>
+              <span id="rpi-telem-cameras" class="rpi-metric-value">—</span>
+            </div>
+
+            <div class="rpi-metric-card">
+              <span class="rpi-metric-label">Автосъёмка и отладка</span>
+              <span id="rpi-telem-capture-settings" class="rpi-metric-value">—</span>
             </div>
           </div>
 
@@ -1000,6 +1030,112 @@
           <button type="button" id="btn-live-unsaved-next" class="btn btn-secondary btn-block">Со следующего кадра</button>
           <button type="button" id="btn-live-unsaved-discard" class="btn btn-danger btn-block">Не сохранять</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модалка: Учётная запись -->
+  <div id="modal-profile" class="modal-backdrop hidden">
+    <div class="modal-window modal-window-medium glass-panel">
+      <div class="modal-header">
+        <div class="modal-header-with-icon">
+          <svg class="icon-svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+          <h3 class="modal-title">Учётная запись</h3>
+        </div>
+        <button id="modal-profile-close" class="btn-icon modal-close" title="Закрыть" aria-label="Закрыть">
+          <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <div class="profile-info-grid">
+          <div class="profile-info-item">
+            <span class="profile-info-label">Роль</span>
+            <span id="profile-role-val" class="profile-info-value">—</span>
+          </div>
+          <div class="profile-info-item">
+            <span class="profile-info-label">Источник входа</span>
+            <span id="profile-client-type-val" class="profile-info-value">—</span>
+          </div>
+          <div class="profile-info-item">
+            <span class="profile-info-label">Telegram / ID</span>
+            <span id="profile-telegram-val" class="profile-info-value">—</span>
+          </div>
+          <div class="profile-info-item">
+            <span class="profile-info-label">Время входа</span>
+            <span id="profile-authorized-at-val" class="profile-info-value">—</span>
+          </div>
+          <div class="profile-info-item">
+            <span class="profile-info-label">Последняя активность</span>
+            <span id="profile-last-active-at-val" class="profile-info-value">—</span>
+          </div>
+        </div>
+
+        <form id="profile-form" class="profile-edit-form">
+          <div class="form-group">
+            <label for="profile-login-input" class="form-label">Имя пользователя</label>
+            <div class="profile-login-row">
+              <input type="text" id="profile-login-input" class="form-input" maxlength="64" required placeholder="Введите имя">
+              <button type="submit" id="profile-save-btn" class="btn btn-primary">Сохранить</button>
+            </div>
+            <div id="profile-form-error" class="form-error-inline hidden"></div>
+          </div>
+        </form>
+
+        <div id="profile-dev-actions" class="profile-dev-actions hidden">
+          <button type="button" id="profile-btn-sessions" class="btn btn-secondary btn-block">
+            <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+            <span>Активные сессии</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модалка: Активные сессии (только разработчик) -->
+  <div id="modal-sessions" class="modal-backdrop hidden">
+    <div class="modal-window modal-window-large glass-panel">
+      <div class="modal-header">
+        <div class="modal-header-with-icon">
+          <svg class="icon-svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+          <h3 class="modal-title">Активные сессии</h3>
+        </div>
+        <div class="sessions-header-actions">
+          <button type="button" id="sessions-refresh-btn" class="btn-icon" title="Обновить список сессий" aria-label="Обновить список сессий">
+            <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"/>
+              <polyline points="1 20 1 14 7 14"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+          </button>
+          <button id="modal-sessions-close" class="btn-icon modal-close" title="Закрыть" aria-label="Закрыть">
+            <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="modal-body">
+        <div id="sessions-error" class="form-error-inline hidden"></div>
+        <div id="sessions-list" class="sessions-list"></div>
       </div>
     </div>
   </div>
