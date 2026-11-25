@@ -4,8 +4,8 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 9.6
-- Название этапа: INFO-логи GPIO, shutdown_event сервера, RGB на edge_agent до CV, детекция ArUco с жёлтой рамкой/линейками и полировка Web UI
+- Текущий этап: 10
+- Название этапа: Перспективная калибровка ArUco, счётчик кустов, цветовой маркер (синяя рамка) и автоцветокоррекция, генерация SVG-маркеров, график роста в галерее и стабильный оверлей Live
 - Режим: FAST (coordinator2 + builder2)
 - Статус: DONE
 - Итераций ревью: 0 из 3
@@ -18,14 +18,12 @@
 | — | — | — | — | — |
 
 ## Коммиты текущего этапа
-- 195f357 feat(gpio,server): подробное INFO-логирование GPIO и мгновенное завершение Live при shutdown
-- ab54fab feat(cv,rgb): коррекция RGB до CV-пайплайна, детекция ArUco и адаптивный FPS в Live
-- 9881f24 fix(web): double-buffer в галерее, отключение SVG RGB в Разметке и стартовое окно Live
-- b372d01 test(stage9.6): unit-тесты GPIO-логов, RGB/ArUco, shutdown и Web UI
-- Слияние stage-9/edge-rgb-aruco-gpio-and-ui-polish в main, версия 0.7.5 (тег v0.7.5)
+- 69d6d74 feat(vision): perspective ArUco calibration, color marker detection and SVG generators
+- ffd31b3 feat(server,web): metric storage, growth chart, auto-color API, SVG endpoints and stable Live overlay
+- Слияние stage-10/aruco-metric-color-marker-and-gallery-chart в main, версия 0.8.0 (тег v0.8.0)
 
 ## Последний вердикт ревью
-- Вердикт: PASS (по этапу 9.6, итераций ревью: 0/3)
+- Вердикт: PASS (по этапу 10, итераций ревью: 0/3)
 - Открытые дефекты: —
 
 ## Закрытые этапы
@@ -59,12 +57,13 @@
 - Этап 9.4: Съёмка без паузы Live, заглушка отключения, режим «Оригинал/Разметка», улучшенные контролы V4L2/RGB, диалог сохранения и вёрстка карточек (принят после ревью, слит в main, версия 0.7.3)
 - Этап 9.5: Эфемерные тестовые снимки (in-memory кэш TTL 10 мин без записи в БД и `server/media/`) (принят после ревью, слит в main, версия 0.7.4)
 - Этап 9.6: INFO-логи GPIO, shutdown_event сервера, RGB на edge_agent до CV, ArUco с жёлтой рамкой/линейками, double-buffer галереи и стартовое окно Live (принят после ревью, слит в main, версия 0.7.5)
+- Этап 10: Перспективная калибровка ArUco, цветовой маркер и автоцветокоррекция, SVG-маркеры для печати, график роста в галерее и стабильный оверлей Live (принят после ревью, слит в main, версия 0.8.0)
 
 ## История (последние 10 событий)
-- 2026-11-25: Запущен этап 9.5 в ветке stage-9/ephemeral-test-snapshots (coordinator2 + builder2)
-- 2026-11-25: Ветка stage-9/ephemeral-test-snapshots слита в main, поднята версия 0.7.4 (тег v0.7.4), этап 9.5 закрыт (DONE)
 - 2026-11-25: Запущен этап 9.6 в ветке stage-9/edge-rgb-aruco-gpio-and-ui-polish (coordinator2 + builder2)
-- 2026-11-25: Реализованы INFO-логи GPIO, shutdown_event сервера, RGB на edge_agent до CV, ArUco 4x4/5x5/6x6/ORIGINAL с жёлтой рамкой и линейками (195f357, ab54fab)
-- 2026-11-25: Реализован double-buffer в галерее и стартовое окно Live, добавлены unit-тесты (9881f24, b372d01)
-- 2026-11-25: Пройдены проверки pytest (edge 97, server 103, bot 73, cli 52, целевые e2e 16) и ruff
 - 2026-11-25: Ветка stage-9/edge-rgb-aruco-gpio-and-ui-polish слита в main, поднята версия 0.7.5 (тег v0.7.5), этап 9.6 закрыт (DONE)
+- 2026-11-25: Запущен этап 10 в ветке stage-10/aruco-metric-color-marker-and-gallery-chart (coordinator2 + builder2)
+- 2026-11-25: Реализованы перспективная калибровка ArUco, детекция цветового маркера (синяя рамка), автоцветокоррекция и генерация SVG (69d6d74)
+- 2026-11-25: Добавлены колонки PlantMeasurement, график роста без скачков единиц, автоцветокоррекция Live и стабильный оверлей отключения (ffd31b3)
+- 2026-11-25: Пройдены проверки pytest (edge 102, server 108, bot 73, cli 52, целевые e2e 16) и ruff
+- 2026-11-25: Ветка stage-10/aruco-metric-color-marker-and-gallery-chart слита в main, поднята версия 0.8.0 (тег v0.8.0), этап 10 закрыт (DONE)
