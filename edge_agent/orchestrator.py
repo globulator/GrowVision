@@ -297,7 +297,7 @@ class EdgeOrchestrator:
                 self._handle_scan_cameras(cmd)
             elif cmd_type == "AUTOCALIBRATE_CAMERA":
                 self._handle_autocalibrate_camera(cmd)
-            elif cmd_type == "SNAP":
+            elif cmd_type in ("SNAP", "CAPTURE_TEST"):
                 self._handle_snap(cmd)
             elif cmd_type == "START_LIVE":
                 self._handle_start_live(cmd)
@@ -814,12 +814,13 @@ class EdgeOrchestrator:
                         aruco_size_mm=getattr(inst, "aruco_size_mm", None),
                     )
 
-                    # 3. Метаданные
+                    # 3. Метаданные (тестовый кадр не сохраняется в БД/media сервера)
                     meta = CaptureMeta(
                         installation_id=inst.id,
                         camera_hardware_id=cam_hw_id,
                         captured_at=now_str,
                         is_manual=True,
+                        is_test=True,
                         aruco_area_px=aruco_area,
                         command_id=cmd.id,
                         measurements=measurements,
@@ -836,12 +837,7 @@ class EdgeOrchestrator:
                         success_count += 1
                         inst_captured_count += 1
                     elif status_code == 0:
-                        save_to_queue(
-                            self.config.offline_queue_dir, meta, raw_bytes, ann_bytes
-                        )
-                        last_error_message = (
-                            "Ошибка сети при отправке кадра (кадр сохранен локально)"
-                        )
+                        last_error_message = "Ошибка сети при отправке тестового кадра"
                     else:
                         detail = resp_body.get("detail", f"Код сервера {status_code}")
                         last_error_message = f"Ошибка загрузки кадра: {detail}"
