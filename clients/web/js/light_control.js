@@ -1,13 +1,18 @@
 // clients/web/js/light_control.js
-// Панель глобального управления светом, вспышкой, тестом реле и задержкой прогрева (для Developer)
+// Панель глобального управления светом (3-позиционный режим), вспышкой, тестом реле и задержкой прогрева
 
 import { api } from './api.js';
 import { showToast } from './dialogs.js';
 
 let currentRole = 'guest';
 let activeInstallationsCount = 0;
-let lastMainState = true;
-let lastFlashState = false;
+let lastMainMode = 'default';
+let lastFlashMode = 'default';
+let onLightChangedCallback = null;
+
+export function setLightChangedHandler(fn) {
+  onLightChangedCallback = fn;
+}
 
 export function updateLightRole(role) {
   currentRole = role || 'guest';
@@ -18,6 +23,11 @@ export function updateLightRole(role) {
   if (currentRole !== 'developer') {
     closeLightControlModal();
   }
+}
+
+function normalizeLightMode(rawMode) {
+  const norm = String(rawMode || 'default').trim().toLowerCase();
+  return norm === 'on' || norm === 'off' ? norm : 'default';
 }
 
 function showLightError(msg) {
@@ -40,10 +50,30 @@ function updatePresetHighlight(delaySec) {
   });
 }
 
+function setSegmentedControlState(containerId, activeMode, disabled) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.querySelectorAll('.seg-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.mode === activeMode);
+    btn.disabled = Boolean(disabled);
+  });
+}
+
+function formatGlobalModeSub(mode, isFlash) {
+  if (activeInstallationsCount === 0) {
+    return 'Нет активных установок';
+  }
+  if (mode === 'on') {
+    return isFlash ? 'Принудительно включена (все установки)' : 'Принудительно включён (все установки)';
+  }
+  if (mode === 'off') {
+    return isFlash ? 'Принудительно выключена (все установки)' : 'Принудительно выключен (все установки)';
+  }
+  return 'По индивидуальным настройкам установок';
+}
+
 function renderRelaysState(relaysData) {
   const summaryEl = document.getElementById('light-control-summary');
-  const mainToggle = document.getElementById('light-toggle-main');
-  const flashToggle = document.getElementById('light-toggle-flash');
   const mainLabel = document.getElementById('light-main-state-label');
   const flashLabel = document.getElementById('light-flash-state-label');
   const delayInput = document.getElementById('light-capture-delay-input');
@@ -55,45 +85,24 @@ function renderRelaysState(relaysData) {
     : [];
   activeInstallationsCount = insts.length;
 
-  const mainOn =
-    relaysData && typeof relaysData.light_state === 'boolean'
-      ? relaysData.light_state
-      : insts.some((i) => i.light_state);
-  const flashOn =
-    relaysData && typeof relaysData.flash_state === 'boolean'
-      ? relaysData.flash_state
-      : insts.some((i) => i.flash_gpio_pin !== i.light_gpio_pin && i.flash_state);
+  const mainMode = normalizeLightMode(relaysData && relaysData.global_light_mode);
+  const flashMode = normalizeLightMode(relaysData && relaysData.global_flash_mode);
 
-  lastMainState = mainOn;
-  lastFlashState = flashOn;
+  lastMainMode = mainMode;
+  lastFlashMode = flashMode;
 
-  if (mainToggle) {
-    mainToggle.checked = mainOn;
-    mainToggle.disabled = activeInstallationsCount === 0;
-  }
-  if (flashToggle) {
-    flashToggle.checked = flashOn;
-    flashToggle.disabled = activeInstallationsCount === 0;
-  }
+  setSegmentedControlState('light-mode-main', mainMode, activeInstallationsCount === 0);
+  setSegmentedControlState('light-mode-flash', flashMode, activeInstallationsCount === 0);
+
   if (testBtn) {
     testBtn.disabled = activeInstallationsCount === 0;
   }
 
   if (mainLabel) {
-    mainLabel.textContent =
-      activeInstallationsCount === 0
-        ? 'Нет активных установок'
-        : mainOn
-          ? 'Включён'
-          : 'Выключен';
+    mainLabel.textContent = formatGlobalModeSub(mainMode, false);
   }
   if (flashLabel) {
-    flashLabel.textContent =
-      activeInstallationsCount === 0
-        ? 'Нет активных установок'
-        : flashOn
-          ? 'Включена'
-          : 'Выключена';
+    flashLabel.textContent = formatGlobalModeSub(flashMode, true);
   }
 
   if (relaysData && relaysData.capture_delay_sec !== undefined && delayInput) {
@@ -173,43 +182,42 @@ export function closeLightControlModal() {
   showLightError('');
 }
 
-async function handleMainToggleChange(e) {
-  const toggle = e.target;
-  const nextState = Boolean(toggle.checked);
-  showLightError('');
-  toggle.disabled = true;
-  try {
-    const res = await api.controlLightMain('all', nextState);
-    if (res && res.status === 'error') {
-      throw new Error(res.result_message || 'Ошибка переключения света');
-    }
-    showToast(nextState ? 'Основной свет включён для всех установок' : 'Основной свет выключен');
-    await refreshRelaysState();
-  } catch (err) {
-    toggle.checked = lastMainState;
-    showLightError(err.message || 'Не удалось переключить основной свет');
-  } finally {
-    toggle.disabled = activeInstallationsCount === 0;
-  }
-}
+async function handleGlobalModeSelect(modeRaw, isFlash) {
+  if (activeInstallationsCount === 0) return;
+  const nextMode = normalizeLightMode(modeRaw);
+  const containerId = isFlash ? 'light-mode-flash' : 'light-mode-main';
+  const prevMode = isFlash ? lastFlashMode : lastMainMode;
 
-async function handleFlashToggleChange(e) {
-  const toggle = e.target;
-  const nextState = Boolean(toggle.checked);
   showLightError('');
-  toggle.disabled = true;
+  setSegmentedControlState(containerId, nextMode, true);
+
   try {
-    const res = await api.controlLightFlash('all', nextState);
+    const res = isFlash
+      ? await api.controlLightFlash('all', nextMode)
+      : await api.controlLightMain('all', nextMode);
     if (res && res.status === 'error') {
-      throw new Error(res.result_message || 'Ошибка переключения вспышки');
+      throw new Error(res.result_message || 'Ошибка переключения режима');
     }
-    showToast(nextState ? 'Вспышка включена для всех установок' : 'Вспышка выключена');
+    const modeLabel =
+      nextMode === 'on' ? 'Вкл' : nextMode === 'off' ? 'Выкл' : 'По умолчанию';
+    showToast(
+      isFlash
+        ? `Вспышка (все установки): ${modeLabel}`
+        : `Основной свет (все установки): ${modeLabel}`
+    );
     await refreshRelaysState();
+    if (typeof onLightChangedCallback === 'function') {
+      await onLightChangedCallback();
+    }
   } catch (err) {
-    toggle.checked = lastFlashState;
-    showLightError(err.message || 'Не удалось переключить вспышку');
+    setSegmentedControlState(containerId, prevMode, activeInstallationsCount === 0);
+    showLightError(
+      err.message ||
+        (isFlash ? 'Не удалось переключить вспышку' : 'Не удалось переключить основной свет')
+    );
   } finally {
-    toggle.disabled = activeInstallationsCount === 0;
+    const finalMode = isFlash ? lastFlashMode : lastMainMode;
+    setSegmentedControlState(containerId, finalMode, activeInstallationsCount === 0);
   }
 }
 
@@ -261,8 +269,8 @@ export function initLightControl() {
   const btnOpen = document.getElementById('btn-light-menu');
   const modal = document.getElementById('modal-light-control');
   const closeBtn = document.getElementById('modal-light-control-close');
-  const mainToggle = document.getElementById('light-toggle-main');
-  const flashToggle = document.getElementById('light-toggle-flash');
+  const mainControl = document.getElementById('light-mode-main');
+  const flashControl = document.getElementById('light-mode-flash');
   const testBtn = document.getElementById('btn-light-relay-test');
   const delayInput = document.getElementById('light-capture-delay-input');
 
@@ -274,8 +282,24 @@ export function initLightControl() {
     });
   }
 
-  if (mainToggle) mainToggle.addEventListener('change', handleMainToggleChange);
-  if (flashToggle) flashToggle.addEventListener('change', handleFlashToggleChange);
+  if (mainControl) {
+    mainControl.querySelectorAll('.seg-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (btn.disabled) return;
+        handleGlobalModeSelect(btn.dataset.mode, false);
+      });
+    });
+  }
+
+  if (flashControl) {
+    flashControl.querySelectorAll('.seg-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (btn.disabled) return;
+        handleGlobalModeSelect(btn.dataset.mode, true);
+      });
+    });
+  }
+
   if (testBtn) testBtn.addEventListener('click', handleRelayTestClick);
   if (delayInput) {
     delayInput.addEventListener('change', (e) => applyDelayChange(e.target.value));

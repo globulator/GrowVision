@@ -436,8 +436,8 @@ def test_web_ui_markup_and_modules_for_stage11_1(client: TestClient):
     for marker in (
         'id="btn-light-menu"',
         'id="modal-light-control"',
-        'id="light-toggle-main"',
-        'id="light-toggle-flash"',
+        'id="light-mode-main"',
+        'id="light-mode-flash"',
         'id="btn-light-relay-test"',
         'id="light-capture-delay-input"',
     ):

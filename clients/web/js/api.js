@@ -145,6 +145,7 @@ export const api = {
   // Установки
   getInstallations: (includeArchived = false) =>
     request(includeArchived ? '/api/installations?include_archived=true' : '/api/installations'),
+  getInstallation: (instId) => request(`/api/installations/${Number(instId)}`),
   createInstallation: (payload) =>
     request('/api/installations', {
       method: 'POST',
@@ -176,15 +177,23 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getRelays: () => request('/api/control/relays'),
-  controlLightMain: (target, state) =>
+  controlLightMain: (target, stateOrMode) =>
     request('/api/control/light/main', {
       method: 'POST',
-      body: JSON.stringify({ target, state: Boolean(state) }),
+      body: JSON.stringify(
+        typeof stateOrMode === 'string'
+          ? { target, mode: stateOrMode }
+          : { target, state: Boolean(stateOrMode) }
+      ),
     }),
-  controlLightFlash: (target, state) =>
+  controlLightFlash: (target, stateOrMode) =>
     request('/api/control/light/flash', {
       method: 'POST',
-      body: JSON.stringify({ target, state: Boolean(state) }),
+      body: JSON.stringify(
+        typeof stateOrMode === 'string'
+          ? { target, mode: stateOrMode }
+          : { target, state: Boolean(stateOrMode) }
+      ),
     }),
   controlRelayTest: (target = 'all') =>
     request('/api/control/relay-test', {
@@ -223,6 +232,7 @@ export const api = {
 
   // Камеры и Live-режим
   getCameras: () => request('/api/cameras'),
+  scanCameras: () => request('/api/cameras/scan', { method: 'POST' }),
   bindCamera: (cameraId, installationId) =>
     request(`/api/cameras/${Number(cameraId)}/bind`, {
       method: 'POST',

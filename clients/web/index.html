@@ -713,6 +713,7 @@
             <span>Скачать цветовой маркер</span>
           </button>
         </div>
+        <div id="cameras-scan-status" class="cameras-scan-status hidden" role="status" aria-live="polite"></div>
         <div id="cameras-list-container" class="cameras-list-container"></div>
       </div>
     </div>
@@ -854,6 +855,32 @@
             <input type="text" id="unit-editor-culture" class="form-input" placeholder="Салат" maxlength="100" required>
           </div>
 
+          <div id="unit-editor-light-card" class="unit-light-card hidden">
+            <div class="unit-light-card-main">
+              <div class="unit-light-card-info">
+                <span class="unit-light-card-title">Основной свет</span>
+                <span id="unit-editor-light-locked" class="unit-light-locked-hint hidden">Заблокировано</span>
+              </div>
+              <label class="toggle-switch" aria-label="Основной свет установки">
+                <input type="checkbox" id="unit-editor-light-toggle">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div id="unit-editor-flash-card" class="unit-light-card hidden">
+            <div class="unit-light-card-main">
+              <div class="unit-light-card-info">
+                <span class="unit-light-card-title">Вспышка</span>
+                <span id="unit-editor-flash-locked" class="unit-light-locked-hint hidden">Заблокировано</span>
+              </div>
+              <label class="toggle-switch" aria-label="Вспышка установки">
+                <input type="checkbox" id="unit-editor-flash-toggle">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
           <div class="form-group">
             <label for="unit-editor-interval">Расписание съёмки (раз в N ч)</label>
             <input type="number" id="unit-editor-interval" class="form-input" min="1" step="1" placeholder="1">
@@ -939,10 +966,11 @@
               <span class="light-control-label">Основной свет (все установки)</span>
               <span id="light-main-state-label" class="light-control-sub">—</span>
             </div>
-            <label class="toggle-switch" aria-label="Основной свет для всех установок">
-              <input type="checkbox" id="light-toggle-main">
-              <span class="toggle-slider"></span>
-            </label>
+            <div id="light-mode-main" class="segmented-control light-mode-segmented" role="group" aria-label="Основной свет для всех установок">
+              <button type="button" class="seg-btn" data-mode="on">Вкл</button>
+              <button type="button" class="seg-btn active" data-mode="default">По умолчанию</button>
+              <button type="button" class="seg-btn" data-mode="off">Выкл</button>
+            </div>
           </div>
 
           <div class="light-control-row">
@@ -950,10 +978,11 @@
               <span class="light-control-label">Вспышка (все установки)</span>
               <span id="light-flash-state-label" class="light-control-sub">—</span>
             </div>
-            <label class="toggle-switch" aria-label="Вспышка для всех установок">
-              <input type="checkbox" id="light-toggle-flash">
-              <span class="toggle-slider"></span>
-            </label>
+            <div id="light-mode-flash" class="segmented-control light-mode-segmented" role="group" aria-label="Вспышка для всех установок">
+              <button type="button" class="seg-btn" data-mode="on">Вкл</button>
+              <button type="button" class="seg-btn active" data-mode="default">По умолчанию</button>
+              <button type="button" class="seg-btn" data-mode="off">Выкл</button>
+            </div>
           </div>
 
           <div class="light-control-row light-control-delay-row">

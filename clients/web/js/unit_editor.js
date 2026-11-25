@@ -11,6 +11,7 @@ let loadedIntervalHours = 1;
 let initialCameraIds = [];
 let onUnitSavedCallback = null;
 let isBusy = false;
+let unitEditorOpenSeq = 0;
 
 export function setUnitEditorRole(role) {
   currentRole = role || 'guest';
@@ -205,6 +206,122 @@ function applyRoleAndStatusConstraints(unit) {
     if (unarchiveBtn) unarchiveBtn.classList.add('hidden');
     if (deleteBtn) deleteBtn.classList.add('hidden');
   }
+
+  syncUnitLightControls(unit);
+}
+
+function syncUnitLightControls(unit) {
+  const lightCard = document.getElementById('unit-editor-light-card');
+  const flashCard = document.getElementById('unit-editor-flash-card');
+  const lightToggle = document.getElementById('unit-editor-light-toggle');
+  const flashToggle = document.getElementById('unit-editor-flash-toggle');
+  const lightLockedEl = document.getElementById('unit-editor-light-locked');
+  const flashLockedEl = document.getElementById('unit-editor-flash-locked');
+
+  const visible = Boolean(unit) && currentRole === 'developer';
+  if (lightCard) lightCard.classList.toggle('hidden', !visible);
+  if (flashCard) flashCard.classList.toggle('hidden', !visible);
+
+  if (!visible) {
+    if (lightLockedEl) lightLockedEl.classList.add('hidden');
+    if (flashLockedEl) flashLockedEl.classList.add('hidden');
+    return;
+  }
+
+  const isArchived = Boolean(unit.is_archived);
+  const indLight =
+    unit.individual_light_state !== undefined
+      ? Boolean(unit.individual_light_state)
+      : Boolean(unit.light_state !== undefined ? unit.light_state : true);
+  const indFlash =
+    unit.individual_flash_state !== undefined
+      ? Boolean(unit.individual_flash_state)
+      : Boolean(unit.flash_state !== undefined ? unit.flash_state : false);
+
+  const lightLocked =
+    Boolean(unit.light_locked) ||
+    (unit.global_light_mode !== undefined && unit.global_light_mode !== 'default');
+  const flashLocked =
+    Boolean(unit.flash_locked) ||
+    (unit.global_flash_mode !== undefined && unit.global_flash_mode !== 'default');
+
+  if (lightToggle) {
+    lightToggle.checked = indLight;
+    lightToggle.disabled = lightLocked || isArchived;
+  }
+  if (lightLockedEl) {
+    lightLockedEl.classList.toggle('hidden', !lightLocked);
+  }
+
+  if (flashToggle) {
+    flashToggle.checked = indFlash;
+    flashToggle.disabled = flashLocked || isArchived;
+  }
+  if (flashLockedEl) {
+    flashLockedEl.classList.toggle('hidden', !flashLocked);
+  }
+}
+
+async function handleUnitLightToggle(isFlash) {
+  if (!editingUnit || currentRole !== 'developer' || editingUnit.is_archived) return;
+  const toggle = document.getElementById(
+    isFlash ? 'unit-editor-flash-toggle' : 'unit-editor-light-toggle'
+  );
+  if (!toggle) return;
+
+  const isLocked = isFlash
+    ? Boolean(editingUnit.flash_locked) ||
+      (editingUnit.global_flash_mode !== undefined && editingUnit.global_flash_mode !== 'default')
+    : Boolean(editingUnit.light_locked) ||
+      (editingUnit.global_light_mode !== undefined && editingUnit.global_light_mode !== 'default');
+  if (isLocked) {
+    syncUnitLightControls(editingUnit);
+    return;
+  }
+
+  const nextState = Boolean(toggle.checked);
+  const targetId = editingUnit.id;
+  showEditorError('');
+  toggle.disabled = true;
+
+  try {
+    const res = isFlash
+      ? await api.controlLightFlash(targetId, nextState)
+      : await api.controlLightMain(targetId, nextState);
+    if (res && res.status === 'error') {
+      throw new Error(res.result_message || 'Ошибка переключения реле');
+    }
+    if (editingUnit && Number(editingUnit.id) === Number(targetId)) {
+      if (isFlash) {
+        editingUnit.individual_flash_state = nextState;
+        editingUnit.flash_state =
+          res && res.effective_state !== undefined ? Boolean(res.effective_state) : nextState;
+      } else {
+        editingUnit.individual_light_state = nextState;
+        editingUnit.light_state =
+          res && res.effective_state !== undefined ? Boolean(res.effective_state) : nextState;
+      }
+      syncUnitLightControls(editingUnit);
+    }
+    showToast(
+      isFlash
+        ? `Вспышка «${editingUnit ? editingUnit.name : ''}»: ${nextState ? 'включена' : 'выключена'}`
+        : `Основной свет «${editingUnit ? editingUnit.name : ''}»: ${nextState ? 'включён' : 'выключен'}`
+    );
+    if (typeof onUnitSavedCallback === 'function') {
+      await onUnitSavedCallback();
+    }
+  } catch (err) {
+    toggle.checked = !nextState;
+    showEditorError(
+      err.message ||
+        (isFlash ? 'Не удалось переключить вспышку' : 'Не удалось переключить основной свет')
+    );
+  } finally {
+    if (editingUnit && Number(editingUnit.id) === Number(targetId)) {
+      syncUnitLightControls(editingUnit);
+    }
+  }
 }
 
 function setButtonsBusy(busy) {
@@ -230,6 +347,7 @@ async function openUnitModal(unit = null) {
   const modal = document.getElementById('modal-unit-editor');
   if (!modal) return;
 
+  const openSeq = ++unitEditorOpenSeq;
   editingUnit = unit || null;
   initialCameraIds = [];
   loadedIntervalHours = 1;
@@ -300,14 +418,18 @@ async function openUnitModal(unit = null) {
   modal.classList.remove('hidden');
   document.body.classList.add('modal-open');
 
-  // Подгружаем настройки расписания и список камер с сервера
+  // Подгружаем настройки расписания, список камер и свежее состояние установки с сервера
   try {
-    const [settingsRes, camerasRes] = await Promise.allSettled([
+    const requests = [
       api.getSystemSettings(),
       api.getCameras(),
-    ]);
+    ];
+    if (editingUnit && currentRole === 'developer' && typeof api.getInstallation === 'function') {
+      requests.push(api.getInstallation(editingUnit.id));
+    }
+    const [settingsRes, camerasRes, freshUnitRes] = await Promise.allSettled(requests);
 
-    if (!editingUnit && modal.classList.contains('hidden')) return;
+    if (openSeq !== unitEditorOpenSeq || modal.classList.contains('hidden')) return;
 
     if (settingsRes.status === 'fulfilled' && settingsRes.value) {
       const s = settingsRes.value;
@@ -327,6 +449,17 @@ async function openUnitModal(unit = null) {
     if (camerasRes.status === 'fulfilled' && Array.isArray(camerasRes.value)) {
       populateCameraOptions(camerasRes.value, editingUnit);
     }
+
+    if (
+      freshUnitRes &&
+      freshUnitRes.status === 'fulfilled' &&
+      freshUnitRes.value &&
+      editingUnit &&
+      Number(freshUnitRes.value.id) === Number(editingUnit.id)
+    ) {
+      editingUnit = { ...editingUnit, ...freshUnitRes.value };
+      syncUnitLightControls(editingUnit);
+    }
   } catch (_) {
     // Ошибки фоновой подгрузки не блокируют форму
   }
@@ -341,6 +474,7 @@ export function openUnitEditModal(unit) {
 }
 
 export function closeUnitEditorModal() {
+  unitEditorOpenSeq += 1;
   const modal = document.getElementById('modal-unit-editor');
   if (modal) {
     modal.classList.add('hidden');
@@ -351,6 +485,7 @@ export function closeUnitEditorModal() {
   isBusy = false;
   showEditorError('');
   hideDeleteConfirm();
+  syncUnitLightControls(null);
 }
 
 function showWarningsIfAny(warnings) {
@@ -572,6 +707,8 @@ export function initUnitEditor() {
   const deleteBtn = document.getElementById('unit-editor-delete-btn');
   const deleteYesBtn = document.getElementById('unit-editor-delete-confirm-yes');
   const deleteNoBtn = document.getElementById('unit-editor-delete-confirm-no');
+  const lightToggle = document.getElementById('unit-editor-light-toggle');
+  const flashToggle = document.getElementById('unit-editor-flash-toggle');
 
   if (closeBtn) closeBtn.addEventListener('click', closeUnitEditorModal);
   if (cancelBtn) cancelBtn.addEventListener('click', closeUnitEditorModal);
@@ -587,6 +724,12 @@ export function initUnitEditor() {
   if (deleteBtn) deleteBtn.addEventListener('click', showDeleteConfirm);
   if (deleteYesBtn) deleteYesBtn.addEventListener('click', handleDeleteConfirmYes);
   if (deleteNoBtn) deleteNoBtn.addEventListener('click', hideDeleteConfirm);
+  if (lightToggle) {
+    lightToggle.addEventListener('change', () => handleUnitLightToggle(false));
+  }
+  if (flashToggle) {
+    flashToggle.addEventListener('change', () => handleUnitLightToggle(true));
+  }
 
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && modal && !modal.classList.contains('hidden')) {

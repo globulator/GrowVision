@@ -14,6 +14,10 @@ from server.api.deps import (
     require_role,
 )
 from server.core.area import calculate_area_display
+from server.core.light_state import (
+    get_installation_light_snapshot,
+    set_individual_light_state,
+)
 from server.core.rgb import resolve_capture_display_rel_path
 from server.core.state import app_state
 from server.db.models import Capture, Installation, SystemSetting, User
@@ -168,18 +172,12 @@ def serialize_installation(
     )
 
     if role == "developer":
-        light_st = app_state.get_pin_state(inst.light_gpio_pin, default=True)
-        if inst.flash_gpio_pin == inst.light_gpio_pin:
-            flash_st = light_st
-        else:
-            flash_st = app_state.get_pin_state(inst.flash_gpio_pin, default=False)
-
+        light_snap = get_installation_light_snapshot(db, inst)
         data.update(
             {
                 "light_gpio_pin": inst.light_gpio_pin,
                 "flash_gpio_pin": inst.flash_gpio_pin,
-                "light_state": light_st,
-                "flash_state": flash_st,
+                **light_snap,
             }
         )
 
@@ -329,10 +327,15 @@ def create_installation(
     db.commit()
     db.refresh(inst)
 
-    # По умолчанию свет включен, вспышка выключена
-    app_state.set_pin_state(inst.light_gpio_pin, True)
+    # По умолчанию индивидуальный свет включен, вспышка выключена; физика учитывает global_*_mode
+    set_individual_light_state(db, inst.id, True, is_flash=False)
+    set_individual_light_state(db, inst.id, False, is_flash=True)
+    db.commit()
+
+    light_snap = get_installation_light_snapshot(db, inst)
+    app_state.set_pin_state(inst.light_gpio_pin, light_snap["light_state"])
     if inst.flash_gpio_pin != inst.light_gpio_pin:
-        app_state.set_pin_state(inst.flash_gpio_pin, False)
+        app_state.set_pin_state(inst.flash_gpio_pin, light_snap["flash_state"])
 
     return serialize_installation(inst, current_user.role, db, warnings=warnings)
 
@@ -453,12 +456,15 @@ def unarchive_installation(
         )
 
     inst.is_archived = False
+    set_individual_light_state(db, inst.id, True, is_flash=False)
+    set_individual_light_state(db, inst.id, False, is_flash=True)
     db.commit()
     db.refresh(inst)
 
-    app_state.set_pin_state(inst.light_gpio_pin, True)
+    light_snap = get_installation_light_snapshot(db, inst)
+    app_state.set_pin_state(inst.light_gpio_pin, light_snap["light_state"])
     if inst.flash_gpio_pin != inst.light_gpio_pin:
-        app_state.set_pin_state(inst.flash_gpio_pin, False)
+        app_state.set_pin_state(inst.flash_gpio_pin, light_snap["flash_state"])
 
     warnings = check_pin_conflicts_and_warnings(
         inst.light_gpio_pin, inst.flash_gpio_pin, db, exclude_id=inst.id

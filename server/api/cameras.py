@@ -301,7 +301,7 @@ async def scan_cameras(
 
     # Сортировка по id asc
     result_cameras.sort(key=lambda c: c.id)
-    resp["cameras"] = [serialize_camera(c) for c in result_cameras]
+    resp["cameras"] = [serialize_camera(c, db=db) for c in result_cameras]
     if debug_info:
         resp["debug_info"] = debug_info
 
