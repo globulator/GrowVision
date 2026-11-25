@@ -64,6 +64,7 @@ class LiveStreamManager:
         self.is_paused: bool = False
         self.device_online: bool = True
         self.stream_mode: str = "raw"
+        self.segmentation_mode: str = "auto"
         self.last_activity_time: float = time.time()
         self.rgb_gains: tuple[float, float, float] = (1.0, 1.0, 1.0)
         self._camera_context: dict[str, Any] = {}
@@ -159,6 +160,14 @@ class LiveStreamManager:
         if norm != self.stream_mode:
             self.stream_mode = norm
             logger.info(f"[LIVE] Режим потока переключён на {norm}")
+
+    def set_segmentation_mode(self, mode: str) -> None:
+        """Переключает движок сегментации ('auto', 'onnx' или 'hsv')."""
+        raw = str(mode or "auto").strip().lower()
+        norm = raw if raw in ("auto", "onnx", "hsv") else "auto"
+        if norm != self.segmentation_mode:
+            self.segmentation_mode = norm
+            logger.info(f"[LIVE] Режим сегментации переключён на {norm}")
 
     def set_camera_context(
         self,
@@ -306,6 +315,7 @@ class LiveStreamManager:
                 camera_name=self.active_camera_id,
                 captured_at=now_str,
                 aruco_size_mm=self._camera_context.get("aruco_size_mm"),
+                segmentation_mode=self.segmentation_mode,
             )
             return ann_bytes
         except Exception as exc:  # noqa: BLE001
@@ -366,6 +376,7 @@ class LiveStreamManager:
             self._stop_internal()
             if prev_cam != camera_hardware_id:
                 self.rgb_gains = (1.0, 1.0, 1.0)
+                self.segmentation_mode = "auto"
 
             self.active_camera_id = camera_hardware_id
             self.current_width = width
@@ -725,8 +736,13 @@ class LiveStreamManager:
                             frame_mode=self.stream_mode,
                             color_marker_detected=False,
                         )
-                        if isinstance(res, dict) and res.get("mode"):
-                            self.set_stream_mode(str(res["mode"]))
+                        if isinstance(res, dict):
+                            if res.get("mode"):
+                                self.set_stream_mode(str(res["mode"]))
+                            if res.get("segmentation_mode"):
+                                self.set_segmentation_mode(
+                                    str(res["segmentation_mode"])
+                                )
                 self._stop_event.wait(0.1)
                 continue
 
@@ -753,6 +769,8 @@ class LiveStreamManager:
                     if isinstance(res, dict):
                         if res.get("mode"):
                             self.set_stream_mode(str(res["mode"]))
+                        if res.get("segmentation_mode"):
+                            self.set_segmentation_mode(str(res["segmentation_mode"]))
                         if res.get("active_subscribers", 0) > 0:
                             self.touch()
                             consecutive_idle_sec = 0.0

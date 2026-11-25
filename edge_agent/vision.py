@@ -377,22 +377,29 @@ def _order_quad_long_horizontal(pts: Any) -> Any:
 def _compute_auto_rgb_gains(
     p_r: Any, p_g: Any, p_b: Any, p_w: Any, p_gray: Any
 ) -> tuple[float, float, float]:
-    """Вычисляет коэффициенты автоцветокоррекции (r, g, b) в [0.00, 1.00] по 5 эталонным плашкам."""
-    if float(np.max(p_w)) < 248.0:
-        wb_ref = 0.65 * p_gray + 0.35 * (p_w * (128.0 / 255.0))
+    """Вычисляет коэффициенты автоцветокоррекции (r, g, b) в [0.00, 1.00] по нейтральным плашкам."""
+    w_arr = np.asarray(p_w, dtype=np.float64)
+    g_arr = np.asarray(p_gray, dtype=np.float64)
+
+    # Баланс белого считаем исключительно по нейтральным плашкам (белая + серая),
+    # чтобы цветные плашки (R/G/B) не перекашивали нейтральный фон в красный/зелёный.
+    if float(np.max(w_arr)) < 245.0 and float(np.min(w_arr)) > 15.0:
+        w_mean = max(1.0, float(np.mean(w_arr)))
+        g_mean = max(1.0, float(np.mean(g_arr)))
+        w_scaled = w_arr * (g_mean / w_mean)
+        wb_ref = 0.60 * g_arr + 0.40 * w_scaled
     else:
-        wb_ref = p_gray
+        wb_ref = g_arr
+
     wb_gains = 1.0 / np.maximum(wb_ref, 5.0)
-    wb_gains = wb_gains / float(np.max(wb_gains))
+    max_wb = float(np.max(wb_gains))
+    if max_wb > 0:
+        wb_gains = wb_gains / max_wb
 
-    chan_vec = np.array([p_r[0], p_g[1], p_b[2]], dtype=np.float64)
-    if float(np.max(chan_vec)) < 248.0 and float(np.min(chan_vec)) > 15.0:
-        chan_gains = 1.0 / np.maximum(chan_vec, 10.0)
-        chan_gains = chan_gains / float(np.max(chan_gains))
-        gains = 0.7 * wb_gains + 0.3 * chan_gains
-    else:
-        gains = wb_gains
-
+    # Мягкое демпфирование к 1.0 и нижний разумный порог разброса каналов
+    damp_alpha = 0.12
+    gains = (1.0 - damp_alpha) * wb_gains + damp_alpha
+    gains = np.clip(gains, 0.35, 1.0)
     max_g = float(np.max(gains))
     if max_g > 0:
         gains = gains / max_g
@@ -1165,6 +1172,116 @@ def draw_cv_annotations(
     return annotated
 
 
+def _resolve_onnx_input_size(input_shape: Any) -> tuple[int, int, str]:
+    """Определяет (target_h, target_w, layout) из формы входа ONNX, фолбэк (256, 256, 'NCHW')."""
+
+    def _valid_dim(val: Any) -> int | None:
+        if isinstance(val, bool):
+            return None
+        if isinstance(val, int) and val > 0:
+            return int(val)
+        if np is not None and isinstance(val, np.integer) and int(val) > 0:
+            return int(val)
+        return None
+
+    if not isinstance(input_shape, (list, tuple)):
+        return 256, 256, "NCHW"
+
+    if len(input_shape) == 4:
+        c1 = _valid_dim(input_shape[1])
+        c3 = _valid_dim(input_shape[3])
+        if c3 in (1, 3) and c1 not in (1, 3):
+            h_val = _valid_dim(input_shape[1]) or 256
+            w_val = _valid_dim(input_shape[2]) or 256
+            return h_val, w_val, "NHWC"
+        h_val = _valid_dim(input_shape[2]) or 256
+        w_val = _valid_dim(input_shape[3]) or 256
+        return h_val, w_val, "NCHW"
+
+    if len(input_shape) == 3:
+        c0 = _valid_dim(input_shape[0])
+        c2 = _valid_dim(input_shape[2])
+        if c2 in (1, 3) and c0 not in (1, 3):
+            h_val = _valid_dim(input_shape[0]) or 256
+            w_val = _valid_dim(input_shape[1]) or 256
+            return h_val, w_val, "NHWC"
+        h_val = _valid_dim(input_shape[1]) or 256
+        w_val = _valid_dim(input_shape[2]) or 256
+        return h_val, w_val, "NCHW"
+
+    return 256, 256, "NCHW"
+
+
+def _postprocess_onnx_mask(raw_output: Any, orig_w: int, orig_h: int) -> Any:
+    """Преобразует выход ONNX-модели в бинарную очищенную маску размера (orig_h, orig_w)."""
+    arr = np.asarray(raw_output, dtype=np.float32)
+
+    if arr.ndim == 4:
+        # (1, C, H, W) или (1, H, W, C)
+        if arr.shape[1] in (1, 2):
+            arr = arr[0]
+        elif arr.shape[3] in (1, 2):
+            arr = np.transpose(arr[0], (2, 0, 1))
+        else:
+            arr = arr[0]
+
+    if arr.ndim == 3:
+        if arr.shape[0] == 2:
+            # 2 канала: фон (0) и растение (1) -> softmax, если это логиты
+            min_v = float(np.min(arr))
+            max_v = float(np.max(arr))
+            chan_sum = np.sum(arr, axis=0)
+            is_probs = (
+                min_v >= -1e-4
+                and max_v <= 1.0 + 1e-4
+                and bool(np.allclose(chan_sum, 1.0, atol=1e-2))
+            )
+            if is_probs:
+                prob_mask = arr[1]
+            else:
+                shifted = arr - np.max(arr, axis=0, keepdims=True)
+                exp_vals = np.exp(np.clip(shifted, -60.0, 60.0))
+                probs = exp_vals / np.sum(exp_vals, axis=0, keepdims=True)
+                prob_mask = probs[1]
+        elif arr.shape[0] == 1:
+            prob_mask = arr[0]
+        elif arr.shape[2] == 1:
+            prob_mask = arr[:, :, 0]
+        elif arr.shape[2] == 2:
+            logits = np.transpose(arr, (2, 0, 1))
+            shifted = logits - np.max(logits, axis=0, keepdims=True)
+            exp_vals = np.exp(np.clip(shifted, -60.0, 60.0))
+            probs = exp_vals / np.sum(exp_vals, axis=0, keepdims=True)
+            prob_mask = probs[1]
+        else:
+            prob_mask = arr[0]
+    elif arr.ndim == 2:
+        prob_mask = arr
+    else:
+        prob_mask = np.squeeze(arr)
+
+    # Для одноканальных логитов вне [0, 1] применяем сигмоиду
+    if (arr.ndim != 3 or arr.shape[0] != 2) and (
+        float(np.min(prob_mask)) < 0.0 or float(np.max(prob_mask)) > 1.0
+    ):
+        prob_mask = 1.0 / (1.0 + np.exp(-np.clip(prob_mask, -60.0, 60.0)))
+
+    prob_full = cv2.resize(
+        prob_mask.astype(np.float32), (orig_w, orig_h), interpolation=cv2.INTER_LINEAR
+    )
+    bin_mask_full = (prob_full > 0.5).astype(np.uint8) * 255
+
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    bin_mask_full = cv2.morphologyEx(
+        bin_mask_full, cv2.MORPH_OPEN, kernel_open, iterations=1
+    )
+    bin_mask_full = cv2.morphologyEx(
+        bin_mask_full, cv2.MORPH_CLOSE, kernel_close, iterations=1
+    )
+    return bin_mask_full
+
+
 class VisionPipeline:
     """Пайплайн компьютерного зрения: детекция ArUco-маркеров и сегментация растений."""
 
@@ -1173,36 +1290,64 @@ class VisionPipeline:
         self.mock_mode = mock_mode
         self._session: Any = None
         self._model_loaded = False
+        self._session_load_failed = False
+        self._last_failed_path: Path | None = None
 
-        if (
-            not self.mock_mode
-            and self.model_path
-            and self.model_path.is_file()
-            and ORT_AVAILABLE
-        ):
-            try:
-                self._session = ort.InferenceSession(
-                    str(self.model_path),
-                    providers=["CPUExecutionProvider"],
-                )
-                self._model_loaded = True
-                logger.info(f"ONNX модель успешно загружена: {self.model_path.name}")
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"Ошибка загрузки ONNX модели {self.model_path}: {e}")
-                self._session = None
-                self._model_loaded = False
-        elif not self.mock_mode and (
-            not self.model_path or not self.model_path.is_file()
-        ):
-            logger.error(
-                f"Файл ONNX модели не найден: {self.model_path}. Модель не будет использоваться."
+    def _ensure_session(self, allow_in_mock: bool = False) -> Any:
+        """Лениво загружает и кэширует ONNX InferenceSession с CPUExecutionProvider."""
+        if self._session is not None:
+            self._model_loaded = True
+            return self._session
+        if self.mock_mode and not allow_in_mock:
+            return None
+        if self._session_load_failed and self._last_failed_path == self.model_path:
+            return None
+        if not ORT_AVAILABLE or ort is None:
+            self._session_load_failed = True
+            self._last_failed_path = self.model_path
+            logger.warning(
+                "onnxruntime недоступен. Для сегментации используется HSV-пайплайн."
             )
+            return None
+        if not self.model_path or not self.model_path.is_file():
+            self._session_load_failed = True
+            self._last_failed_path = self.model_path
+            logger.warning(
+                f"Файл ONNX-модели не найден: {self.model_path}. Используется HSV-пайплайн."
+            )
+            return None
+        try:
+            self._session = ort.InferenceSession(
+                str(self.model_path),
+                providers=["CPUExecutionProvider"],
+            )
+            self._model_loaded = True
+            self._session_load_failed = False
+            self._last_failed_path = None
+            logger.info(f"ONNX модель успешно загружена: {self.model_path.name}")
+            return self._session
+        except Exception as exc:  # noqa: BLE001
+            self._session = None
+            self._model_loaded = False
+            self._session_load_failed = True
+            self._last_failed_path = self.model_path
+            logger.warning(
+                f"Не удалось загрузить ONNX-модель {self.model_path}: {exc}. Используется HSV-пайплайн."
+            )
+            return None
 
     def get_model_name(self) -> str:
-        """Возвращает имя загруженной модели или 'none'."""
+        """Возвращает имя загруженной/доступной модели или 'none'."""
         if self.mock_mode:
             return self.model_path.name if self.model_path else "mock_model.onnx"
         if self._model_loaded and self.model_path:
+            return self.model_path.name
+        if (
+            not self._session_load_failed
+            and ORT_AVAILABLE
+            and self.model_path
+            and self.model_path.is_file()
+        ):
             return self.model_path.name
         return "none"
 
@@ -1423,6 +1568,11 @@ class VisionPipeline:
         annotated_bytes = enc_img.tobytes() if success else b""
         return annotated_bytes, measurements
 
+    @staticmethod
+    def _normalize_segmentation_mode(segmentation_mode: str | None) -> str:
+        raw = str(segmentation_mode or "auto").strip().lower()
+        return raw if raw in ("auto", "onnx", "hsv") else "auto"
+
     def segment_plants(
         self,
         image_bytes: bytes,
@@ -1434,9 +1584,12 @@ class VisionPipeline:
         captured_at: str | None = None,
         aruco_corners: Any = None,
         color_marker_corners: Any = None,
+        segmentation_mode: str = "auto",
     ) -> tuple[bytes, list[PlantMeasurementMeta]]:
         """Выполняет сегментацию растений и отрисовку маски на кадре.
 
+        Поддерживает режимы segmentation_mode: 'auto' (ONNX при наличии модели, иначе HSV),
+        'onnx' (принудительно ONNX с безопасным фолбэком в HSV) и 'hsv'.
         Возвращает кортеж (annotated_image_bytes, measurements).
         """
         if not CV2_AVAILABLE:
@@ -1445,8 +1598,12 @@ class VisionPipeline:
             )
             return image_bytes, []
 
-        # 1. Mock-режим: настоящая сегментация по цветовому порогу HSV
-        if self.mock_mode:
+        mode = self._normalize_segmentation_mode(segmentation_mode)
+
+        # 1. Явный HSV-режим либо auto в mock_mode без подставленной сессии
+        if mode == "hsv" or (
+            mode == "auto" and self.mock_mode and self._session is None
+        ):
             return self._segment_plants_hsv(
                 image_bytes,
                 aruco_area_px=aruco_area_px,
@@ -1459,12 +1616,9 @@ class VisionPipeline:
                 color_marker_corners=color_marker_corners,
             )
 
-        # 2. Боевой режим без загруженной ONNX модели / сессии:
-        # При отсутствии .onnx-модели в боевом режиме (mock_mode=False) использовать _segment_plants_hsv как фолбэк
-        if not self._model_loaded or self._session is None:
-            logger.warning(
-                "ONNX-модель не загружена в боевом режиме. Применяется fallback-сегментация по HSV."
-            )
+        # 2. Ленивая загрузка ONNX-сессии (при mode=='onnx' разрешаем и в mock_mode)
+        session = self._ensure_session(allow_in_mock=(mode == "onnx"))
+        if session is None:
             return self._segment_plants_hsv(
                 image_bytes,
                 aruco_area_px=aruco_area_px,
@@ -1485,32 +1639,21 @@ class VisionPipeline:
 
             h, w = img.shape[:2]
 
-            input_name = self._session.get_inputs()[0].name
-            input_shape = self._session.get_inputs()[0].shape
-            target_h = (
-                input_shape[2]
-                if len(input_shape) >= 4 and isinstance(input_shape[2], int)
-                else 256
-            )
-            target_w = (
-                input_shape[3]
-                if len(input_shape) >= 4 and isinstance(input_shape[3], int)
-                else 256
-            )
+            input_meta = session.get_inputs()[0]
+            input_name = input_meta.name
+            target_h, target_w, layout = _resolve_onnx_input_size(input_meta.shape)
 
-            resized = cv2.resize(img, (target_w, target_h))
+            resized = cv2.resize(
+                img, (target_w, target_h), interpolation=cv2.INTER_LINEAR
+            )
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-            tensor = np.transpose(rgb, (2, 0, 1))[np.newaxis, ...]
+            if layout == "NHWC":
+                tensor = rgb[np.newaxis, ...]
+            else:
+                tensor = np.transpose(rgb, (2, 0, 1))[np.newaxis, ...]
 
-            outputs = self._session.run(None, {input_name: tensor})
-            pred_mask = outputs[0][0]
-            if pred_mask.ndim == 3:
-                pred_mask = pred_mask[0]
-
-            bin_mask = (pred_mask > 0.5).astype(np.uint8)
-            bin_mask_full = cv2.resize(
-                bin_mask, (w, h), interpolation=cv2.INTER_NEAREST
-            )
+            outputs = session.run(None, {input_name: tensor})
+            bin_mask_full = _postprocess_onnx_mask(outputs[0], orig_w=w, orig_h=h)
 
             raw_contours, _ = cv2.findContours(
                 bin_mask_full, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -1585,10 +1728,11 @@ class VisionPipeline:
             upper_green = np.array([85, 255, 255], dtype=np.uint8)
             mask = cv2.inRange(hsv, lower_green, upper_green)
 
-            # Морфологическая очистка: удаление мелкого шума (OPEN) и закрытие разрывов в листьях (CLOSE)
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+            # Морфологическая очистка: удаление мелкого шума (OPEN 3x3) и склейка разрывов/теней внутри куста (CLOSE 9x9)
+            kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_close, iterations=1)
 
             raw_contours, _ = cv2.findContours(
                 mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -1651,6 +1795,7 @@ class VisionPipeline:
         camera_name: str | None = None,
         captured_at: str | None = None,
         aruco_size_mm: float | None = None,
+        segmentation_mode: str = "auto",
     ) -> tuple[bytes, float | None, list[PlantMeasurementMeta]]:
         """Полная обработка кадра: детекция ArUco, цветового маркера и сегментация растений."""
         aruco_area, aruco_corners = self.detect_aruco_details(image_bytes)
@@ -1665,5 +1810,6 @@ class VisionPipeline:
             captured_at=captured_at,
             aruco_corners=aruco_corners,
             color_marker_corners=color_corners,
+            segmentation_mode=segmentation_mode,
         )
         return annotated_bytes, aruco_area, measurements

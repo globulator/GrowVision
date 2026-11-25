@@ -254,3 +254,20 @@ class EdgeAPIClient:
             resp = client.post(url, json=payload)
             return resp.status_code == 200
         return False
+
+    def get_camera_settings(
+        self, hardware_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """Запрашивает настройки камер (RGB и segmentation_mode): GET /api/edge/camera-settings."""
+        url = "/api/edge/camera-settings"
+        params = {"hardware_id": hardware_id} if hardware_id else None
+        with (
+            contextlib.suppress(Exception),
+            self._create_client(timeout=5.0) as client,
+        ):
+            resp = client.get(url, params=params)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict):
+                    return data
+        return None
