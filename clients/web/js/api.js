@@ -206,6 +206,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ target }),
     }),
+  controlDayNight: (payload) =>
+    request('/api/control/day-night', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   // Кадры установки (исправлен 404 URL)
   getInstallationFrames: (instId, limit = 500) =>

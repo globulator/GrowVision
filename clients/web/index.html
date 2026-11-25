@@ -949,6 +949,44 @@
             </div>
           </div>
 
+          <!-- Компактная раскрывающаяся плашка индивидуального светового дня (только при редактировании) -->
+          <div id="unit-editor-day-night-card" class="unit-day-night-card hidden">
+            <div id="unit-editor-day-night-header" class="unit-day-night-header" role="button" tabindex="0" aria-expanded="false">
+              <div class="unit-day-night-title-wrap">
+                <span class="unit-day-night-title">Настроить световой день</span>
+                <span id="unit-editor-day-night-locked" class="unit-light-locked-hint hidden">Заблокировано</span>
+              </div>
+              <div class="unit-day-night-right">
+                <span id="unit-editor-day-night-status" class="unit-day-night-status">Выкл</span>
+                <svg class="icon-svg unit-day-night-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </div>
+            </div>
+            <div id="unit-editor-day-night-panel" class="unit-day-night-panel">
+              <div class="unit-day-night-panel-inner">
+                <div class="unit-day-night-toggle-row">
+                  <span class="unit-day-night-label">Режим День / Ночь</span>
+                  <label class="toggle-switch" aria-label="Световой день установки">
+                    <input type="checkbox" id="unit-editor-day-night-toggle">
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="day-night-time-row">
+                  <label class="day-night-time-field">
+                    <span>С</span>
+                    <input type="time" id="unit-editor-day-night-start" class="form-input day-night-time-input" value="08:00" disabled>
+                  </label>
+                  <label class="day-night-time-field">
+                    <span>До</span>
+                    <input type="time" id="unit-editor-day-night-end" class="form-input day-night-time-input" value="22:00" disabled>
+                  </label>
+                  <span id="unit-editor-day-night-phase-badge" class="day-night-phase-badge">День</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div class="form-group">
             <label for="unit-editor-interval">Расписание съёмки (раз в N ч)</label>
             <input type="number" id="unit-editor-interval" class="form-input" min="1" step="1" placeholder="1">
@@ -1031,13 +1069,42 @@
         <div class="light-control-rows">
           <div class="light-control-row">
             <div class="light-control-info">
-              <span class="light-control-label">Основной свет (все установки)</span>
+              <div class="light-control-title-row">
+                <span class="light-control-label">Основной свет (все установки)</span>
+                <span id="light-main-lock-reason" class="unit-light-locked-hint hidden">Цикл дня/ночи</span>
+              </div>
               <span id="light-main-state-label" class="light-control-sub">—</span>
             </div>
             <div id="light-mode-main" class="segmented-control light-mode-segmented" role="group" aria-label="Основной свет для всех установок">
               <button type="button" class="seg-btn" data-mode="on">Вкл</button>
               <button type="button" class="seg-btn active" data-mode="default">По умолчанию</button>
               <button type="button" class="seg-btn" data-mode="off">Выкл</button>
+            </div>
+          </div>
+
+          <div id="light-day-night-row" class="light-control-row light-day-night-row">
+            <div class="light-day-night-top">
+              <div class="light-control-info">
+                <div class="light-control-title-row">
+                  <span class="light-control-label">Световой день (все установки)</span>
+                  <span id="light-day-night-phase" class="day-night-phase-badge">День</span>
+                </div>
+                <span id="light-day-night-sub" class="light-control-sub">Выключен</span>
+              </div>
+              <label class="toggle-switch" aria-label="Световой день (все установки)">
+                <input type="checkbox" id="light-day-night-toggle">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="day-night-time-row">
+              <label class="day-night-time-field">
+                <span>С</span>
+                <input type="time" id="light-day-night-start" class="form-input day-night-time-input" value="08:00" disabled>
+              </label>
+              <label class="day-night-time-field">
+                <span>До</span>
+                <input type="time" id="light-day-night-end" class="form-input day-night-time-input" value="22:00" disabled>
+              </label>
             </div>
           </div>
 

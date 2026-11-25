@@ -1,14 +1,25 @@
-"""Иерархия и расчёт состояний основного света и вспышки (общие режимы и индивидуальные настройки)."""
+"""Иерархия и расчёт состояний основного света и вспышки (общие режимы, цикл дня/ночи и индивидуальные настройки)."""
 
-from datetime import UTC, datetime
+import json
+from datetime import UTC, datetime, time
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
 from server.core.state import app_state
-from server.db.models import Installation, SystemSetting
+from server.core.system_status import is_rpi_online
+from server.db.models import EdgeCommand, Installation, SystemSetting
+from shared.light_cycle import (
+    DEFAULT_DAY_END,
+    DEFAULT_DAY_START,
+    DayNightPhase,
+    is_day_phase,
+    normalize_hhmm,
+    validate_day_night_window,
+)
 from shared.pins import (
     DEFAULT_COLOR_HEX,
+    format_gpio_pins,
     normalize_hex_color,
     parse_pins_setting,
     serialize_pins_setting,
@@ -18,6 +29,9 @@ LightMode = Literal["on", "default", "off"]
 
 GLOBAL_LIGHT_MODE_KEY = "global_light_mode"
 GLOBAL_FLASH_MODE_KEY = "global_flash_mode"
+GLOBAL_DAY_NIGHT_ENABLED_KEY = "global_day_night_enabled"
+GLOBAL_DAY_START_KEY = "global_day_start"
+GLOBAL_DAY_END_KEY = "global_day_end"
 
 
 def inst_light_state_key(inst_id: int) -> str:
@@ -50,6 +64,21 @@ def inst_flash_color_key(inst_id: int) -> str:
     return f"inst_flash_color_{inst_id}"
 
 
+def inst_day_night_enabled_key(inst_id: int) -> str:
+    """Ключ SystemSetting для включения индивидуального цикла дня и ночи установки."""
+    return f"inst_day_night_enabled_{inst_id}"
+
+
+def inst_day_start_key(inst_id: int) -> str:
+    """Ключ SystemSetting для начала светового дня установки (HH:MM)."""
+    return f"inst_day_start_{inst_id}"
+
+
+def inst_day_end_key(inst_id: int) -> str:
+    """Ключ SystemSetting для окончания светового дня установки (HH:MM)."""
+    return f"inst_day_end_{inst_id}"
+
+
 def _upsert_setting(
     db: Session, key: str, value: str, now: datetime | None = None
 ) -> None:
@@ -71,6 +100,41 @@ def _parse_bool_setting(raw: str | None, default: bool) -> bool:
     if norm in ("false", "0", "no", "off"):
         return False
     return default
+
+
+def _read_settings_map(db: Session, keys: list[str]) -> dict[str, str]:
+    rows = db.query(SystemSetting).filter(SystemSetting.key.in_(keys)).all()
+    return {row.key: row.value for row in rows if row.value is not None}
+
+
+def _safe_hhmm(raw: str | None, fallback: str) -> str:
+    if raw is None:
+        return fallback
+    try:
+        return normalize_hhmm(raw)
+    except ValueError:
+        return fallback
+
+
+def _build_day_night_dict(
+    enabled: bool,
+    day_start: str,
+    day_end: str,
+    *,
+    now_time: time | datetime | None = None,
+) -> dict[str, Any]:
+    if day_start == day_end:
+        day_start = DEFAULT_DAY_START
+        day_end = DEFAULT_DAY_END
+    is_day = is_day_phase(day_start, day_end, now_time=now_time)
+    phase: DayNightPhase = "day" if is_day else "night"
+    return {
+        "enabled": bool(enabled),
+        "day_start": day_start,
+        "day_end": day_end,
+        "phase": phase,
+        "is_day": is_day,
+    }
 
 
 def normalize_light_mode(raw: str | None) -> LightMode:
@@ -100,6 +164,92 @@ def set_global_light_mode(
     """Сохраняет глобальный режим света или вспышки в SystemSetting."""
     key = GLOBAL_FLASH_MODE_KEY if is_flash else GLOBAL_LIGHT_MODE_KEY
     _upsert_setting(db, key, normalize_light_mode(mode), now=now)
+
+
+def get_global_day_night_settings(
+    db: Session, *, now_time: time | datetime | None = None
+) -> dict[str, Any]:
+    """Возвращает глобальные настройки цикла дня и ночи из SystemSetting."""
+    by_key = _read_settings_map(
+        db,
+        [GLOBAL_DAY_NIGHT_ENABLED_KEY, GLOBAL_DAY_START_KEY, GLOBAL_DAY_END_KEY],
+    )
+    enabled = _parse_bool_setting(by_key.get(GLOBAL_DAY_NIGHT_ENABLED_KEY), False)
+    day_start = _safe_hhmm(by_key.get(GLOBAL_DAY_START_KEY), DEFAULT_DAY_START)
+    day_end = _safe_hhmm(by_key.get(GLOBAL_DAY_END_KEY), DEFAULT_DAY_END)
+    return _build_day_night_dict(enabled, day_start, day_end, now_time=now_time)
+
+
+def set_global_day_night_settings(
+    db: Session,
+    *,
+    enabled: bool | None = None,
+    day_start: str | None = None,
+    day_end: str | None = None,
+    now: datetime | None = None,
+    now_time: time | datetime | None = None,
+) -> dict[str, Any]:
+    """Валидирует и сохраняет глобальные настройки цикла дня и ночи в SystemSetting."""
+    current = get_global_day_night_settings(db, now_time=now_time)
+    next_enabled = current["enabled"] if enabled is None else bool(enabled)
+    raw_start = current["day_start"] if day_start is None else day_start
+    raw_end = current["day_end"] if day_end is None else day_end
+    norm_start, norm_end = validate_day_night_window(raw_start, raw_end)
+
+    _upsert_setting(
+        db,
+        GLOBAL_DAY_NIGHT_ENABLED_KEY,
+        "true" if next_enabled else "false",
+        now=now,
+    )
+    _upsert_setting(db, GLOBAL_DAY_START_KEY, norm_start, now=now)
+    _upsert_setting(db, GLOBAL_DAY_END_KEY, norm_end, now=now)
+    return _build_day_night_dict(next_enabled, norm_start, norm_end, now_time=now_time)
+
+
+def get_installation_day_night_settings(
+    db: Session,
+    inst_id: int,
+    *,
+    now_time: time | datetime | None = None,
+) -> dict[str, Any]:
+    """Возвращает индивидуальные настройки цикла дня и ночи установки из SystemSetting."""
+    k_en = inst_day_night_enabled_key(inst_id)
+    k_st = inst_day_start_key(inst_id)
+    k_ed = inst_day_end_key(inst_id)
+    by_key = _read_settings_map(db, [k_en, k_st, k_ed])
+    enabled = _parse_bool_setting(by_key.get(k_en), False)
+    day_start = _safe_hhmm(by_key.get(k_st), DEFAULT_DAY_START)
+    day_end = _safe_hhmm(by_key.get(k_ed), DEFAULT_DAY_END)
+    return _build_day_night_dict(enabled, day_start, day_end, now_time=now_time)
+
+
+def set_installation_day_night_settings(
+    db: Session,
+    inst_id: int,
+    *,
+    enabled: bool | None = None,
+    day_start: str | None = None,
+    day_end: str | None = None,
+    now: datetime | None = None,
+    now_time: time | datetime | None = None,
+) -> dict[str, Any]:
+    """Валидирует и сохраняет индивидуальные настройки цикла дня и ночи установки."""
+    current = get_installation_day_night_settings(db, inst_id, now_time=now_time)
+    next_enabled = current["enabled"] if enabled is None else bool(enabled)
+    raw_start = current["day_start"] if day_start is None else day_start
+    raw_end = current["day_end"] if day_end is None else day_end
+    norm_start, norm_end = validate_day_night_window(raw_start, raw_end)
+
+    _upsert_setting(
+        db,
+        inst_day_night_enabled_key(inst_id),
+        "true" if next_enabled else "false",
+        now=now,
+    )
+    _upsert_setting(db, inst_day_start_key(inst_id), norm_start, now=now)
+    _upsert_setting(db, inst_day_end_key(inst_id), norm_end, now=now)
+    return _build_day_night_dict(next_enabled, norm_start, norm_end, now_time=now_time)
 
 
 def get_individual_light_state(
@@ -178,7 +328,7 @@ def set_installation_channel_color(
 
 
 def delete_installation_light_settings(db: Session, inst_id: int) -> None:
-    """Удаляет настройки света/пинов/цвета установки при её удалении."""
+    """Удаляет настройки света/пинов/цвета/цикла установки при её удалении."""
     keys = [
         inst_light_state_key(inst_id),
         inst_flash_state_key(inst_id),
@@ -186,6 +336,9 @@ def delete_installation_light_settings(db: Session, inst_id: int) -> None:
         inst_flash_pins_key(inst_id),
         inst_light_color_key(inst_id),
         inst_flash_color_key(inst_id),
+        inst_day_night_enabled_key(inst_id),
+        inst_day_start_key(inst_id),
+        inst_day_end_key(inst_id),
     ]
     db.query(SystemSetting).filter(SystemSetting.key.in_(keys)).delete(
         synchronize_session="fetch"
@@ -193,12 +346,37 @@ def delete_installation_light_settings(db: Session, inst_id: int) -> None:
 
 
 def compute_effective_state(global_mode: LightMode, individual_state: bool) -> bool:
-    """Вычисляет итоговое состояние канала с учётом глобального переопределения."""
+    """Вычисляет итоговое состояние канала без цикла дня/ночи (используется для вспышки)."""
     if global_mode == "on":
         return True
     if global_mode == "off":
         return False
     return bool(individual_state)
+
+
+def compute_effective_main_light_state(
+    *,
+    global_day_night_enabled: bool,
+    global_is_day: bool,
+    global_light_mode: LightMode,
+    inst_day_night_enabled: bool,
+    inst_is_day: bool,
+    individual_light_state: bool,
+) -> bool:
+    """Вычисляет итоговое состояние основного света по 5-уровневой иерархии (уровни 2–5).
+
+    Уровень 1 (временное аппаратное переопределение при съёмке/тесте реле)
+    обрабатывается на уровне edge_agent с гарантированным возвратом.
+    """
+    if global_day_night_enabled:
+        return bool(global_is_day)
+    if global_light_mode == "on":
+        return True
+    if global_light_mode == "off":
+        return False
+    if inst_day_night_enabled:
+        return bool(inst_is_day)
+    return bool(individual_light_state)
 
 
 def get_installation_light_snapshot(
@@ -207,6 +385,8 @@ def get_installation_light_snapshot(
     *,
     global_light_mode: LightMode | None = None,
     global_flash_mode: LightMode | None = None,
+    global_day_night: dict[str, Any] | None = None,
+    now_time: time | datetime | None = None,
 ) -> dict[str, Any]:
     """Возвращает полный срез индивидуальных, глобальных и эффективных состояний установки."""
     g_light = (
@@ -219,14 +399,42 @@ def get_installation_light_snapshot(
         if global_flash_mode is not None
         else get_global_light_mode(db, is_flash=True)
     )
+    g_dn = (
+        global_day_night
+        if global_day_night is not None
+        else get_global_day_night_settings(db, now_time=now_time)
+    )
+    inst_dn = get_installation_day_night_settings(db, inst.id, now_time=now_time)
+
     ind_light = get_individual_light_state(db, inst.id, is_flash=False)
     ind_flash = get_individual_light_state(db, inst.id, is_flash=True)
-    eff_light = compute_effective_state(g_light, ind_light)
+
+    eff_light = compute_effective_main_light_state(
+        global_day_night_enabled=g_dn["enabled"],
+        global_is_day=g_dn["is_day"],
+        global_light_mode=g_light,
+        inst_day_night_enabled=inst_dn["enabled"],
+        inst_is_day=inst_dn["is_day"],
+        individual_light_state=ind_light,
+    )
     eff_flash = compute_effective_state(g_flash, ind_flash)
+
+    day_night_locked = bool(g_dn["enabled"] or g_light != "default")
+    if day_night_locked:
+        light_locked = True
+        light_lock_reason: str | None = "Заблокировано"
+    elif inst_dn["enabled"]:
+        light_locked = True
+        light_lock_reason = "Световой день"
+    else:
+        light_locked = False
+        light_lock_reason = None
+
     light_pins = get_installation_channel_pins(db, inst, is_flash=False)
     flash_pins = get_installation_channel_pins(db, inst, is_flash=True)
     light_color = get_installation_channel_color(db, inst.id, is_flash=False)
     flash_color = get_installation_channel_color(db, inst.id, is_flash=True)
+
     return {
         "individual_light_state": ind_light,
         "individual_flash_state": ind_flash,
@@ -234,7 +442,18 @@ def get_installation_light_snapshot(
         "flash_state": eff_flash,
         "global_light_mode": g_light,
         "global_flash_mode": g_flash,
-        "light_locked": g_light != "default",
+        "global_day_night_enabled": g_dn["enabled"],
+        "global_day_start": g_dn["day_start"],
+        "global_day_end": g_dn["day_end"],
+        "global_day_night_phase": g_dn["phase"],
+        "global_light_locked": bool(g_dn["enabled"]),
+        "day_night_enabled": inst_dn["enabled"],
+        "day_start": inst_dn["day_start"],
+        "day_end": inst_dn["day_end"],
+        "day_night_phase": inst_dn["phase"],
+        "day_night_locked": day_night_locked,
+        "light_locked": light_locked,
+        "light_lock_reason": light_lock_reason,
         "flash_locked": g_flash != "default",
         "light_pins": light_pins,
         "flash_pins": flash_pins,
@@ -251,6 +470,8 @@ def compute_active_pin_states(
     *,
     global_light_mode: LightMode | None = None,
     global_flash_mode: LightMode | None = None,
+    global_day_night: dict[str, Any] | None = None,
+    now_time: time | datetime | None = None,
 ) -> dict[int, bool]:
     """Строит карту целевых GPIO-пинов (pin -> bool) для списка установок."""
     g_light = (
@@ -263,6 +484,11 @@ def compute_active_pin_states(
         if global_flash_mode is not None
         else get_global_light_mode(db, is_flash=True)
     )
+    g_dn = (
+        global_day_night
+        if global_day_night is not None
+        else get_global_day_night_settings(db, now_time=now_time)
+    )
     pin_states: dict[int, bool] = {}
     for inst in installations:
         snap = get_installation_light_snapshot(
@@ -270,6 +496,8 @@ def compute_active_pin_states(
             inst,
             global_light_mode=g_light,
             global_flash_mode=g_flash,
+            global_day_night=g_dn,
+            now_time=now_time,
         )
         for pin in snap["light_pins"]:
             pin_states[pin] = snap["light_state"]
@@ -283,3 +511,105 @@ def sync_app_state_pins(pin_states: dict[int, bool]) -> None:
     """Синхронизирует вычисленные целевые состояния пинов с app_state."""
     for pin, val in pin_states.items():
         app_state.set_pin_state(int(pin), bool(val))
+
+
+def build_light_main_command_payload(
+    db: Session,
+    installations: list[Installation],
+    *,
+    now_time: time | datetime | None = None,
+) -> tuple[dict[int, bool], dict[str, Any]]:
+    """Формирует карту light-пинов и payload для команды LIGHT_MAIN."""
+    g_light = get_global_light_mode(db, is_flash=False)
+    g_flash = get_global_light_mode(db, is_flash=True)
+    g_dn = get_global_day_night_settings(db, now_time=now_time)
+
+    light_pin_states: dict[int, bool] = {}
+    inst_states_map: dict[str, dict[str, Any]] = {}
+    for item in installations:
+        snap = get_installation_light_snapshot(
+            db,
+            item,
+            global_light_mode=g_light,
+            global_flash_mode=g_flash,
+            global_day_night=g_dn,
+            now_time=now_time,
+        )
+        inst_states_map[str(item.id)] = {
+            "light_gpio_pin": format_gpio_pins(snap["light_pins"]),
+            "flash_gpio_pin": format_gpio_pins(snap["flash_pins"]),
+            "light_pins": snap["light_pins"],
+            "flash_pins": snap["flash_pins"],
+            "light_color": snap["light_color"],
+            "flash_color": snap["flash_color"],
+            "light_state": snap["light_state"],
+            "flash_state": snap["flash_state"],
+        }
+        for p in snap["light_pins"]:
+            light_pin_states[p] = snap["light_state"]
+
+    payload: dict[str, Any] = {
+        "mode": g_light,
+        "state": None,
+        "pin_states": {str(p): v for p, v in light_pin_states.items()},
+        "installation_states": inst_states_map,
+    }
+    return light_pin_states, payload
+
+
+def sync_day_night_phases_step(
+    db: Session,
+    *,
+    now_time: time | datetime | None = None,
+) -> dict[str, Any]:
+    """Один шаг фоновой синхронизации фаз День/Ночь для активных установок.
+
+    Обновляет app_state и ставит команду LIGHT_MAIN в EdgeCommand ТОЛЬКО при
+    фактическом изменении целевого состояния хотя бы одного пина основного света
+    и при условии, что Edge-агент онлайн.
+    """
+    active_insts = (
+        db.query(Installation)
+        .filter(Installation.is_archived.is_(False))
+        .order_by(Installation.id.asc())
+        .all()
+    )
+    if not active_insts:
+        return {"changed": False, "command_id": None, "changed_pins": {}}
+
+    light_pin_states, cmd_payload = build_light_main_command_payload(
+        db, active_insts, now_time=now_time
+    )
+    existing_pins = app_state.get_all_pin_states()
+    changed_pins: dict[int, bool] = {}
+
+    for pin, new_val in light_pin_states.items():
+        if pin not in existing_pins:
+            app_state.set_pin_state(pin, new_val)
+        elif bool(existing_pins[pin]) != bool(new_val):
+            changed_pins[pin] = bool(new_val)
+            app_state.set_pin_state(pin, new_val)
+
+    if not changed_pins:
+        return {"changed": False, "command_id": None, "changed_pins": {}}
+
+    online, _ = is_rpi_online(db)
+    cmd_id: int | None = None
+    if online:
+        cmd = EdgeCommand(
+            command_type="LIGHT_MAIN",
+            installation_id=None,
+            is_global=True,
+            payload=json.dumps(cmd_payload),
+            status="pending",
+        )
+        db.add(cmd)
+        db.commit()
+        db.refresh(cmd)
+        cmd_id = cmd.id
+
+    return {
+        "changed": True,
+        "command_id": cmd_id,
+        "changed_pins": changed_pins,
+    }

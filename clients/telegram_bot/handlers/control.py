@@ -16,11 +16,12 @@ from clients.telegram_bot.api_client import GrowVisionApiClient
 from clients.telegram_bot.keyboards.inline import (
     get_cancel_inline_keyboard,
     get_control_panel_keyboard,
+    get_day_night_menu_keyboard,
     get_rgb_channel_menu_keyboard,
     get_snap_layer_keyboard,
 )
 from clients.telegram_bot.keyboards.paginator import build_paginator_keyboard
-from clients.telegram_bot.states import ControlColorStates
+from clients.telegram_bot.states import ControlColorStates, ControlDayNightStates
 from clients.telegram_bot.utils.errors import ApiError, format_api_error
 from clients.telegram_bot.utils.formatters import (
     format_area_display,
@@ -28,7 +29,10 @@ from clients.telegram_bot.utils.formatters import (
 )
 from clients.telegram_bot.utils.pins import (
     DEFAULT_COLOR_HEX,
+    DEFAULT_DAY_END,
+    DEFAULT_DAY_START,
     normalize_hex_color,
+    parse_day_night_interval,
     parse_gpio_pins,
 )
 
@@ -90,7 +94,22 @@ def _store_installation_meta(target: str, inst: dict[str, Any]) -> None:
         "flash_is_rgb": flash_is_rgb,
         "light_color": light_color,
         "flash_color": flash_color,
+        "day_night_enabled": bool(inst.get("day_night_enabled", False)),
+        "day_start": inst.get("day_start") or DEFAULT_DAY_START,
+        "day_end": inst.get("day_end") or DEFAULT_DAY_END,
+        "day_night_phase": inst.get("day_night_phase") or "day",
+        "day_night_locked": bool(inst.get("day_night_locked", False)),
+        "light_locked": bool(inst.get("light_locked", False)),
+        "light_lock_reason": inst.get("light_lock_reason"),
+        "global_light_mode": inst.get("global_light_mode", "default"),
+        "global_day_night_enabled": bool(inst.get("global_day_night_enabled", False)),
+        "global_day_start": inst.get("global_day_start") or DEFAULT_DAY_START,
+        "global_day_end": inst.get("global_day_end") or DEFAULT_DAY_END,
+        "global_day_night_phase": inst.get("global_day_night_phase") or "day",
+        "global_light_locked": bool(inst.get("global_light_locked", False)),
     }
+    if "global_day_night_enabled" in inst or "global_light_mode" in inst:
+        _store_global_meta(inst)
     if "light_state" in inst:
         _relay_states.setdefault(target, {})["light"] = bool(inst["light_state"])
         for p in l_pins:
@@ -99,6 +118,33 @@ def _store_installation_meta(target: str, inst: dict[str, Any]) -> None:
         _relay_states.setdefault(target, {})["flash"] = bool(inst["flash_state"])
         for p in f_pins:
             _pin_states[p] = bool(inst["flash_state"])
+
+
+def _store_global_meta(payload: dict[str, Any]) -> None:
+    prev = _target_meta.get("all", {})
+    _target_meta["all"] = {
+        "name": "Все активные установки",
+        "global_light_mode": payload.get(
+            "global_light_mode", prev.get("global_light_mode", "default")
+        ),
+        "global_day_night_enabled": bool(
+            payload.get(
+                "global_day_night_enabled", prev.get("global_day_night_enabled", False)
+            )
+        ),
+        "global_day_start": payload.get(
+            "global_day_start", prev.get("global_day_start", DEFAULT_DAY_START)
+        ),
+        "global_day_end": payload.get(
+            "global_day_end", prev.get("global_day_end", DEFAULT_DAY_END)
+        ),
+        "global_day_night_phase": payload.get(
+            "global_day_night_phase", prev.get("global_day_night_phase", "day")
+        ),
+        "global_light_locked": bool(
+            payload.get("global_light_locked", prev.get("global_light_locked", False))
+        ),
+    }
 
 
 def _get_target_rgb_kwargs(target: str) -> dict[str, Any]:
@@ -116,12 +162,22 @@ def _get_target_rgb_kwargs(target: str) -> dict[str, Any]:
 async def _sync_pins_for_target(
     api_client: GrowVisionApiClient, user_id: int, target: str
 ) -> None:
-    """Синхронизирует номера пинов, RGB-флаги, цвета и состояния реле с сервером."""
+    """Синхронизирует номера пинов, RGB-флаги, цвета, цикл дня/ночи и состояния реле с сервером."""
     if target == "all":
         with contextlib.suppress(Exception):
             insts = await api_client.get_installations(user_id, include_archived=False)
             for item in insts:
                 _store_installation_meta(str(item.get("id")), item)
+        with contextlib.suppress(Exception):
+            relays = await api_client.get_relays_status(user_id)
+            if isinstance(relays, dict):
+                _store_global_meta(relays)
+                for item in relays.get("installations") or []:
+                    if (
+                        isinstance(item, dict)
+                        and item.get("installation_id") is not None
+                    ):
+                        _store_installation_meta(str(item["installation_id"]), item)
     else:
         with contextlib.suppress(Exception):
             inst = await api_client.get_installation(user_id, int(target))
@@ -322,12 +378,231 @@ async def handle_control_target_selected(
         flash_state=flash_st,
         **_get_target_rgb_kwargs(target),
     )
+    lock_note = _format_control_lock_note(target)
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
             await callback.message.edit_text(
-                f"💡 <b>Управление реле</b> для: {target_title}",
+                f"💡 <b>Управление реле</b> для: {target_title}{lock_note}",
                 reply_markup=kb,
             )
+
+
+def _format_control_lock_note(target: str) -> str:
+    """Возвращает короткую подпись о блокировке или активном цикле для шапки панели реле."""
+    meta = _target_meta.get(target, {})
+    if target == "all":
+        if meta.get("global_day_night_enabled"):
+            phase_ru = (
+                "День" if meta.get("global_day_night_phase") != "night" else "Ночь"
+            )
+            return (
+                f"\n🔒 <i>Основной свет: Цикл дня/ночи "
+                f"({meta.get('global_day_start', DEFAULT_DAY_START)}–"
+                f"{meta.get('global_day_end', DEFAULT_DAY_END)} · {phase_ru})</i>"
+            )
+        return ""
+    reason = meta.get("light_lock_reason")
+    if meta.get("light_locked") and reason:
+        return f"\n🔒 <i>Основной свет: {html.escape(str(reason))}</i>"
+    return ""
+
+
+def _format_day_night_menu_text(target: str, note: str = "") -> str:
+    """Форматирует текст подменю настройки цикла дня и ночи."""
+    meta = _target_meta.get(target, {})
+    prefix = f"{note}\n\n" if note else ""
+
+    if target == "all":
+        enabled = bool(meta.get("global_day_night_enabled", False))
+        start = str(meta.get("global_day_start") or DEFAULT_DAY_START)
+        end = str(meta.get("global_day_end") or DEFAULT_DAY_END)
+        phase = str(meta.get("global_day_night_phase") or "day")
+        status_str = "🟢 Вкл" if enabled else "⚪️ Выкл"
+        phase_str = "☀️ День" if phase != "night" else "🌙 Ночь"
+        return (
+            f"{prefix}☀️ <b>Световой день (все установки)</b>\n"
+            f"Статус: <b>{status_str}</b>\n"
+            f"Интервал: <code>{html.escape(start)}–{html.escape(end)}</code>\n"
+            f"Текущая фаза: <b>{phase_str}</b>"
+        )
+
+    inst_name = html.escape(str(meta.get("name") or f"Установка #{target}"))
+    enabled = bool(meta.get("day_night_enabled", False))
+    start = str(meta.get("day_start") or DEFAULT_DAY_START)
+    end = str(meta.get("day_end") or DEFAULT_DAY_END)
+    phase = str(meta.get("day_night_phase") or "day")
+    status_str = "🟢 Вкл" if enabled else "⚪️ Выкл"
+    phase_str = "☀️ День" if phase != "night" else "🌙 Ночь"
+
+    lock_block = ""
+    if meta.get("day_night_locked"):
+        g_dn = bool(meta.get("global_day_night_enabled", False))
+        g_mode = str(meta.get("global_light_mode") or "default")
+        if g_dn:
+            g_start = meta.get("global_day_start") or DEFAULT_DAY_START
+            g_end = meta.get("global_day_end") or DEFAULT_DAY_END
+            g_phase = (
+                "День" if meta.get("global_day_night_phase") != "night" else "Ночь"
+            )
+            lock_reason = (
+                f"действует общий цикл «День / Ночь» ({g_start}–{g_end}, {g_phase})"
+            )
+        elif g_mode in ("on", "off"):
+            mode_ru = "Вкл" if g_mode == "on" else "Выкл"
+            lock_reason = f"действует общий ручной свет ({mode_ru})"
+        else:
+            lock_reason = "переопределено общим режимом"
+        lock_block = f"\n\n🔒 <b>Заблокировано:</b> {html.escape(lock_reason)}"
+
+    return (
+        f"{prefix}☀️ <b>Световой день</b> — {inst_name}\n"
+        f"Статус: <b>{status_str}</b>\n"
+        f"Интервал: <code>{html.escape(start)}–{html.escape(end)}</code>\n"
+        f"Текущая фаза: <b>{phase_str}</b>{lock_block}"
+    )
+
+
+def _get_day_night_enabled_flag(target: str) -> bool:
+    meta = _target_meta.get(target, {})
+    if target == "all":
+        return bool(meta.get("global_day_night_enabled", False))
+    return bool(meta.get("day_night_enabled", False))
+
+
+def _update_meta_from_day_night_response(target: str, resp: dict[str, Any]) -> None:
+    if target == "all":
+        _store_global_meta(resp)
+        for item in resp.get("installations") or []:
+            if isinstance(item, dict) and item.get("installation_id") is not None:
+                _store_installation_meta(str(item["installation_id"]), item)
+    else:
+        _store_installation_meta(target, resp)
+
+
+@router.callback_query(F.data.startswith("ctrl:dn:menu:"))
+async def handle_control_day_night_menu(
+    callback: CallbackQuery,
+    api_client: GrowVisionApiClient,
+    state: FSMContext,
+) -> None:
+    """Открывает подменю светового дня для всех или конкретной установки."""
+    await callback.answer()
+    await state.clear()
+    target = callback.data.split(":")[3]
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    await _sync_pins_for_target(api_client, user_id, target)
+    enabled = _get_day_night_enabled_flag(target)
+    kb = get_day_night_menu_keyboard(target, enabled)
+    if callback.message and isinstance(callback.message, Message):
+        with contextlib.suppress(Exception):
+            await callback.message.edit_text(
+                _format_day_night_menu_text(target),
+                reply_markup=kb,
+            )
+
+
+@router.callback_query(F.data.startswith("ctrl:dn:toggle:"))
+async def handle_control_day_night_toggle(
+    callback: CallbackQuery,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Включает или выключает цикл дня и ночи для target."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    next_enabled = parts[3] in ("1", "on", "true")
+    target = parts[4]
+    user_id = callback.from_user.id if callback.from_user else 0
+
+    try:
+        resp = await api_client.control_day_night(user_id, target, enabled=next_enabled)
+        _update_meta_from_day_night_response(target, resp)
+        enabled = _get_day_night_enabled_flag(target)
+        kb = get_day_night_menu_keyboard(target, enabled)
+        note = "✅ Световой день включён" if enabled else "⚪️ Световой день выключен"
+        if callback.message and isinstance(callback.message, Message):
+            await callback.message.edit_text(
+                _format_day_night_menu_text(target, note=note),
+                reply_markup=kb,
+            )
+    except ApiError as exc:
+        err = format_api_error(exc, is_control=True)
+        kb = get_day_night_menu_keyboard(target, _get_day_night_enabled_flag(target))
+        if callback.message and isinstance(callback.message, Message):
+            await callback.message.edit_text(
+                f"❌ Ошибка настройки светового дня:\n{err}",
+                reply_markup=kb,
+            )
+
+
+@router.callback_query(F.data.startswith("ctrl:dn:interval:"))
+async def handle_control_day_night_interval_start(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """Переходит к FSM-вводу интервала светового дня в формате HH:MM-HH:MM."""
+    await callback.answer()
+    target = callback.data.split(":")[3]
+    await state.set_state(ControlDayNightStates.waiting_interval)
+    await state.update_data(target=target)
+
+    title = (
+        "всех установок"
+        if target == "all"
+        else html.escape(
+            str(_target_meta.get(target, {}).get("name") or f"установки #{target}")
+        )
+    )
+    if callback.message and isinstance(callback.message, Message):
+        await callback.message.edit_text(
+            f"🕒 Введите интервал светового дня для <b>{title}</b> в формате "
+            "<code>HH:MM-HH:MM</code> (например: <code>08:00-22:00</code> или <code>22:00-06:00</code>):",
+            reply_markup=get_cancel_inline_keyboard(f"ctrl:dn:menu:{target}"),
+        )
+
+
+@router.message(ControlDayNightStates.waiting_interval)
+async def process_control_day_night_interval_input(
+    message: Message,
+    state: FSMContext,
+    api_client: GrowVisionApiClient,
+) -> None:
+    """Валидирует интервал HH:MM-HH:MM и сохраняет через POST /api/control/day-night."""
+    data = await state.get_data()
+    target = str(data.get("target", "all"))
+    raw_interval = (message.text or "").strip()
+
+    try:
+        day_start, day_end = parse_day_night_interval(raw_interval)
+    except ValueError as exc:
+        await message.answer(
+            f"{exc}\nПовторите ввод в формате <code>HH:MM-HH:MM</code> (например: <code>08:00-22:00</code>):",
+            reply_markup=get_cancel_inline_keyboard(f"ctrl:dn:menu:{target}"),
+        )
+        return
+
+    user_id = message.from_user.id if message.from_user else 0
+    try:
+        resp = await api_client.control_day_night(
+            user_id, target, day_start=day_start, day_end=day_end
+        )
+        _update_meta_from_day_night_response(target, resp)
+        await state.clear()
+        await _sync_pins_for_target(api_client, user_id, target)
+        kb = get_day_night_menu_keyboard(target, _get_day_night_enabled_flag(target))
+        await message.answer(
+            _format_day_night_menu_text(
+                target,
+                note=f"✅ Интервал обновлён: <code>{day_start}–{day_end}</code>",
+            ),
+            reply_markup=kb,
+        )
+    except ApiError as exc:
+        err = format_api_error(exc, is_control=True)
+        await message.answer(
+            f"❌ Ошибка сохранения интервала:\n{err}",
+            reply_markup=get_cancel_inline_keyboard(f"ctrl:dn:menu:{target}"),
+        )
 
 
 def _format_rgb_submenu_text(target: str, channel: str, note: str = "") -> str:

@@ -613,6 +613,22 @@ function openColorPanel(channel) {
   updateChannelBadge(true, editingUnit);
 }
 
+function closeDayNightPanel() {
+  const dnCard = document.getElementById('unit-editor-day-night-card');
+  const dnHeader = document.getElementById('unit-editor-day-night-header');
+  if (dnCard) dnCard.classList.remove('is-open');
+  if (dnHeader) dnHeader.setAttribute('aria-expanded', 'false');
+}
+
+function toggleDayNightPanel() {
+  const dnCard = document.getElementById('unit-editor-day-night-card');
+  const dnHeader = document.getElementById('unit-editor-day-night-header');
+  if (!dnCard || dnCard.classList.contains('hidden')) return;
+  const nextOpen = !dnCard.classList.contains('is-open');
+  dnCard.classList.toggle('is-open', nextOpen);
+  if (dnHeader) dnHeader.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+}
+
 function syncUnitLightControls(unit) {
   const lightCard = document.getElementById('unit-editor-light-card');
   const flashCard = document.getElementById('unit-editor-flash-card');
@@ -620,14 +636,24 @@ function syncUnitLightControls(unit) {
   const flashToggle = document.getElementById('unit-editor-flash-toggle');
   const lightLockedEl = document.getElementById('unit-editor-light-locked');
   const flashLockedEl = document.getElementById('unit-editor-flash-locked');
+  const dnCard = document.getElementById('unit-editor-day-night-card');
+  const dnLockedEl = document.getElementById('unit-editor-day-night-locked');
+  const dnStatusEl = document.getElementById('unit-editor-day-night-status');
+  const dnToggle = document.getElementById('unit-editor-day-night-toggle');
+  const dnStartInput = document.getElementById('unit-editor-day-night-start');
+  const dnEndInput = document.getElementById('unit-editor-day-night-end');
+  const dnPhaseBadge = document.getElementById('unit-editor-day-night-phase-badge');
 
   const visible = Boolean(unit) && currentRole === 'developer';
   if (lightCard) lightCard.classList.toggle('hidden', !visible);
   if (flashCard) flashCard.classList.toggle('hidden', !visible);
+  if (dnCard) dnCard.classList.toggle('hidden', !visible);
 
   if (!visible) {
     if (lightLockedEl) lightLockedEl.classList.add('hidden');
     if (flashLockedEl) flashLockedEl.classList.add('hidden');
+    if (dnLockedEl) dnLockedEl.classList.add('hidden');
+    closeDayNightPanel();
     closeColorPanel();
     return;
   }
@@ -642,9 +668,17 @@ function syncUnitLightControls(unit) {
       ? Boolean(unit.individual_flash_state)
       : Boolean(unit.flash_state !== undefined ? unit.flash_state : false);
 
-  const lightLocked =
-    Boolean(unit.light_locked) ||
+  const instDnEnabled = Boolean(unit.day_night_enabled);
+  const dayStart = unit.day_start || '08:00';
+  const dayEnd = unit.day_end || '22:00';
+  const isNightPhase = unit.day_night_phase === 'night';
+  const phaseLabel = isNightPhase ? 'Ночь' : 'День';
+
+  const dayNightLocked =
+    Boolean(unit.day_night_locked) ||
+    Boolean(unit.global_day_night_enabled) ||
     (unit.global_light_mode !== undefined && unit.global_light_mode !== 'default');
+  const lightLocked = Boolean(unit.light_locked) || dayNightLocked || instDnEnabled;
   const flashLocked =
     Boolean(unit.flash_locked) ||
     (unit.global_flash_mode !== undefined && unit.global_flash_mode !== 'default');
@@ -654,6 +688,8 @@ function syncUnitLightControls(unit) {
     lightToggle.disabled = lightLocked || isArchived;
   }
   if (lightLockedEl) {
+    lightLockedEl.textContent =
+      unit.light_lock_reason || (dayNightLocked ? 'Заблокировано' : 'Световой день');
     lightLockedEl.classList.toggle('hidden', !lightLocked);
   }
 
@@ -665,6 +701,33 @@ function syncUnitLightControls(unit) {
     flashLockedEl.classList.toggle('hidden', !flashLocked);
   }
 
+  if (dnLockedEl) {
+    dnLockedEl.textContent = 'Заблокировано';
+    dnLockedEl.classList.toggle('hidden', !dayNightLocked);
+  }
+  if (dnStatusEl) {
+    dnStatusEl.textContent = instDnEnabled
+      ? `${dayStart}–${dayEnd} · ${phaseLabel}`
+      : 'Выкл';
+  }
+  if (dnToggle) {
+    dnToggle.checked = instDnEnabled;
+    dnToggle.disabled = dayNightLocked || isArchived;
+  }
+  if (dnStartInput) {
+    dnStartInput.value = dayStart;
+    dnStartInput.disabled = !instDnEnabled || dayNightLocked || isArchived;
+  }
+  if (dnEndInput) {
+    dnEndInput.value = dayEnd;
+    dnEndInput.disabled = !instDnEnabled || dayNightLocked || isArchived;
+  }
+  if (dnPhaseBadge) {
+    dnPhaseBadge.textContent = phaseLabel;
+    dnPhaseBadge.classList.toggle('is-night', isNightPhase);
+    dnPhaseBadge.classList.toggle('is-off', !instDnEnabled);
+  }
+
   updateChannelBadge(false, unit);
   updateChannelBadge(true, unit);
   if (
@@ -672,6 +735,82 @@ function syncUnitLightControls(unit) {
     !isChannelRgb(unit, activeColorChannel === 'flash')
   ) {
     closeColorPanel();
+  }
+}
+
+async function handleUnitDayNightChange({ toggleChanged = false } = {}) {
+  if (!editingUnit || currentRole !== 'developer' || editingUnit.is_archived) return;
+  const dnToggle = document.getElementById('unit-editor-day-night-toggle');
+  const dnStartInput = document.getElementById('unit-editor-day-night-start');
+  const dnEndInput = document.getElementById('unit-editor-day-night-end');
+  if (!dnToggle || !dnStartInput || !dnEndInput) return;
+
+  const dayNightLocked =
+    Boolean(editingUnit.day_night_locked) ||
+    Boolean(editingUnit.global_day_night_enabled) ||
+    (editingUnit.global_light_mode !== undefined &&
+      editingUnit.global_light_mode !== 'default');
+  if (dayNightLocked) {
+    syncUnitLightControls(editingUnit);
+    return;
+  }
+
+  const prevEnabled = Boolean(editingUnit.day_night_enabled);
+  const prevStart = editingUnit.day_start || '08:00';
+  const prevEnd = editingUnit.day_end || '22:00';
+  const nextEnabled = Boolean(dnToggle.checked);
+  const nextStart = String(dnStartInput.value || prevStart).trim();
+  const nextEnd = String(dnEndInput.value || prevEnd).trim();
+
+  if (!/^\d{2}:\d{2}$/.test(nextStart) || !/^\d{2}:\d{2}$/.test(nextEnd)) {
+    showEditorError('Укажите корректное время начала и окончания (ЧЧ:ММ)');
+    if (toggleChanged) dnToggle.checked = prevEnabled;
+    dnStartInput.value = prevStart;
+    dnEndInput.value = prevEnd;
+    return;
+  }
+  if (nextStart === nextEnd) {
+    showEditorError('Время начала и окончания светового дня не могут совпадать');
+    if (toggleChanged) dnToggle.checked = prevEnabled;
+    dnStartInput.value = prevStart;
+    dnEndInput.value = prevEnd;
+    return;
+  }
+
+  const targetId = editingUnit.id;
+  showEditorError('');
+  dnToggle.disabled = true;
+  dnStartInput.disabled = true;
+  dnEndInput.disabled = true;
+
+  try {
+    const res = await api.controlDayNight({
+      target: targetId,
+      enabled: nextEnabled,
+      day_start: nextStart,
+      day_end: nextEnd,
+    });
+    if (editingUnit && Number(editingUnit.id) === Number(targetId) && res) {
+      Object.assign(editingUnit, res);
+      syncUnitLightControls(editingUnit);
+    }
+    showToast(
+      nextEnabled
+        ? `Световой день «${editingUnit ? editingUnit.name : ''}»: ${nextStart}–${nextEnd}`
+        : `Световой день «${editingUnit ? editingUnit.name : ''}»: выключен`
+    );
+    if (typeof onUnitSavedCallback === 'function') {
+      await onUnitSavedCallback();
+    }
+  } catch (err) {
+    if (toggleChanged) dnToggle.checked = prevEnabled;
+    dnStartInput.value = prevStart;
+    dnEndInput.value = prevEnd;
+    showEditorError(err.message || 'Не удалось обновить световой день');
+  } finally {
+    if (editingUnit && Number(editingUnit.id) === Number(targetId)) {
+      syncUnitLightControls(editingUnit);
+    }
   }
 }
 
@@ -686,6 +825,9 @@ async function handleUnitLightToggle(isFlash) {
     ? Boolean(editingUnit.flash_locked) ||
       (editingUnit.global_flash_mode !== undefined && editingUnit.global_flash_mode !== 'default')
     : Boolean(editingUnit.light_locked) ||
+      Boolean(editingUnit.day_night_locked) ||
+      Boolean(editingUnit.day_night_enabled) ||
+      Boolean(editingUnit.global_day_night_enabled) ||
       (editingUnit.global_light_mode !== undefined && editingUnit.global_light_mode !== 'default');
   if (isLocked) {
     syncUnitLightControls(editingUnit);
@@ -1270,6 +1412,10 @@ export function initUnitEditor() {
   const flashToggle = document.getElementById('unit-editor-flash-toggle');
   const lightCard = document.getElementById('unit-editor-light-card');
   const flashCard = document.getElementById('unit-editor-flash-card');
+  const dnHeader = document.getElementById('unit-editor-day-night-header');
+  const dnToggle = document.getElementById('unit-editor-day-night-toggle');
+  const dnStartInput = document.getElementById('unit-editor-day-night-start');
+  const dnEndInput = document.getElementById('unit-editor-day-night-end');
 
   if (closeBtn) closeBtn.addEventListener('click', closeUnitEditorModal);
   if (cancelBtn) cancelBtn.addEventListener('click', closeUnitEditorModal);
@@ -1291,6 +1437,25 @@ export function initUnitEditor() {
   if (flashToggle) {
     flashToggle.addEventListener('change', () => handleUnitLightToggle(true));
   }
+  if (dnHeader) {
+    dnHeader.addEventListener('click', toggleDayNightPanel);
+    dnHeader.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggleDayNightPanel();
+      }
+    });
+  }
+  if (dnToggle) {
+    dnToggle.addEventListener('change', () =>
+      handleUnitDayNightChange({ toggleChanged: true })
+    );
+  }
+  [dnStartInput, dnEndInput].forEach((inputEl) => {
+    if (inputEl) {
+      inputEl.addEventListener('change', () => handleUnitDayNightChange());
+    }
+  });
 
   [lightCard, flashCard].forEach((card, idx) => {
     if (!card) return;

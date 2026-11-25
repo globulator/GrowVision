@@ -6,9 +6,12 @@ import re
 from typing import Any
 
 DEFAULT_COLOR_HEX = "#FFFFFF"
+DEFAULT_DAY_START = "08:00"
+DEFAULT_DAY_END = "22:00"
 
 _HEX_RE = re.compile(r"^[0-9a-fA-F]{6}$")
 _INT_STR_RE = re.compile(r"^-?\d+$")
+_HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
 
 def parse_gpio_pins(value: Any, *, field_label: str = "GPIO пин") -> list[int]:
@@ -83,3 +86,37 @@ def normalize_hex_color(value: Any, *, default: str | None = None) -> str:
             "Некорректный HEX-цвет. Используйте формат #RRGGBB (например, #FF8800)"
         )
     return f"#{cleaned.upper()}"
+
+
+def normalize_hhmm(value: Any, *, field_label: str = "Время") -> str:
+    """Валидирует время HH:MM (00:00–23:59) и нормализует к 'HH:MM'."""
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise TypeError(f"{field_label}: ожидается время в формате HH:MM (00:00–23:59)")
+    raw = value.strip()
+    match = _HHMM_RE.match(raw)
+    if not match:
+        raise ValueError(
+            f"{field_label}: некорректное время '{raw}'. Используйте формат HH:MM (например, 08:00)"
+        )
+    return f"{int(match.group(1)):02d}:{int(match.group(2)):02d}"
+
+
+def parse_day_night_interval(raw: Any) -> tuple[str, str]:
+    """Парсит строку интервала вида 'HH:MM-HH:MM' и запрещает start == end."""
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(
+            "Введите интервал в формате HH:MM-HH:MM (например: 08:00-22:00)"
+        )
+    cleaned = raw.strip().replace("–", "-").replace("—", "-")
+    parts = [p.strip() for p in cleaned.split("-")]
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(
+            "Некорректный формат интервала. Введите HH:MM-HH:MM (например: 08:00-22:00)"
+        )
+    start = normalize_hhmm(parts[0], field_label="Начало дня")
+    end = normalize_hhmm(parts[1], field_label="Конец дня")
+    if start == end:
+        raise ValueError(
+            "Время начала и окончания светового дня не могут совпадать (start == end)"
+        )
+    return start, end

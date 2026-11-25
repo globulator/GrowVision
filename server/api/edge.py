@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from server.api.deps import format_utc_z, get_db, verify_edge_key
 from server.core.area import calculate_area_display
 from server.core.light_state import (
+    get_global_day_night_settings,
     get_global_light_mode,
     get_installation_light_snapshot,
 )
@@ -160,8 +161,10 @@ def edge_heartbeat(
     )
 
     # 4. Формирование списка активных установок и целевых состояний света/вспышки
+    local_now_time = datetime.now().time()
     global_light_mode = get_global_light_mode(db, is_flash=False)
     global_flash_mode = get_global_light_mode(db, is_flash=True)
+    global_day_night = get_global_day_night_settings(db, now_time=local_now_time)
 
     active_installations = (
         db.query(Installation).filter(Installation.is_archived.is_(False)).all()
@@ -174,6 +177,8 @@ def edge_heartbeat(
             inst,
             global_light_mode=global_light_mode,
             global_flash_mode=global_flash_mode,
+            global_day_night=global_day_night,
+            now_time=local_now_time,
         )
         active_inst_data.append(
             HeartbeatActiveInstallation(
@@ -249,8 +254,10 @@ def edge_claim_command(
     # 5. Формирование структуры команды
     payload = json.loads(oldest_pending.payload) if oldest_pending.payload else None
 
+    local_now_time = datetime.now().time()
     global_light_mode = get_global_light_mode(db, is_flash=False)
     global_flash_mode = get_global_light_mode(db, is_flash=True)
+    global_day_night = get_global_day_night_settings(db, now_time=local_now_time)
 
     def _serialize_cmd_inst(item: Installation) -> dict[str, Any]:
         cam_ids = [c.hardware_id for c in item.cameras]
@@ -259,6 +266,8 @@ def edge_claim_command(
             item,
             global_light_mode=global_light_mode,
             global_flash_mode=global_flash_mode,
+            global_day_night=global_day_night,
+            now_time=local_now_time,
         )
         return {
             "id": item.id,
