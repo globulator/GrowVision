@@ -266,6 +266,7 @@ async def control_snap(
                 meas.area_px if meas else None,
                 cap.aruco_area_px,
                 cap.installation.aruco_size_mm if cap.installation else None,
+                area_cm2=meas.area_cm2 if meas else None,
             )
             captures_data.append(
                 {

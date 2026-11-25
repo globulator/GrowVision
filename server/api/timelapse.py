@@ -76,14 +76,54 @@ def get_timelapse_frames(
 
     frames = []
     for cap in captures:
+        measurements = list(cap.plant_measurements or [])
+        plants_count = len(measurements)
+        total_area_px = round(sum(float(m.area_px) for m in measurements), 1)
+        avg_area_px = (
+            round(total_area_px / plants_count, 1) if plants_count > 0 else 0.0
+        )
+
+        has_aruco_marker = (
+            cap.aruco_area_px is not None and float(cap.aruco_area_px) > 0
+        )
+        has_persp_cm2 = plants_count > 0 and all(
+            m.area_cm2 is not None for m in measurements
+        )
+        has_ratio_cal = inst.aruco_size_mm is not None and float(inst.aruco_size_mm) > 0
+        has_aruco = bool(has_aruco_marker and (has_persp_cm2 or has_ratio_cal))
+
+        total_area_cm2: float | None = None
+        avg_area_cm2: float | None = None
+        if has_aruco:
+            if plants_count == 0:
+                total_area_cm2 = 0.0
+                avg_area_cm2 = 0.0
+            elif has_persp_cm2:
+                total_area_cm2 = round(
+                    sum(
+                        float(m.area_cm2)
+                        for m in measurements
+                        if m.area_cm2 is not None
+                    ),
+                    2,
+                )
+                avg_area_cm2 = round(total_area_cm2 / plants_count, 2)
+            else:
+                scale = (float(inst.aruco_size_mm) / 10.0) ** 2
+                total_area_cm2 = round(
+                    total_area_px * scale / float(cap.aruco_area_px), 2
+                )
+                avg_area_cm2 = round(total_area_cm2 / plants_count, 2)
+
         meas = next(
-            (m for m in cap.plant_measurements if m.plant_index == 0),
+            (m for m in measurements if m.plant_index == 0),
             None,
         )
         area_display = calculate_area_display(
             meas.area_px if meas else None,
             cap.aruco_area_px,
             inst.aruco_size_mm,
+            area_cm2=meas.area_cm2 if meas else None,
         )
         frames.append(
             {
@@ -93,6 +133,12 @@ def get_timelapse_frames(
                 "raw_url": f"/{resolve_capture_display_rel_path(cap.raw_image_path, get_media_dir())}",
                 "annotated_url": f"/{cap.annotated_image_path}",
                 "area_display": area_display,
+                "total_area_px": total_area_px,
+                "avg_area_px": avg_area_px,
+                "total_area_cm2": total_area_cm2,
+                "avg_area_cm2": avg_area_cm2,
+                "plants_count": plants_count,
+                "has_aruco": has_aruco,
             }
         )
 

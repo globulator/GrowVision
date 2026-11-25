@@ -28,6 +28,7 @@ from server.core.rgb import (
 from server.core.state import app_state
 from server.core.system_status import check_rpi_online, is_debug_mode, is_rpi_online
 from server.db.models import Camera, EdgeCommand, Installation, SystemSetting, User
+from shared.markers import generate_aruco_marker_svg, generate_color_marker_svg
 
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
 
@@ -319,6 +320,42 @@ def list_cameras(
     return [serialize_camera(cam, db) for cam in cameras]
 
 
+@router.get("/markers/aruco.svg")
+def download_aruco_marker_svg(
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
+    size_mm: Annotated[float, Query(ge=10.0, le=300.0)] = 50.0,
+) -> Response:
+    """Генерирует и отдаёт готовый к печати SVG ArUco-маркер DICT_4X4_50 (ID=0)."""
+    svg_content = generate_aruco_marker_svg(size_mm=size_mm)
+    filename = f"growvision_aruco_4x4_id0_{size_mm:g}mm.svg"
+    return Response(
+        content=svg_content,
+        media_type="image/svg+xml; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/markers/color.svg")
+def download_color_marker_svg(
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
+    size_mm: Annotated[float, Query(ge=10.0, le=300.0)] = 50.0,
+) -> Response:
+    """Генерирует и отдаёт готовый к печати SVG-шаблон эталонного цветового маркера."""
+    svg_content = generate_color_marker_svg(size_mm=size_mm)
+    filename = f"growvision_color_marker_{size_mm:g}mm.svg"
+    return Response(
+        content=svg_content,
+        media_type="image/svg+xml; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @router.post("/{camera_id}/bind", response_model=dict[str, Any])
 def bind_camera(
     camera_id: int,
@@ -509,6 +546,7 @@ def start_camera_live(
     session.is_paused = False
     session.mode = "raw"
     session.device_online = True
+    session.color_marker_detected = False
     session.stream_error = None
     session.stream_url = None
     session.latest_frame = None
@@ -683,6 +721,7 @@ async def get_camera_live_status(
             "is_paused": False,
             "mode": "raw",
             "device_online": True,
+            "color_marker_detected": False,
             "stream_error": None,
             "fps": 0.0,
             "latency_ms": 0,
@@ -1296,3 +1335,95 @@ def save_camera_controls(
     if updated_controls is not None:
         resp["controls"] = updated_controls
     return resp
+
+
+@router.post("/{camera_id}/auto-color-calibrate", response_model=dict[str, Any])
+async def auto_color_calibrate_camera(
+    camera_id: int,
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Запуск автоцветокоррекции по эталонному цветовому маркеру в кадре."""
+    check_rpi_online(db)
+
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Камера не найдена",
+        )
+
+    cmd = EdgeCommand(
+        command_type="AUTO_COLOR_CALIBRATE",
+        installation_id=cam.installation_id,
+        is_global=cam.installation_id is None,
+        payload=json.dumps({"camera_hardware_id": cam.hardware_id}),
+        status="pending",
+    )
+    db.add(cmd)
+    db.commit()
+    db.refresh(cmd)
+
+    start_time = time.monotonic()
+    finished_cmd = None
+    while time.monotonic() - start_time < 10.0:
+        await asyncio.sleep(0.05)
+        db.expire_all()
+        check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
+        if not check_cmd:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Команда не найдена",
+            )
+        if check_cmd.status == "timeout":
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="Превышено время ожидания ответа Raspberry Pi",
+            )
+        if check_cmd.status in ("done", "error"):
+            finished_cmd = check_cmd
+            break
+
+    if not finished_cmd:
+        db.expire_all()
+        check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
+        if check_cmd and check_cmd.status == "pending":
+            check_cmd.status = "timeout"
+            db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Превышено время ожидания ответа Raspberry Pi",
+        )
+
+    if finished_cmd.status == "error":
+        app_state.pop_command_data(finished_cmd.id)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=finished_cmd.result_message
+            or "Цветовой маркер не обнаружен в кадре",
+        )
+
+    cmd_data = app_state.pop_command_data(finished_cmd.id) or {}
+    rgb = (
+        clamp_rgb_dict(cmd_data["rgb"])
+        if isinstance(cmd_data.get("rgb"), dict)
+        else None
+    )
+    if rgb is None:
+        rgb_setting = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == f"camera_rgb_{cam.hardware_id}")
+            .first()
+        )
+        rgb = {"r": 1.0, "g": 1.0, "b": 1.0}
+        if rgb_setting and rgb_setting.value:
+            with contextlib.suppress(Exception):
+                rgb = clamp_rgb_dict(json.loads(rgb_setting.value))
+
+    return {
+        "status": "done",
+        "camera_id": cam.id,
+        "hardware_id": cam.hardware_id,
+        "rgb": rgb,
+        "result_message": finished_cmd.result_message or "Автоцветокоррекция выполнена",
+    }

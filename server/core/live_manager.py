@@ -25,6 +25,7 @@ class LiveCameraSession:
         self.is_active: bool = False
         self.mode: str = "raw"
         self.device_online: bool = True
+        self.color_marker_detected: bool = False
         self.stream_error: str | None = None
         self._last_state_probe_at: float = 0.0
         self.last_heartbeat: float = time.time()
@@ -161,6 +162,7 @@ class LiveCameraSession:
             "is_paused": self.is_paused,
             "mode": self.mode,
             "device_online": self.device_online,
+            "color_marker_detected": self.color_marker_detected,
             "stream_error": self.stream_error,
             "fps": effective_fps,
             "latency_ms": effective_lat,
@@ -261,6 +263,7 @@ class LiveSessionManager:
             session.latest_annotated_frame = None
             session.mode = "raw"
             session.device_online = True
+            session.color_marker_detected = False
             session.stream_error = None
             session.last_proxied_at = 0.0
             session.fps = 0.0

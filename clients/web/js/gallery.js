@@ -11,9 +11,12 @@ let currentRole = 'guest';
 
 // Загруженные метаданные кадров с сервера
 let allRawFrames = [];
+let currentCameraFrames = [];
 let availableCameras = [];
 let selectedCameraIndex = 0; // индекс в availableCameras
 let currentLayer = 'raw'; // 'raw' или 'ann'
+let isChartOpen = false;
+let chartMode = 'auto'; // 'auto' | 'cm2' | 'px'
 
 // Кеш загруженных изображений для текущей выборки
 let loadedImages = []; // Array of Image objects
@@ -42,8 +45,11 @@ export async function openGalleryModal(unit) {
   currentUnit = unit;
   currentLayer = 'raw';
   isPlaying = false;
+  isChartOpen = false;
+  chartMode = 'auto';
   galleryCacheBuster = Date.now();
   clearInterval(playTimer);
+  updateChartPanelUi();
 
   const modal = document.getElementById('modal-gallery');
   if (!modal) return;
@@ -123,6 +129,10 @@ export function closeGalleryModal() {
   });
   loadedImages = [];
   allRawFrames = [];
+  currentCameraFrames = [];
+  isChartOpen = false;
+  chartMode = 'auto';
+  updateChartPanelUi();
   currentUnit = null;
 }
 
@@ -200,6 +210,10 @@ async function loadCameraFrames() {
     filtered = [...allRawFrames].sort(
       (a, b) => new Date(a.captured_at) - new Date(b.captured_at)
     );
+  }
+  currentCameraFrames = filtered;
+  if (isChartOpen) {
+    renderGrowthChart();
   }
 
   // Предзагрузка всех кадров в Image объекты (до 6 параллельно, 1 повтор при ошибке)
@@ -511,8 +525,9 @@ function setControlsDisabled(disabled) {
   const slider = document.getElementById('gallery-slider');
   const durInput = document.getElementById('gallery-duration-input');
   const downloadBtn = document.getElementById('gallery-btn-download');
+  const chartBtn = document.getElementById('gallery-btn-chart');
 
-  const btns = [btnFirst, btnPrev, btnPlay, btnNext, btnLast, slider, durInput, downloadBtn];
+  const btns = [btnFirst, btnPrev, btnPlay, btnNext, btnLast, slider, durInput, downloadBtn, chartBtn];
   btns.forEach((b) => {
     if (b) b.disabled = disabled;
   });
@@ -752,6 +767,243 @@ function setupGestures() {
   );
 }
 
+// Подготовка единого ряда данных графика без скачков единиц измерения (см² vs px)
+export function prepareGrowthChartSeries(frames, mode = 'auto') {
+  const list = Array.isArray(frames) ? frames : [];
+  if (list.length === 0) {
+    return { unit: 'px', unitLabel: 'px', points: [] };
+  }
+
+  const allCalibrated = list.every(
+    (f) => f && f.total_area_cm2 !== null && f.total_area_cm2 !== undefined
+  );
+  let targetUnit = 'px';
+  let sourceFrames = list;
+
+  if (mode === 'cm2') {
+    targetUnit = 'cm2';
+    sourceFrames = list.filter(
+      (f) => f && f.total_area_cm2 !== null && f.total_area_cm2 !== undefined
+    );
+  } else if (mode === 'px') {
+    targetUnit = 'px';
+    sourceFrames = list;
+  } else {
+    // Режим «Авто»: см² только если у ВСЕХ кадров есть калибровка ArUco, иначе весь график в px
+    targetUnit = allCalibrated ? 'cm2' : 'px';
+    sourceFrames = list;
+  }
+
+  const points = sourceFrames.map((f) => {
+    const origIdx = list.indexOf(f);
+    const totalVal =
+      targetUnit === 'cm2'
+        ? Number(f.total_area_cm2 || 0)
+        : Number(f.total_area_px || 0);
+    const avgVal =
+      targetUnit === 'cm2'
+        ? Number(f.avg_area_cm2 || 0)
+        : Number(f.avg_area_px || 0);
+    return {
+      frameIndex: origIdx >= 0 ? origIdx : 0,
+      capturedAt: f.captured_at || '',
+      plantsCount: Number(f.plants_count || 0),
+      total: totalVal,
+      avg: avgVal,
+    };
+  });
+
+  return {
+    unit: targetUnit,
+    unitLabel: targetUnit === 'cm2' ? 'см²' : 'px',
+    points,
+  };
+}
+
+function updateChartPanelUi() {
+  const panel = document.getElementById('gallery-chart-panel');
+  const btn = document.getElementById('gallery-btn-chart');
+  if (panel) {
+    panel.classList.toggle('hidden', !isChartOpen);
+  }
+  if (btn) {
+    btn.classList.toggle('active', isChartOpen);
+  }
+  const modeBtns = document.querySelectorAll('#gallery-chart-mode-control .seg-btn');
+  modeBtns.forEach((b) => {
+    b.classList.toggle('active', b.dataset.chartMode === chartMode);
+  });
+}
+
+function formatChartShortTime(isoStr) {
+  if (!isoStr) return '—';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function renderGrowthChart() {
+  updateChartPanelUi();
+  const svg = document.getElementById('gallery-chart-svg');
+  const emptyEl = document.getElementById('gallery-chart-empty');
+  const unitBadge = document.getElementById('gallery-chart-unit-badge');
+  const tooltip = document.getElementById('gallery-chart-tooltip');
+  if (!svg) return;
+
+  if (tooltip) tooltip.classList.add('hidden');
+
+  const { unit, unitLabel, points } = prepareGrowthChartSeries(
+    currentCameraFrames,
+    chartMode
+  );
+  if (unitBadge) {
+    unitBadge.textContent = `Единицы: ${unitLabel}`;
+  }
+
+  if (!points || points.length === 0) {
+    svg.innerHTML = '';
+    svg.classList.add('hidden');
+    if (emptyEl) {
+      emptyEl.textContent =
+        chartMode === 'cm2'
+          ? 'Нет кадров с ArUco-калибровкой'
+          : 'Нет данных для построения графика';
+      emptyEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  svg.classList.remove('hidden');
+  if (emptyEl) emptyEl.classList.add('hidden');
+
+  const W = 760;
+  const H = 230;
+  const padL = 62;
+  const padR = 20;
+  const padT = 16;
+  const padB = 34;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  const maxRaw = Math.max(
+    1,
+    ...points.map((p) => Math.max(p.total, p.avg))
+  );
+  const yMax = maxRaw * 1.12;
+
+  const getX = (i) =>
+    points.length === 1
+      ? padL + plotW / 2
+      : padL + (i / (points.length - 1)) * plotW;
+  const getY = (val) => padT + plotH - (val / yMax) * plotH;
+
+  const gridSteps = 4;
+  const svgParts = [];
+
+  // Сетка и подписи оси Y
+  for (let s = 0; s <= gridSteps; s++) {
+    const ratio = s / gridSteps;
+    const val = yMax * (1 - ratio);
+    const y = padT + ratio * plotH;
+    const fmtVal = unit === 'cm2' ? val.toFixed(1) : String(Math.round(val));
+    svgParts.push(
+      `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="rgba(148,163,184,0.22)" stroke-width="1"/>`
+    );
+    svgParts.push(
+      `<text x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" fill="#94a3b8" font-size="11" font-family="monospace">${fmtVal}</text>`
+    );
+  }
+
+  // Подписи оси X (первый, средний, последний)
+  const labelIndices =
+    points.length === 1
+      ? [0]
+      : points.length === 2
+        ? [0, 1]
+        : [0, Math.floor((points.length - 1) / 2), points.length - 1];
+  labelIndices.forEach((idx, pos) => {
+    const x = getX(idx);
+    const anchor =
+      points.length === 1
+        ? 'middle'
+        : pos === 0
+          ? 'start'
+          : pos === labelIndices.length - 1
+            ? 'end'
+            : 'middle';
+    svgParts.push(
+      `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="${anchor}" fill="#94a3b8" font-size="11">${formatChartShortTime(points[idx].capturedAt)}</text>`
+    );
+  });
+
+  // Линии: Общая площадь (#10b981) и Средняя площадь куста (#38bdf8)
+  const totalCoords = points.map((p, i) => `${getX(i).toFixed(1)},${getY(p.total).toFixed(1)}`);
+  const avgCoords = points.map((p, i) => `${getX(i).toFixed(1)},${getY(p.avg).toFixed(1)}`);
+
+  if (points.length >= 2) {
+    svgParts.push(
+      `<polyline fill="none" stroke="#10b981" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" points="${totalCoords.join(' ')}"/>`
+    );
+    svgParts.push(
+      `<polyline fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-dasharray="5 3" stroke-linejoin="round" stroke-linecap="round" points="${avgCoords.join(' ')}"/>`
+    );
+  }
+
+  // Точки для тултипов и перехода к кадру
+  points.forEach((p, i) => {
+    const cx = getX(i).toFixed(1);
+    const cyTot = getY(p.total).toFixed(1);
+    const cyAvg = getY(p.avg).toFixed(1);
+    svgParts.push(
+      `<circle class="chart-point chart-point-total" data-idx="${i}" cx="${cx}" cy="${cyTot}" r="4.5" fill="#10b981" stroke="#0f172a" stroke-width="1.5"/>`
+    );
+    svgParts.push(
+      `<circle class="chart-point chart-point-avg" data-idx="${i}" cx="${cx}" cy="${cyAvg}" r="4" fill="#38bdf8" stroke="#0f172a" stroke-width="1.5"/>`
+    );
+  });
+
+  svg.innerHTML = svgParts.join('');
+
+  svg.querySelectorAll('.chart-point').forEach((circle) => {
+    circle.addEventListener('mouseenter', () => {
+      const idx = parseInt(circle.dataset.idx, 10);
+      const p = points[idx];
+      if (!p || !tooltip) return;
+      const fmtTotal = unit === 'cm2' ? p.total.toFixed(2) : String(Math.round(p.total));
+      const fmtAvg = unit === 'cm2' ? p.avg.toFixed(2) : String(Math.round(p.avg));
+      tooltip.innerHTML = `
+        <div class="tooltip-time">${formatChartShortTime(p.capturedAt)}</div>
+        <div>Кустов: <strong>${p.plantsCount}</strong></div>
+        <div class="tooltip-total">Общая: <strong>${fmtTotal} ${unitLabel}</strong></div>
+        <div class="tooltip-avg">Средняя: <strong>${fmtAvg} ${unitLabel}</strong></div>
+      `;
+      const cxNum = parseFloat(circle.getAttribute('cx') || '0');
+      const cyNum = parseFloat(circle.getAttribute('cy') || '0');
+      tooltip.style.left = `${Math.min(82, Math.max(8, (cxNum / W) * 100))}%`;
+      tooltip.style.top = `${Math.max(6, (cyNum / H) * 100 - 16)}%`;
+      tooltip.classList.remove('hidden');
+    });
+    circle.addEventListener('mouseleave', () => {
+      if (tooltip) tooltip.classList.add('hidden');
+    });
+    circle.addEventListener('click', () => {
+      const idx = parseInt(circle.dataset.idx, 10);
+      const p = points[idx];
+      if (!p) return;
+      if (p.frameIndex >= 0 && p.frameIndex < loadedImages.length) {
+        pausePlayback();
+        currentFrameIndex = p.frameIndex;
+        renderCurrentFrame();
+      }
+    });
+  });
+}
+
 // Инициализация событий галереи
 export function initGallery() {
   const modal = document.getElementById('modal-gallery');
@@ -824,6 +1076,32 @@ export function initGallery() {
   // Кнопка скачать
   const downloadBtn = document.getElementById('gallery-btn-download');
   if (downloadBtn) downloadBtn.addEventListener('click', handleDownload);
+
+  // Кнопка «График роста» и переключатель режимов графика
+  const chartBtn = document.getElementById('gallery-btn-chart');
+  if (chartBtn) {
+    chartBtn.addEventListener('click', () => {
+      isChartOpen = !isChartOpen;
+      if (isChartOpen) {
+        chartMode = 'auto';
+        renderGrowthChart();
+      } else {
+        updateChartPanelUi();
+      }
+    });
+  }
+  const chartModeControl = document.getElementById('gallery-chart-mode-control');
+  if (chartModeControl) {
+    chartModeControl.querySelectorAll('.seg-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextMode = btn.dataset.chartMode;
+        if (nextMode && nextMode !== chartMode) {
+          chartMode = nextMode;
+          renderGrowthChart();
+        }
+      });
+    });
+  }
 
   // Валидация поля длительности и динамический расчет FPS
   const durInput = document.getElementById('gallery-duration-input');

@@ -190,4 +190,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  autoColorCalibrate: (cameraId) =>
+    request(`/api/cameras/${Number(cameraId)}/auto-color-calibrate`, {
+      method: 'POST',
+    }),
 };
