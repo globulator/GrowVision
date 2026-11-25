@@ -5,6 +5,7 @@ import socket
 import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -12,21 +13,40 @@ from shared.logger import get_logger
 
 logger = get_logger("edge_agent.live_stream")
 
+USTREAMER_FORMAT_MAP: dict[str, str] = {
+    "MJPG": "MJPEG",
+    "MJPEG": "MJPEG",
+    "JPEG": "JPEG",
+    "YUYV": "YUYV",
+    "YVYU": "YVYU",
+    "UYVY": "UYVY",
+    "YUV420": "YUV420",
+    "YVU420": "YVU420",
+    "RGB565": "RGB565",
+    "RGB24": "RGB24",
+    "BGR24": "BGR24",
+    "GREY": "GREY",
+}
+
 
 class LiveStreamManager:
-    """Менеджер Live-стрима камеры на базе uStreamer или mock-генератора."""
+    """Менеджер Live-стрима камеры на базе uStreamer, OpenCV V4L2 или mock-генератора."""
 
     def __init__(
         self,
         mode: str = "mock",
         v4l_by_id_dir: Any = None,
         client: Any = None,
+        mock_cameras: bool = False,
     ):
         self.mode = mode.lower()
-        self.v4l_by_id_dir = v4l_by_id_dir
+        self.v4l_by_id_dir = Path(v4l_by_id_dir) if v4l_by_id_dir else None
         self.client = client
+        self.mock_cameras = bool(mock_cameras)
 
         self.lock = threading.Lock()
+        self._cap_lock = threading.Lock()
+        self._cap: Any = None
         self.process: subprocess.Popen[Any] | None = None
         self.active_camera_id: str | None = None
         self.current_width: int = 1280
@@ -44,6 +64,53 @@ class LiveStreamManager:
         self._stop_event = threading.Event()
         self._mock_counter: int = 0
         self._last_send_rtt_ms: float = 0.0
+        self._resolution_verified: bool = False
+
+    @property
+    def use_mock_cameras(self) -> bool:
+        """True, если стрим использует синтетические кадры (mode='mock' и mock_cameras=True)."""
+        return self.mode == "mock" and self.mock_cameras
+
+    def _resolve_dev_path(self, camera_hardware_id: str | None) -> str | None:
+        """Возвращает реальный путь к видеоустройству (/dev/videoX) по hardware_id."""
+        if not camera_hardware_id:
+            return None
+        base_by_id = self.v4l_by_id_dir or Path("/dev/v4l/by-id")
+        candidates = [
+            base_by_id / camera_hardware_id,
+            base_by_id.parent / "by-path" / camera_hardware_id,
+            Path("/dev/v4l/by-id") / camera_hardware_id,
+            Path("/dev/v4l/by-path") / camera_hardware_id,
+        ]
+        for cand in candidates:
+            if cand.exists():
+                return os.path.realpath(str(cand))
+        if camera_hardware_id.startswith("video"):
+            dev_node = Path("/dev") / camera_hardware_id
+            if dev_node.exists():
+                return str(dev_node)
+        if camera_hardware_id.startswith("/dev/") and Path(camera_hardware_id).exists():
+            return camera_hardware_id
+        # Для тестов с замоканным subprocess/ustreamer (когда устройства нет на диске)
+        return str(base_by_id / camera_hardware_id)
+
+    @staticmethod
+    def _is_port_open(host: str, port: int) -> bool:
+        """Быстрая проверка, слушает ли локальный TCP-порт."""
+        with (
+            contextlib.suppress(OSError),
+            socket.create_connection((host, port), timeout=0.1),
+        ):
+            return True
+        return False
+
+    def _release_capture(self) -> None:
+        """Безопасно закрывает OpenCV VideoCapture под замком."""
+        with self._cap_lock:
+            if self._cap is not None:
+                with contextlib.suppress(Exception):
+                    self._cap.release()
+                self._cap = None
 
     def _resolve_stream_url(self, port: int) -> str | None:
         """Вычисляет URL ustreamer на интерфейсе, смотрящем в сторону сервера."""
@@ -93,6 +160,8 @@ class LiveStreamManager:
         with self.lock:
             self.is_paused = paused
             self.last_activity_time = time.time()
+            if paused:
+                self._release_capture()
             logger.info(f"[LIVE] Статус паузы изменен: {paused}")
 
     def touch(self) -> None:
@@ -135,18 +204,16 @@ class LiveStreamManager:
             self.current_format = pixel_format
             self.current_port = port
             self.last_activity_time = time.time()
+            self._resolution_verified = False
             self._stop_event.clear()
 
             has_ustreamer = shutil.which("ustreamer") is not None
-            if self.mode == "rpi" and has_ustreamer:
-                dev_path = f"/dev/v4l/by-id/{camera_hardware_id}"
-                if (
-                    self.v4l_by_id_dir
-                    and (self.v4l_by_id_dir / camera_hardware_id).exists()
-                ):
-                    dev_path = os.path.realpath(
-                        str(self.v4l_by_id_dir / camera_hardware_id)
-                    )
+            ustreamer_fmt = USTREAMER_FORMAT_MAP.get(pixel_format.upper())
+            if not self.use_mock_cameras and has_ustreamer and ustreamer_fmt:
+                dev_path = (
+                    self._resolve_dev_path(camera_hardware_id)
+                    or f"/dev/v4l/by-id/{camera_hardware_id}"
+                )
 
                 # Без --quality для аппаратного MJPEG и с --device-timeout 5 для камер (Logitech C270 ~1-2.3 с)
                 cmd = [
@@ -158,7 +225,7 @@ class LiveStreamManager:
                     "--port",
                     str(port),
                     "-m",
-                    pixel_format,
+                    ustreamer_fmt,
                     "-r",
                     f"{width}x{height}",
                     "--device-timeout",
@@ -174,23 +241,46 @@ class LiveStreamManager:
                     self.process = subprocess.Popen(
                         cmd,
                         stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
                     )
-                    time.sleep(0.3)
+                    # Ждем открытия локального порта ustreamer или его раннего завершения
+                    deadline = time.monotonic() + 0.8
+                    while time.monotonic() < deadline:
+                        if self.process.poll() is not None:
+                            break
+                        if self._is_port_open("127.0.0.1", port):
+                            break
+                        time.sleep(0.1)
+
                     if self.process.poll() is None:
                         self.stream_url = self._resolve_stream_url(port)
                     else:
+                        err_out = ""
+                        if self.process.stderr:
+                            with contextlib.suppress(Exception):
+                                err_out = self.process.stderr.read().decode(
+                                    "utf-8", errors="ignore"
+                                )[:400]
+                                self.process.stderr.close()
                         logger.warning(
-                            f"[LIVE] ustreamer завершился сразу с кодом {self.process.returncode}"
+                            f"[LIVE] ustreamer завершился с кодом {self.process.returncode} "
+                            f"({err_out.strip() or 'без вывода'}), переключение на OpenCV V4L2 fallback"
                         )
                         self.process = None
                         self.stream_url = None
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning(f"[LIVE] Не удалось запустить ustreamer: {exc}")
+                    logger.warning(
+                        f"[LIVE] Не удалось запустить ustreamer: {exc}, переключение на OpenCV V4L2 fallback"
+                    )
                     self.process = None
                     self.stream_url = None
-            elif self.mode == "rpi":
-                logger.warning("[LIVE] ustreamer не найден в системе (режим rpi)")
+            elif not self.use_mock_cameras:
+                reason = (
+                    "ustreamer не найден"
+                    if not has_ustreamer
+                    else f"формат {pixel_format} не поддерживается ustreamer"
+                )
+                logger.info(f"[LIVE] {reason} -> используется OpenCV V4L2 fallback")
                 self.stream_url = None
 
             self.is_running = True
@@ -210,18 +300,73 @@ class LiveStreamManager:
             with contextlib.suppress(Exception):
                 self.process.terminate()
                 self.process.wait(timeout=0.5)
+            if self.process.stderr:
+                with contextlib.suppress(Exception):
+                    self.process.stderr.close()
             self.process = None
 
+        self._release_capture()
         self.stream_url = None
         self._last_frame = None
         self.is_running = False
         self.is_paused = False
+        self._resolution_verified = False
 
     def stop(self) -> None:
         """Останавливает Live-стрим."""
         with self.lock:
             self._stop_internal()
             logger.info("[LIVE] Стрим остановлен")
+
+    def _capture_opencv_frame(self) -> bytes | None:
+        """Реальный OpenCV V4L2 fallback-захват кадра с физической камеры."""
+        try:
+            import cv2  # type: ignore
+        except ImportError:
+            return None
+
+        dev_path = self._resolve_dev_path(self.active_camera_id)
+        if not dev_path or not Path(dev_path).exists():
+            return None
+
+        with self._cap_lock:
+            if self._cap is None or not self._cap.isOpened():
+                cap = cv2.VideoCapture(dev_path, cv2.CAP_V4L2)
+                if not cap or not cap.isOpened():
+                    with contextlib.suppress(Exception):
+                        if cap is not None:
+                            cap.release()
+                    return None
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                fmt = (self.current_format or "MJPG").upper()
+                if fmt in ("MJPG", "MJPEG"):
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                elif fmt == "YUYV":
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.current_width))
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.current_height))
+                self._cap = cap
+
+            ret, img = self._cap.read()
+            if not ret or img is None:
+                with contextlib.suppress(Exception):
+                    self._cap.release()
+                self._cap = None
+                return None
+
+            actual_h, actual_w = img.shape[:2]
+            if actual_w > 0 and actual_h > 0:
+                self.current_width = int(actual_w)
+                self.current_height = int(actual_h)
+                self._resolution_verified = True
+
+            if self.rgb_gains != (1.0, 1.0, 1.0):
+                img = self.apply_rgb_gains(img)
+
+            success, enc = cv2.imencode(".jpg", img)
+            if not success:
+                return None
+            return enc.tobytes()
 
     def _generate_frame(self) -> bytes | None:
         """Генерирует или считывает свежий кадр с применением RGB-коррекции."""
@@ -231,21 +376,53 @@ class LiveStreamManager:
         raw_frame: bytes | None = None
 
         # 1. Попытка забрать из ustreamer /snapshot при его наличии
-        if self.process and self.process.poll() is None:
-            with contextlib.suppress(Exception):
-                import urllib.request
-
-                req = urllib.request.Request(
-                    f"http://127.0.0.1:{self.current_port}/snapshot"
+        if self.process is not None:
+            if self.process.poll() is not None:
+                logger.warning(
+                    f"[LIVE] ustreamer неожиданно завершился (код {self.process.returncode}), "
+                    "переключение на OpenCV V4L2 fallback"
                 )
-                with urllib.request.urlopen(req, timeout=2.5) as resp:
-                    if resp.status == 200:
-                        raw_frame = resp.read()
+                if self.process.stderr:
+                    with contextlib.suppress(Exception):
+                        self.process.stderr.close()
+                self.process = None
+                self.stream_url = None
+            else:
+                with contextlib.suppress(Exception):
+                    import urllib.request
 
-        # 2. В режиме rpi не подставляем фейковую синтетическую картинку
+                    req = urllib.request.Request(
+                        f"http://127.0.0.1:{self.current_port}/snapshot"
+                    )
+                    with urllib.request.urlopen(req, timeout=2.5) as resp:
+                        if resp.status == 200:
+                            raw_frame = resp.read()
+                if raw_frame is None:
+                    # Пока ustreamer работает, не открываем /dev/videoX параллельно во избежание конфликта V4L2
+                    return self._last_frame if self.is_paused else None
+
+                if not self._resolution_verified:
+                    with contextlib.suppress(Exception):
+                        import cv2
+                        import numpy as np
+
+                        nparr = np.frombuffer(raw_frame, np.uint8)
+                        img_probe = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                        if img_probe is not None:
+                            ah, aw = img_probe.shape[:2]
+                            if aw > 0 and ah > 0:
+                                self.current_width = int(aw)
+                                self.current_height = int(ah)
+                                self._resolution_verified = True
+
+        # 2. В режиме реальных камер без активного ustreamer — реальный OpenCV V4L2 fallback (без синтетики)
         if raw_frame is None:
-            if self.mode == "rpi":
-                return self._last_frame if self.is_paused else None
+            if not self.use_mock_cameras:
+                raw_frame = self._capture_opencv_frame()
+                if raw_frame is None:
+                    return self._last_frame if self.is_paused else None
+                self._last_frame = raw_frame
+                return raw_frame
 
             from edge_agent.synthetic import generate_synthetic_frame
 

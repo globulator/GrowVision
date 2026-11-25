@@ -121,6 +121,7 @@ def test_simulator_seed_e2e(e2e_uvicorn_server):
         "SERVER_URL": base_url,
         "EDGE_API_KEY": edge_key,
         "HARDWARE_MODE": "mock",
+        "MOCK_CAMERAS": "true",
     }
     cmd = [
         str(EDGE_PYTHON),
@@ -284,6 +285,7 @@ cfg = EdgeConfig(
     server_url="{base_url}",
     edge_api_key="{edge_key}",
     hardware_mode="mock",
+    mock_cameras=True,
     test_capture_interval_sec=10,
 )
 orchestrator = EdgeOrchestrator(config=cfg)
@@ -299,6 +301,7 @@ print("ORCHESTRATOR_SUCCESS")
         "SERVER_URL": base_url,
         "EDGE_API_KEY": edge_key,
         "HARDWARE_MODE": "mock",
+        "MOCK_CAMERAS": "true",
     }
     proc = subprocess.run(
         [str(EDGE_PYTHON), "-c", script],

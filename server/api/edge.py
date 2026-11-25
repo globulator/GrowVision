@@ -93,6 +93,7 @@ def edge_heartbeat(
     hw_mode = getattr(hb.hardware, "gpio_mode", "mock")
     payload_dict["hardware_mode"] = hw_mode
     payload_dict["is_raspberry_pi"] = hw_mode == "rpi"
+    payload_dict["mock_cameras"] = bool(getattr(hb.hardware, "mock_cameras", False))
     payload_json = json.dumps(payload_dict)
     if telemetry_setting:
         telemetry_setting.value = payload_json
@@ -346,11 +347,14 @@ def edge_command_result(
                 cmd_payload = {}
         hw_id = cmd_payload.get("camera_hardware_id")
         if hw_id:
-            if cmd.command_type == "START_LIVE" and body.data.get("stream_url"):
+            if cmd.command_type == "START_LIVE":
                 session = live_manager.get_or_create(hw_id)
-                session.stream_url = _normalize_stream_url(
-                    str(body.data["stream_url"]), request
-                )
+                if body.data.get("stream_url"):
+                    session.stream_url = _normalize_stream_url(
+                        str(body.data["stream_url"]), request
+                    )
+                if body.data.get("resolution"):
+                    session.resolution = str(body.data["resolution"])
                 session.is_active = True
             if "formats" in body.data or "controls" in body.data:
                 _save_camera_controls_state(
@@ -376,6 +380,25 @@ def _upsert_setting(db: Session, key: str, value: str, now: datetime) -> None:
         db.add(SystemSetting(key=key, value=value, updated_at=now))
 
 
+def _upsert_non_empty_json_list(
+    db: Session, key: str, items: list[dict[str, Any]] | None, now: datetime
+) -> None:
+    """Сохраняет JSON-список в SystemSetting, не затирая существующие данные пустым списком."""
+    if items is None:
+        return
+    if len(items) == 0:
+        existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+        if (
+            existing
+            and existing.value
+            and existing.value.strip() not in ("", "[]", "null")
+        ):
+            return
+        # Не записываем пустой [] как кэш, чтобы не блокировать повторный опрос камеры
+        return
+    _upsert_setting(db, key, json.dumps(items), now)
+
+
 def _save_camera_controls_state(
     db: Session,
     hardware_id: str,
@@ -387,10 +410,8 @@ def _save_camera_controls_state(
 ) -> None:
     """Сохраняет актуальные форматы и V4L2-контролы камеры в SystemSetting."""
     ts = now or datetime.now(UTC)
-    if formats is not None:
-        _upsert_setting(db, f"camera_formats_{hardware_id}", json.dumps(formats), ts)
-    if controls is not None:
-        _upsert_setting(db, f"camera_ctrls_{hardware_id}", json.dumps(controls), ts)
+    _upsert_non_empty_json_list(db, f"camera_formats_{hardware_id}", formats, ts)
+    _upsert_non_empty_json_list(db, f"camera_ctrls_{hardware_id}", controls, ts)
     if current_format:
         _upsert_setting(db, f"camera_format_{hardware_id}", current_format, ts)
     if current_resolution:
