@@ -69,12 +69,15 @@ class LiveStreamManager:
         self._camera_context: dict[str, Any] = {}
 
         self._last_frame: bytes | None = None
+        self._last_raw_frame: bytes | None = None
         self._push_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._mock_counter: int = 0
         self._last_send_rtt_ms: float = 0.0
         self._resolution_verified: bool = False
         self._last_state_check_at: float = 0.0
+        self._last_color_check_at: float = 0.0
+        self.color_marker_detected: bool = False
         self._consecutive_read_errors: int = 0
         self._last_offline_notify_at: float = 0.0
         self._started_at: float = 0.0
@@ -241,14 +244,57 @@ class LiveStreamManager:
             logger.debug(f"[LIVE] Ошибка /snapshot ustreamer: {exc}")
         return None
 
-    def _annotate_frame(self, raw_frame: bytes) -> bytes:
-        """Применяет RGB-коррекцию до CV-анализа и накладывает разметку для режима 'Разметка'."""
-        vision = self.vision
-        if vision is None:
+    def _get_vision(self) -> Any:
+        """Возвращает или лениво создаёт экземпляр VisionPipeline."""
+        if self.vision is None:
             from edge_agent.vision import VisionPipeline
 
-            vision = VisionPipeline(mock_mode=(self.mode == "mock"))
-            self.vision = vision
+            self.vision = VisionPipeline(mock_mode=(self.mode == "mock"))
+        return self.vision
+
+    def _update_color_marker_status(
+        self, raw_frame: bytes, force: bool = False
+    ) -> None:
+        """Периодически проверяет наличие цветового маркера на исходном кадре без RGB-искажений."""
+        now_m = time.monotonic()
+        if not force and (now_m - self._last_color_check_at) < 0.4:
+            return
+        self._last_color_check_at = now_m
+        with contextlib.suppress(Exception):
+            vision = self._get_vision()
+            detector = getattr(vision, "detect_color_marker_details", None)
+            if callable(detector):
+                corners, _ = detector(raw_frame)
+                self.color_marker_detected = corners is not None
+
+    def get_raw_frame_for_calibration(self, camera_hardware_id: str) -> bytes | None:
+        """Возвращает свежий неискажённый (без RGB-гейнов) кадр для автоцветокоррекции."""
+        if (
+            self.is_running
+            and self.active_camera_id == camera_hardware_id
+            and self.process is not None
+            and self.process.poll() is None
+        ):
+            snap = self.capture_ustreamer_snapshot(camera_hardware_id, timeout=2.5)
+            if snap:
+                return snap
+        if self.is_running and self.active_camera_id == camera_hardware_id:
+            if self.use_mock_cameras:
+                from edge_agent.synthetic import generate_synthetic_frame
+
+                return generate_synthetic_frame(
+                    frame_index=self._mock_counter,
+                    camera_id=self.active_camera_id or "live-cam",
+                    width=self.current_width,
+                    height=self.current_height,
+                )
+            if self._last_raw_frame:
+                return self._last_raw_frame
+        return None
+
+    def _annotate_frame(self, raw_frame: bytes) -> bytes:
+        """Применяет RGB-коррекцию до CV-анализа и накладывает разметку для режима 'Разметка'."""
+        vision = self._get_vision()
 
         try:
             corrected_frame = apply_rgb_to_jpeg_bytes(raw_frame, *self.rgb_gains)
@@ -410,8 +456,11 @@ class LiveStreamManager:
             self.is_paused = False
             self.device_online = True
             self.stream_mode = "raw"
+            self.color_marker_detected = False
+            self._last_raw_frame = None
             self._consecutive_read_errors = 0
             self._last_state_check_at = 0.0
+            self._last_color_check_at = 0.0
             self._last_offline_notify_at = 0.0
             self._started_at = time.monotonic()
             self._has_delivered_frame = False
@@ -438,12 +487,15 @@ class LiveStreamManager:
         self._release_capture()
         self.stream_url = None
         self._last_frame = None
+        self._last_raw_frame = None
         self.is_running = False
         self.is_paused = False
         self.device_online = True
         self.stream_mode = "raw"
+        self.color_marker_detected = False
         self._resolution_verified = False
         self._consecutive_read_errors = 0
+        self._last_color_check_at = 0.0
         self._started_at = 0.0
         self._has_delivered_frame = False
 
@@ -620,6 +672,8 @@ class LiveStreamManager:
 
         if raw_frame is not None:
             self._has_delivered_frame = True
+            self._last_raw_frame = raw_frame
+            self._update_color_marker_status(raw_frame)
 
         # 3. CV-разметка (с предварительной RGB-коррекцией) в режиме 'annotated'
         if self.stream_mode == "annotated" and raw_frame is not None:
@@ -649,6 +703,8 @@ class LiveStreamManager:
             frame_bytes = self._generate_frame()
             cap_ms = (time.perf_counter() - cap_t0) * 1000.0
             if frame_bytes is None:
+                if not self.device_online:
+                    self.color_marker_detected = False
                 if (
                     not self.device_online
                     and self.client
@@ -667,6 +723,7 @@ class LiveStreamManager:
                             stream_url=self.stream_url,
                             device_online=False,
                             frame_mode=self.stream_mode,
+                            color_marker_detected=False,
                         )
                         if isinstance(res, dict) and res.get("mode"):
                             self.set_stream_mode(str(res["mode"]))
@@ -690,6 +747,7 @@ class LiveStreamManager:
                         stream_url=self.stream_url,
                         device_online=self.device_online,
                         frame_mode=self.stream_mode,
+                        color_marker_detected=self.color_marker_detected,
                     )
                     self._last_send_rtt_ms = (time.perf_counter() - send_t0) * 1000.0
                     if isinstance(res, dict):

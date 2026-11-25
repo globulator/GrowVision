@@ -37,6 +37,7 @@ class InMemoryState:
         self._lock = threading.Lock()
         self._command_to_captures: dict[int, list[int]] = {}
         self._command_to_scanned_cameras: dict[int, list[str]] = {}
+        self._command_to_data: dict[int, dict[str, Any]] = {}
         self._pin_states: dict[int, bool] = {}
         self._test_snapshots: dict[str, EphemeralSnapshot] = {}
         self._command_to_test_snapshots: dict[int, list[str]] = {}
@@ -96,6 +97,16 @@ class InMemoryState:
         """Извлекает и удаляет список обнаруженных камер для команды сканирования."""
         with self._lock:
             return self._command_to_scanned_cameras.pop(command_id, None)
+
+    def save_command_data(self, command_id: int, data: dict[str, Any]) -> None:
+        """Сохраняет дополнительные данные результата команды."""
+        with self._lock:
+            self._command_to_data[command_id] = dict(data)
+
+    def pop_command_data(self, command_id: int) -> dict[str, Any] | None:
+        """Извлекает и удаляет дополнительные данные результата команды."""
+        with self._lock:
+            return self._command_to_data.pop(command_id, None)
 
     def _purge_expired_test_snapshots_locked(self, now: float | None = None) -> int:
         """Удаляет просроченные эфемерные снимки (вызывается под self._lock)."""
@@ -224,6 +235,7 @@ class InMemoryState:
         with self._lock:
             self._command_to_captures.clear()
             self._command_to_scanned_cameras.clear()
+            self._command_to_data.clear()
             self._pin_states.clear()
             self._test_snapshots.clear()
             self._command_to_test_snapshots.clear()

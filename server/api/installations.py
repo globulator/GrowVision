@@ -96,7 +96,7 @@ def get_installation_last_capture_info(
         return None, last_raw_url
 
     area_display = calculate_area_display(
-        meas.area_px, last_cap.aruco_area_px, aruco_size_mm
+        meas.area_px, last_cap.aruco_area_px, aruco_size_mm, area_cm2=meas.area_cm2
     )
     return area_display, last_raw_url
 

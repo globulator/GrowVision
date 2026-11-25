@@ -93,6 +93,26 @@ def init_db(target_engine: Engine | None = None) -> None:
                 )
                 conn.commit()
 
+        with contextlib.suppress(Exception):
+            res = conn.execute(
+                text("PRAGMA table_info(plant_measurements);")
+            ).fetchall()
+            pm_cols = {row[1] for row in res}
+            for col_name in (
+                "width_px",
+                "height_px",
+                "width_mm",
+                "height_mm",
+                "area_cm2",
+            ):
+                if col_name not in pm_cols:
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE plant_measurements ADD COLUMN {col_name} FLOAT;"
+                        )
+                    )
+            conn.commit()
+
         # Безопасное удаление устаревших уникальных индексов на GPIO-пины (Этап 7.4)
         with contextlib.suppress(Exception):
             conn.execute(text("DROP INDEX IF EXISTS uq_active_light_pin;"))

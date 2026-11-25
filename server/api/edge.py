@@ -351,8 +351,9 @@ def edge_command_result(
         # Сохраняем результат в памяти процесса (даже при пустом списке)
         app_state.save_scanned_cameras(command_id, scanned_hw_ids)
 
-    # Обработка дополнительных данных результата команды (stream_url, controls, formats)
+    # Обработка дополнительных данных результата команды (stream_url, controls, formats, auto_color)
     if body.data and isinstance(body.data, dict):
+        app_state.save_command_data(command_id, body.data)
         cmd_payload = {}
         if cmd.payload:
             try:
@@ -370,6 +371,11 @@ def edge_command_result(
                 if body.data.get("resolution"):
                     session.resolution = str(body.data["resolution"])
                 session.is_active = True
+            if cmd.command_type == "AUTO_COLOR_CALIBRATE" and isinstance(
+                body.data.get("rgb"), dict
+            ):
+                clamped_rgb = clamp_rgb_dict(body.data["rgb"])
+                _upsert_setting(db, f"camera_rgb_{hw_id}", json.dumps(clamped_rgb), now)
             if "formats" in body.data or "controls" in body.data:
                 _save_camera_controls_state(
                     db=db,
@@ -568,6 +574,7 @@ async def edge_upload_capture(
             meas0.area_px if meas0 else None,
             meta.aruco_area_px,
             installation.aruco_size_mm,
+            area_cm2=meas0.area_cm2 if meas0 else None,
         )
         snapshot = app_state.save_test_snapshot(
             installation_id=meta.installation_id,
@@ -578,7 +585,15 @@ async def edge_upload_capture(
             annotated_bytes=ann_bytes,
             area_display=area_display,
             measurements=[
-                {"plant_index": m.plant_index, "area_px": m.area_px}
+                {
+                    "plant_index": m.plant_index,
+                    "area_px": m.area_px,
+                    "width_px": m.width_px,
+                    "height_px": m.height_px,
+                    "width_mm": m.width_mm,
+                    "height_mm": m.height_mm,
+                    "area_cm2": m.area_cm2,
+                }
                 for m in meta.measurements
             ],
             aruco_area_px=meta.aruco_area_px,
@@ -655,6 +670,11 @@ async def edge_upload_capture(
                 capture_id=capture.id,
                 plant_index=m.plant_index,
                 area_px=m.area_px,
+                width_px=m.width_px,
+                height_px=m.height_px,
+                width_mm=m.width_mm,
+                height_mm=m.height_mm,
+                area_cm2=m.area_cm2,
             )
         )
 
@@ -684,9 +704,14 @@ async def receive_live_frame(
     x_stream_url: Annotated[str | None, Header(alias="X-Stream-Url")] = None,
     x_device_online: Annotated[str | None, Header(alias="X-Device-Online")] = None,
     x_frame_mode: Annotated[str | None, Header(alias="X-Frame-Mode")] = None,
+    x_color_marker_detected: Annotated[
+        str | None, Header(alias="X-Color-Marker-Detected")
+    ] = None,
 ) -> dict[str, Any]:
     """Прием свежего кадра Live-стрима от Edge-агента."""
     session = live_manager.get_or_create(hardware_id)
+    if x_color_marker_detected is not None:
+        session.color_marker_detected = x_color_marker_detected in ("1", "true", "True")
     device_online: bool | None = None
     if x_device_online is not None:
         device_online = x_device_online in ("1", "true", "True")

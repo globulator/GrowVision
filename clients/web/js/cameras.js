@@ -16,6 +16,10 @@ let currentActiveTab = null;
 let currentLiveLayer = 'raw'; // 'raw' или 'annotated'
 let streamReady = false;
 let deviceOfflineShown = false;
+let hasFirstLiveStatus = false;
+let streamAttached = false;
+let colorMarkerDetected = false;
+let isAutoColorCalibrating = false;
 let isClosingFlow = false;
 let onLiveProfileSavedCallback = null;
 let liveStartedAt = 0;
@@ -280,6 +284,7 @@ function setLiveViewportState(state, message = '') {
 function attachStreamHandlers(cameraId, mode = currentLiveLayer) {
   const streamImg = document.getElementById('live-stream-img');
   if (!streamImg) return;
+  if (deviceOfflineShown) return;
 
   if (liveConnectTimeout) {
     clearTimeout(liveConnectTimeout);
@@ -293,12 +298,10 @@ function attachStreamHandlers(cameraId, mode = currentLiveLayer) {
     clearTimeout(liveRgbSyncTimer);
     liveRgbSyncTimer = null;
   }
-  if (liveStreamRetryTimer) {
-    clearTimeout(liveStreamRetryTimer);
-    liveStreamRetryTimer = null;
-  }
 
-  setLiveViewportState('loading');
+  if (!streamReady) {
+    setLiveViewportState('loading');
+  }
 
   streamImg.onload = () => {
     if (!activeCamera || activeCamera.id !== cameraId) return;
@@ -317,13 +320,17 @@ function attachStreamHandlers(cameraId, mode = currentLiveLayer) {
   streamImg.onerror = () => {
     if (!activeCamera || activeCamera.id !== cameraId) return;
     if (!streamImg.getAttribute('src')) return;
+    if (deviceOfflineShown) {
+      setLiveViewportState('error', 'Камера отключена');
+      return;
+    }
     const inStartupGrace = !streamReady && (Date.now() - liveStartedAt) < LIVE_STARTUP_GRACE_MS;
-    if (inStartupGrace && !deviceOfflineShown) {
+    if (inStartupGrace) {
       setLiveViewportState('loading');
       if (liveStreamRetryTimer) clearTimeout(liveStreamRetryTimer);
       liveStreamRetryTimer = setTimeout(() => {
         liveStreamRetryTimer = null;
-        if (activeCamera && activeCamera.id === cameraId && !streamReady) {
+        if (activeCamera && activeCamera.id === cameraId && !streamReady && !deviceOfflineShown) {
           const sm = currentLiveLayer === 'annotated' ? 'annotated' : 'raw';
           streamImg.src = `/api/cameras/${cameraId}/live/stream?mode=${sm}&t=${Date.now()}`;
         }
@@ -334,7 +341,7 @@ function attachStreamHandlers(cameraId, mode = currentLiveLayer) {
       clearTimeout(liveConnectTimeout);
       liveConnectTimeout = null;
     }
-    setLiveViewportState('error', deviceOfflineShown ? 'Камера отключена' : 'Стрим недоступен');
+    setLiveViewportState('error', 'Стрим недоступен');
   };
 
   const streamMode = mode === 'annotated' ? 'annotated' : 'raw';
@@ -342,7 +349,7 @@ function attachStreamHandlers(cameraId, mode = currentLiveLayer) {
 
   // Если за 12 с не пришёл ни один кадр — показываем заглушку
   liveConnectTimeout = setTimeout(() => {
-    if (activeCamera && activeCamera.id === cameraId && !streamReady) {
+    if (activeCamera && activeCamera.id === cameraId && !streamReady && !deviceOfflineShown) {
       setLiveViewportState('error', 'Таймаут подключения к камере');
     }
   }, 12000);
@@ -367,6 +374,10 @@ export async function openLiveModal(camera) {
   liveStartedAt = Date.now();
   streamReady = false;
   deviceOfflineShown = false;
+  hasFirstLiveStatus = false;
+  streamAttached = false;
+  colorMarkerDetected = false;
+  isAutoColorCalibrating = false;
   isClosingFlow = false;
   updateLiveLayerButtonsUi();
   applyLiveRgbFilter(draftRgb);
@@ -398,9 +409,9 @@ export async function openLiveModal(camera) {
     if (resEl && startRes && startRes.resolution) {
       resEl.textContent = startRes.resolution;
     }
-    attachStreamHandlers(camera.id, currentLiveLayer);
   } catch (err) {
     setLiveViewportState('error', err.message || 'Ошибка запуска Live-стрима');
+    return;
   }
 
   if (liveStatusInterval) clearInterval(liveStatusInterval);
@@ -595,6 +606,10 @@ export async function closeLiveModal() {
 
   streamReady = false;
   deviceOfflineShown = false;
+  hasFirstLiveStatus = false;
+  streamAttached = false;
+  colorMarkerDetected = false;
+  isAutoColorCalibrating = false;
   currentActiveTab = null;
   currentLiveLayer = 'raw';
   initialCameraSnapshot = null;
@@ -620,12 +635,22 @@ export async function closeLiveModal() {
   }
 }
 
+function syncAutoColorButtonUi() {
+  const autoColorBtn = document.getElementById('btn-live-auto-color');
+  if (!autoColorBtn) return;
+  autoColorBtn.disabled = !colorMarkerDetected || isAutoColorCalibrating;
+  autoColorBtn.textContent = isAutoColorCalibrating ? 'Калибровка...' : 'Автоцветокоррекция';
+}
+
 // Периодическое обновление FPS, задержки, разрешения, паузы и статуса подключения камеры
 async function updateLiveMetrics() {
   if (!activeCamera || !activeCamera.id) return;
+  const targetCameraId = activeCamera.id;
   try {
-    const status = await api.getLiveStatus(activeCamera.id);
-    if (!status) return;
+    const status = await api.getLiveStatus(targetCameraId);
+    if (!status || !activeCamera || activeCamera.id !== targetCameraId) return;
+
+    hasFirstLiveStatus = true;
 
     const fpsEl = document.getElementById('live-fps');
     const latEl = document.getElementById('live-latency');
@@ -640,19 +665,40 @@ async function updateLiveMetrics() {
       pausedOverlay.classList.toggle('hidden', !Boolean(status.is_paused));
     }
 
-    const inStartupGrace = !streamReady && (Date.now() - liveStartedAt) < LIVE_STARTUP_GRACE_MS;
+    colorMarkerDetected = Boolean(status.color_marker_detected);
+    syncAutoColorButtonUi();
+
     if (status.device_online === false) {
-      if (!inStartupGrace && !deviceOfflineShown) {
+      if (!deviceOfflineShown) {
         deviceOfflineShown = true;
+        streamAttached = false;
         if (liveConnectTimeout) {
           clearTimeout(liveConnectTimeout);
           liveConnectTimeout = null;
         }
-        setLiveViewportState('error', status.stream_error || 'Камера отключена');
+        if (liveStreamRetryTimer) {
+          clearTimeout(liveStreamRetryTimer);
+          liveStreamRetryTimer = null;
+        }
+        const streamImg = document.getElementById('live-stream-img');
+        if (streamImg) {
+          streamImg.onload = null;
+          streamImg.onerror = null;
+          streamImg.removeAttribute('src');
+          streamImg.classList.add('hidden');
+        }
       }
-    } else if (deviceOfflineShown && status.is_active) {
-      deviceOfflineShown = false;
-      attachStreamHandlers(activeCamera.id, currentLiveLayer);
+      setLiveViewportState('error', status.stream_error || 'Камера отключена');
+    } else if (deviceOfflineShown) {
+      if (status.is_active) {
+        deviceOfflineShown = false;
+        liveStartedAt = Date.now();
+        streamAttached = true;
+        attachStreamHandlers(targetCameraId, currentLiveLayer);
+      }
+    } else if (!streamAttached) {
+      streamAttached = true;
+      attachStreamHandlers(targetCameraId, currentLiveLayer);
     }
   } catch (_) {
     // игнорируем сетевые сбои поллинга статуса
@@ -1120,6 +1166,19 @@ function renderCategoryPills() {
       pill.appendChild(wrap);
       track.appendChild(pill);
     });
+
+    // Плашка: Автоцветокоррекция по цветовому маркеру
+    const autoColorPill = createControlPill('Калибровка цвета', false, 'live-pill-action');
+    const autoColorBtn = document.createElement('button');
+    autoColorBtn.type = 'button';
+    autoColorBtn.id = 'btn-live-auto-color';
+    autoColorBtn.className = 'btn btn-primary btn-compact live-auto-color-btn';
+    autoColorBtn.textContent = isAutoColorCalibrating ? 'Калибровка...' : 'Автоцветокоррекция';
+    autoColorBtn.disabled = !colorMarkerDetected || isAutoColorCalibrating;
+    autoColorBtn.title = 'Выровнять RGB по цветовому маркеру в кадре';
+    autoColorBtn.addEventListener('click', handleAutoColorCalibrate);
+    autoColorPill.appendChild(autoColorBtn);
+    track.appendChild(autoColorPill);
     return;
   }
 
@@ -1347,6 +1406,72 @@ function formatControlTitle(name) {
   return titles[name] || name;
 }
 
+// Выполнение автоцветокоррекции по эталонному цветовому маркеру (без сброса видео в заглушку ошибки)
+async function handleAutoColorCalibrate() {
+  if (!activeCamera || !activeCamera.id || isAutoColorCalibrating || !colorMarkerDetected) return;
+  const targetCameraId = activeCamera.id;
+  isAutoColorCalibrating = true;
+  syncAutoColorButtonUi();
+  try {
+    const res = await api.autoColorCalibrate(targetCameraId);
+    if (!activeCamera || activeCamera.id !== targetCameraId) return;
+    if (res && res.rgb) {
+      draftRgb = {
+        r: clampRgbValue(res.rgb.r, 1.0),
+        g: clampRgbValue(res.rgb.g, 1.0),
+        b: clampRgbValue(res.rgb.b, 1.0),
+      };
+      applyLiveRgbFilter(draftRgb);
+      ['r', 'g', 'b'].forEach((ch) => {
+        const slider = document.getElementById(`slider-rgb-${ch}`);
+        const valSpan = document.getElementById(`val-rgb-${ch}`);
+        if (slider) slider.value = String(draftRgb[ch]);
+        if (valSpan) valSpan.textContent = draftRgb[ch].toFixed(2);
+      });
+      showToast(
+        `Автоцветокоррекция: R=${draftRgb.r.toFixed(2)}, G=${draftRgb.g.toFixed(2)}, B=${draftRgb.b.toFixed(2)}`
+      );
+    }
+  } catch (err) {
+    showToast(err.message || 'Не удалось выполнить автоцветокоррекцию', 'error');
+  } finally {
+    isAutoColorCalibrating = false;
+    syncAutoColorButtonUi();
+  }
+}
+
+// Скачивание векторного SVG-маркера для печати (aruco или color)
+async function downloadMarkerSvg(markerType, sizeMm = 50) {
+  const safeType = markerType === 'color' ? 'color' : 'aruco';
+  const url = `/api/cameras/markers/${safeType}.svg?size_mm=${encodeURIComponent(sizeMm)}`;
+  try {
+    const resp = await fetch(url, { credentials: 'same-origin' });
+    if (!resp.ok) {
+      let detail = `Ошибка HTTP ${resp.status}`;
+      try {
+        const errJson = await resp.json();
+        if (errJson && errJson.detail) detail = errJson.detail;
+      } catch (_) {}
+      throw new Error(detail);
+    }
+    const blob = await resp.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download =
+      safeType === 'aruco'
+        ? `growvision_aruco_4x4_id0_${sizeMm}mm.svg`
+        : `growvision_color_marker_${sizeMm}mm.svg`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    showToast(safeType === 'aruco' ? 'ArUco-маркер скачан (SVG)' : 'Цветовой маркер скачан (SVG)');
+  } catch (err) {
+    showError(err.message || 'Не удалось скачать SVG-маркер');
+  }
+}
+
 // Скачивание свежего JPEG с учётом текущих коэффициентов R/G/B
 async function downloadLiveSnapshot() {
   if (!activeCamera || !activeCamera.id) return;
@@ -1394,7 +1519,7 @@ async function switchLiveLayer(nextMode) {
   } catch (_) {
     // поток сам передаст query ?mode=...
   }
-  if (activeCamera && activeCamera.id) {
+  if (activeCamera && activeCamera.id && hasFirstLiveStatus && !deviceOfflineShown) {
     attachStreamHandlers(activeCamera.id, normalized);
   }
 }
@@ -1407,7 +1532,10 @@ export function initCameras() {
   const modalLive = document.getElementById('modal-camera-live');
   const modalLiveClose = document.getElementById('modal-camera-live-close');
   const btnDownloadSnap = document.getElementById('btn-live-download-snapshot');
-  const btnLiveRetry = document.getElementById('btn-live-retry');
+  const btnMenuDownloadAruco = document.getElementById('btn-menu-download-aruco');
+  const btnMenuDownloadColor = document.getElementById('btn-menu-download-color');
+  const btnLiveDownloadAruco = document.getElementById('btn-live-download-aruco');
+  const btnLiveDownloadColor = document.getElementById('btn-live-download-color');
   const layerRawBtn = document.getElementById('live-layer-raw');
   const layerAnnBtn = document.getElementById('live-layer-ann');
 
@@ -1484,26 +1612,16 @@ export function initCameras() {
   if (btnDownloadSnap) {
     btnDownloadSnap.addEventListener('click', downloadLiveSnapshot);
   }
-  if (btnLiveRetry) {
-    btnLiveRetry.addEventListener('click', async () => {
-      if (!activeCamera || !activeCamera.id) return;
-      liveStartedAt = Date.now();
-      streamReady = false;
-      deviceOfflineShown = false;
-      setLiveViewportState('loading');
-      try {
-        const startRes = await api.startLive(activeCamera.id);
-        const resEl = document.getElementById('live-res');
-        if (resEl && startRes && startRes.resolution) {
-          resEl.textContent = startRes.resolution;
-        }
-        if (currentLiveLayer === 'annotated') {
-          await api.setLiveMode(activeCamera.id, 'annotated');
-        }
-        attachStreamHandlers(activeCamera.id, currentLiveLayer);
-      } catch (err) {
-        setLiveViewportState('error', err.message || 'Стрим недоступен');
-      }
-    });
+  if (btnMenuDownloadAruco) {
+    btnMenuDownloadAruco.addEventListener('click', () => downloadMarkerSvg('aruco', 50));
+  }
+  if (btnMenuDownloadColor) {
+    btnMenuDownloadColor.addEventListener('click', () => downloadMarkerSvg('color', 50));
+  }
+  if (btnLiveDownloadAruco) {
+    btnLiveDownloadAruco.addEventListener('click', () => downloadMarkerSvg('aruco', 50));
+  }
+  if (btnLiveDownloadColor) {
+    btnLiveDownloadColor.addEventListener('click', () => downloadMarkerSvg('color', 50));
   }
 }

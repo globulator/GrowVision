@@ -152,6 +152,11 @@ class PlantMeasurement(Base):
     )
     plant_index = Column(Integer, nullable=False, default=0)
     area_px = Column(Float, nullable=False)
+    width_px = Column(Float, nullable=True)
+    height_px = Column(Float, nullable=True)
+    width_mm = Column(Float, nullable=True)
+    height_mm = Column(Float, nullable=True)
+    area_cm2 = Column(Float, nullable=True)
 
     capture = relationship("Capture", back_populates="plant_measurements")
 

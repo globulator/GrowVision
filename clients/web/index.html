@@ -361,6 +361,38 @@
               </svg>
               <span>Скачать</span>
             </button>
+
+            <!-- Кнопка «График роста» -->
+            <button type="button" id="gallery-btn-chart" class="btn btn-secondary btn-chart" title="График темпов роста" aria-label="График роста">
+              <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+              <span>График роста</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Панель графика темпов роста -->
+        <div id="gallery-chart-panel" class="gallery-chart-panel hidden">
+          <div class="gallery-chart-header">
+            <div class="gallery-chart-title-wrap">
+              <h4 class="gallery-chart-title">График роста</h4>
+              <span id="gallery-chart-unit-badge" class="gallery-chart-unit-badge">px</span>
+            </div>
+            <div id="gallery-chart-mode-control" class="segmented-control gallery-chart-modes">
+              <button type="button" class="seg-btn active" data-chart-mode="auto">Авто</button>
+              <button type="button" class="seg-btn" data-chart-mode="cm2">Только калиброванные (см²)</button>
+              <button type="button" class="seg-btn" data-chart-mode="px">Все кадры (px)</button>
+            </div>
+          </div>
+          <div class="gallery-chart-legend">
+            <span class="chart-legend-item"><span class="legend-dot legend-total"></span>Общая площадь</span>
+            <span class="chart-legend-item"><span class="legend-dot legend-avg"></span>Средняя площадь куста</span>
+          </div>
+          <div id="gallery-chart-canvas-wrap" class="gallery-chart-canvas-wrap">
+            <svg id="gallery-chart-svg" class="gallery-chart-svg" viewBox="0 0 760 230" preserveAspectRatio="none"></svg>
+            <div id="gallery-chart-empty" class="gallery-chart-empty hidden">Нет данных для построения графика</div>
+            <div id="gallery-chart-tooltip" class="gallery-chart-tooltip hidden"></div>
           </div>
         </div>
       </div>
@@ -609,6 +641,24 @@
         </button>
       </div>
       <div class="modal-body">
+        <div class="cameras-markers-bar">
+          <button type="button" id="btn-menu-download-aruco" class="btn btn-secondary btn-compact">
+            <svg class="icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span>Скачать ArUco-маркер</span>
+          </button>
+          <button type="button" id="btn-menu-download-color" class="btn btn-secondary btn-compact">
+            <svg class="icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span>Скачать цветовой маркер</span>
+          </button>
+        </div>
         <div id="cameras-list-container" class="cameras-list-container"></div>
       </div>
     </div>
@@ -653,7 +703,6 @@
             <line x1="1" y1="1" x2="23" y2="23"/>
           </svg>
           <span id="live-error-text" class="live-state-text">Стрим недоступен</span>
-          <button type="button" id="btn-live-retry" class="btn btn-secondary btn-compact">Повторить</button>
         </div>
 
         <!-- Оверлей при паузе (поверх замороженного последнего кадра) -->
@@ -680,13 +729,17 @@
           <span class="live-stat-badge">Задержка: <strong id="live-latency" class="stat-value">0</strong> мс</span>
           <span class="live-stat-badge">Разрешение: <strong id="live-res" class="stat-value">&mdash;</strong></span>
         </div>
-        <button id="btn-live-download-snapshot" class="btn btn-secondary btn-icon btn-snap-download" type="button" title="Скачать тестовый снимок" aria-label="Скачать тестовый снимок">
-          <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-            <polyline points="7 10 12 15 17 10"/>
-            <line x1="12" y1="15" x2="12" y2="3"/>
-          </svg>
-        </button>
+        <div class="live-footer-actions">
+          <button type="button" id="btn-live-download-aruco" class="btn btn-secondary btn-compact" title="Скачать ArUco-маркер для печати">Скачать ArUco-маркер</button>
+          <button type="button" id="btn-live-download-color" class="btn btn-secondary btn-compact" title="Скачать цветовой маркер для печати">Скачать цветовой маркер</button>
+          <button id="btn-live-download-snapshot" class="btn btn-secondary btn-icon btn-snap-download" type="button" title="Скачать тестовый снимок" aria-label="Скачать тестовый снимок">
+            <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
   </div>

@@ -310,6 +310,8 @@ class EdgeOrchestrator:
                 self._handle_get_camera_controls(cmd)
             elif cmd_type == "SET_CAMERA_CONTROLS":
                 self._handle_set_camera_controls(cmd)
+            elif cmd_type == "AUTO_COLOR_CALIBRATE":
+                self._handle_auto_color_calibrate(cmd)
             else:
                 self.client.send_command_result(
                     cmd.id,
@@ -843,6 +845,102 @@ class EdgeOrchestrator:
             CommandResult(
                 status="done",
                 result_message="Настройки камеры успешно применены",
+            ),
+        )
+
+    def _handle_auto_color_calibrate(self, cmd: CommandItem) -> None:
+        """Обработка команды AUTO_COLOR_CALIBRATE по исходному кадру без RGB-искажений."""
+        payload = cmd.payload or {}
+        hw_id = payload.get("camera_hardware_id")
+        if (
+            not hw_id
+            and cmd.installation
+            and getattr(cmd.installation, "camera_hardware_ids", None)
+        ):
+            hw_id = cmd.installation.camera_hardware_ids[0]
+        if not hw_id:
+            hw_id = getattr(self.live_stream, "active_camera_id", None)
+
+        if not hw_id:
+            self.client.send_command_result(
+                cmd.id,
+                CommandResult(
+                    status="error",
+                    result_message="Не указан camera_hardware_id",
+                ),
+            )
+            return
+
+        # 1. Получаем свежий исходный кадр с камеры БЕЗ применения предыдущих коэффициентов RGB
+        raw_frame: bytes | None = None
+        cal_getter = getattr(self.live_stream, "get_raw_frame_for_calibration", None)
+        if callable(cal_getter):
+            raw_frame = cal_getter(hw_id)
+
+        if not raw_frame:
+            is_live_for_cam = bool(
+                getattr(self.live_stream, "is_running", False)
+                and getattr(self.live_stream, "active_camera_id", None) == hw_id
+            )
+            inst = cmd.installation
+            light_pin = inst.light_gpio_pin if inst else 4
+            flash_pin = inst.flash_gpio_pin if inst else 4
+            if is_live_for_cam:
+                self.live_stream.set_paused(True)
+            try:
+                raw_frame = self.hardware.capture_frame_with_sequence(
+                    camera_hardware_id=hw_id,
+                    light_pin=light_pin,
+                    flash_pin=flash_pin,
+                    warmup_frames=1,
+                    switch_delay_ms=0,
+                    capture_delay_sec=0.0,
+                    frame_index=0,
+                )
+            finally:
+                if is_live_for_cam:
+                    self.live_stream.set_paused(False)
+
+        if not raw_frame:
+            self.client.send_command_result(
+                cmd.id,
+                CommandResult(
+                    status="error",
+                    result_message="Не удалось получить кадр с камеры для калибровки цвета",
+                ),
+            )
+            return
+
+        gains = self.vision.calibrate_color_from_marker(raw_frame)
+        if gains is None:
+            self.client.send_command_result(
+                cmd.id,
+                CommandResult(
+                    status="error",
+                    result_message="Цветовой маркер не обнаружен в кадре",
+                ),
+            )
+            return
+
+        norm = self._normalize_rgb_tuple(gains)
+        self._camera_rgb[hw_id] = norm
+        self._last_server_rgb[hw_id] = norm
+        if (
+            getattr(self.live_stream, "is_running", False)
+            and getattr(self.live_stream, "active_camera_id", None) == hw_id
+        ):
+            self.live_stream.set_rgb_gains(*norm)
+
+        rgb_dict = {"r": norm[0], "g": norm[1], "b": norm[2]}
+        self.client.send_command_result(
+            cmd.id,
+            CommandResult(
+                status="done",
+                result_message=(
+                    f"Автоцветокоррекция: R={norm[0]:.2f}, G={norm[1]:.2f}, B={norm[2]:.2f}"
+                ),
+                data={"rgb": rgb_dict},
+                debug_log_line=f"[COLOR] AUTO_COLOR_CALIBRATE {hw_id} -> {rgb_dict}",
             ),
         )
 

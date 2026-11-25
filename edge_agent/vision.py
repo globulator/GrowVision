@@ -2,9 +2,17 @@ from pathlib import Path
 from typing import Any
 
 from shared.logger import get_logger
+from shared.markers import (
+    COLOR_MARKER_CANON_H,
+    COLOR_MARKER_CANON_W,
+    COLOR_MARKER_PATCHES,
+    COLOR_MARKER_WHITE_FIELD,
+)
 from shared.schemas import PlantMeasurementMeta
 
 logger = get_logger("edge_agent.vision")
+
+DEFAULT_ARUCO_SIZE_MM = 50.0
 
 CV2_AVAILABLE = False
 ORT_AVAILABLE = False
@@ -248,6 +256,357 @@ def _draw_bbox_rulers(
     )
 
 
+def compute_aruco_homography(
+    aruco_corners: Any = None,
+    aruco_size_mm: float | None = None,
+    aruco_area_px: float | None = None,
+) -> tuple[Any | None, float, float | None]:
+    """Вычисляет матрицу перспективного преобразования (px -> мм) по углам ArUco.
+
+    Возвращает (H_px_to_mm, effective_aruco_size_mm, mm_per_px).
+    """
+    effective_size_mm = (
+        float(aruco_size_mm)
+        if (aruco_size_mm is not None and float(aruco_size_mm) > 0)
+        else DEFAULT_ARUCO_SIZE_MM
+    )
+    if not CV2_AVAILABLE:
+        return None, effective_size_mm, None
+
+    if aruco_corners is not None:
+        pts_src = np.asarray(aruco_corners, dtype=np.float32).reshape(-1, 2)
+        if len(pts_src) >= 4:
+            pts_src = pts_src[:4]
+            area_px = float(cv2.contourArea(pts_src))
+            if area_px > 1.0:
+                pts_dst = np.array(
+                    [
+                        [0.0, 0.0],
+                        [effective_size_mm, 0.0],
+                        [effective_size_mm, effective_size_mm],
+                        [0.0, effective_size_mm],
+                    ],
+                    dtype=np.float32,
+                )
+                H_px_to_mm = cv2.getPerspectiveTransform(pts_src, pts_dst)
+                mm_per_px = effective_size_mm / (area_px**0.5)
+                return H_px_to_mm, effective_size_mm, mm_per_px
+
+    if aruco_area_px is not None and float(aruco_area_px) > 0:
+        mm_per_px = effective_size_mm / (float(aruco_area_px) ** 0.5)
+        return None, effective_size_mm, mm_per_px
+
+    return None, effective_size_mm, None
+
+
+def measure_contour_metrics(
+    cnt: Any,
+    H_px_to_mm: Any | None = None,
+    fallback_mm_per_px: float | None = None,
+) -> dict[str, float | None]:
+    """Рассчитывает пиксельные и перспективно-выпрямленные метрические параметры контура."""
+    area_px = round(float(cv2.contourArea(cnt)), 1)
+    _, _, bw, bh = cv2.boundingRect(cnt)
+    width_px = float(bw)
+    height_px = float(bh)
+
+    width_mm: float | None = None
+    height_mm: float | None = None
+    area_cm2: float | None = None
+
+    if H_px_to_mm is not None and len(cnt) >= 3:
+        cnt_pts = np.asarray(cnt, dtype=np.float32).reshape(-1, 1, 2)
+        # Проверяем, что все точки лежат по правильную сторону линии горизонта гомографии
+        homog_w = (
+            H_px_to_mm[2, 0] * cnt_pts[:, 0, 0]
+            + H_px_to_mm[2, 1] * cnt_pts[:, 0, 1]
+            + H_px_to_mm[2, 2]
+        )
+        if np.all(np.abs(homog_w) > 1e-4) and (
+            np.all(homog_w > 0) or np.all(homog_w < 0)
+        ):
+            cnt_mm = cv2.perspectiveTransform(cnt_pts, H_px_to_mm)
+            area_mm2 = abs(float(cv2.contourArea(cnt_mm)))
+            cnt_mm_2d = cnt_mm.reshape(-1, 2)
+            w_mm = float(cnt_mm_2d[:, 0].max() - cnt_mm_2d[:, 0].min())
+            h_mm = float(cnt_mm_2d[:, 1].max() - cnt_mm_2d[:, 1].min())
+            if (
+                np.isfinite(area_mm2)
+                and np.isfinite(w_mm)
+                and np.isfinite(h_mm)
+                and w_mm < 1e5
+                and h_mm < 1e5
+            ):
+                width_mm = round(w_mm, 1)
+                height_mm = round(h_mm, 1)
+                area_cm2 = round(area_mm2 / 100.0, 2)
+    elif fallback_mm_per_px is not None and fallback_mm_per_px > 0:
+        width_mm = round(width_px * fallback_mm_per_px, 1)
+        height_mm = round(height_px * fallback_mm_per_px, 1)
+        area_cm2 = round(area_px * (fallback_mm_per_px**2) / 100.0, 2)
+
+    return {
+        "area_px": area_px,
+        "width_px": width_px,
+        "height_px": height_px,
+        "width_mm": width_mm,
+        "height_mm": height_mm,
+        "area_cm2": area_cm2,
+    }
+
+
+def _order_quad_long_horizontal(pts: Any) -> Any:
+    """Упорядочивает 4 угла четырёхугольника по часовой стрелке с длинной стороной вдоль оси X."""
+    pts_arr = np.asarray(pts, dtype=np.float32).reshape(4, 2)
+    center = pts_arr.mean(axis=0)
+    angles = np.arctan2(pts_arr[:, 1] - center[1], pts_arr[:, 0] - center[0])
+    ordered = pts_arr[np.argsort(angles)]
+    len_01 = float(
+        np.linalg.norm(ordered[1] - ordered[0])
+        + np.linalg.norm(ordered[2] - ordered[3])
+    )
+    len_12 = float(
+        np.linalg.norm(ordered[2] - ordered[1])
+        + np.linalg.norm(ordered[3] - ordered[0])
+    )
+    if len_12 > len_01:
+        ordered = np.roll(ordered, -1, axis=0)
+    return ordered
+
+
+def _compute_auto_rgb_gains(
+    p_r: Any, p_g: Any, p_b: Any, p_w: Any, p_gray: Any
+) -> tuple[float, float, float]:
+    """Вычисляет коэффициенты автоцветокоррекции (r, g, b) в [0.00, 1.00] по 5 эталонным плашкам."""
+    if float(np.max(p_w)) < 248.0:
+        wb_ref = 0.65 * p_gray + 0.35 * (p_w * (128.0 / 255.0))
+    else:
+        wb_ref = p_gray
+    wb_gains = 1.0 / np.maximum(wb_ref, 5.0)
+    wb_gains = wb_gains / float(np.max(wb_gains))
+
+    chan_vec = np.array([p_r[0], p_g[1], p_b[2]], dtype=np.float64)
+    if float(np.max(chan_vec)) < 248.0 and float(np.min(chan_vec)) > 15.0:
+        chan_gains = 1.0 / np.maximum(chan_vec, 10.0)
+        chan_gains = chan_gains / float(np.max(chan_gains))
+        gains = 0.7 * wb_gains + 0.3 * chan_gains
+    else:
+        gains = wb_gains
+
+    max_g = float(np.max(gains))
+    if max_g > 0:
+        gains = gains / max_g
+
+    r_out = round(max(0.0, min(1.0, float(gains[0]))), 2)
+    g_out = round(max(0.0, min(1.0, float(gains[1]))), 2)
+    b_out = round(max(0.0, min(1.0, float(gains[2]))), 2)
+    return (r_out, g_out, b_out)
+
+
+def _verify_warped_color_marker(
+    warped_bgr: Any,
+) -> tuple[bool, tuple[float, float, float] | None]:
+    """Проверяет выпрямленного кандидата цветового маркера (500x200) и вычисляет RGB-коэффициенты."""
+    # 1. Проверка контрастной чёрной рамки и внутреннего белого поля
+    border_strips = [
+        warped_bgr[3:14, 30:470],
+        warped_bgr[186:197, 30:470],
+        warped_bgr[30:170, 3:14],
+        warped_bgr[30:170, 486:497],
+    ]
+    border_pixels = np.concatenate([s.reshape(-1, 3) for s in border_strips], axis=0)
+    border_luma = float(np.median(border_pixels))
+
+    field_strips = [
+        warped_bgr[24:42, 40:460],
+        warped_bgr[158:176, 40:460],
+    ]
+    field_pixels = np.concatenate([s.reshape(-1, 3) for s in field_strips], axis=0)
+    field_luma = float(np.median(field_pixels))
+    field_std = float(np.max(np.std(field_pixels, axis=0)))
+
+    if border_luma > 140.0 or field_luma < 85.0:
+        return False, None
+    if field_luma < border_luma + 35.0:
+        return False, None
+    if field_std > 48.0:
+        return False, None
+
+    # 2. Извлекаем 5 плашек (медиана RGB по центральной зоне каждой плашки)
+    patches_rgb: list[Any] = []
+    for _, _, _, (px, py, pw, ph) in COLOR_MARKER_PATCHES:
+        roi_bgr = warped_bgr[py + 18 : py + ph - 18, px + 14 : px + pw - 14]
+        if roi_bgr.size == 0:
+            return False, None
+        roi_rgb = roi_bgr[:, :, ::-1].astype(np.float64)
+        if float(np.max(np.std(roi_rgb, axis=(0, 1)))) > 42.0:
+            return False, None
+        med_rgb = np.median(roi_rgb.reshape(-1, 3), axis=0)
+        patches_rgb.append(med_rgb)
+
+    # Проверяем прямой (0°) и перевёрнутый (180°) порядок плашек
+    for order in ((0, 1, 2, 3, 4), (4, 3, 2, 1, 0)):
+        p_r, p_g, p_b, p_w, p_gray = (patches_rgb[i] for i in order)
+
+        # Красная плашка
+        if not (
+            p_r[0] > p_r[1] * 1.35
+            and p_r[0] > p_r[2] * 1.35
+            and (p_r[0] - max(p_r[1], p_r[2])) > 25.0
+        ):
+            continue
+        # Зелёная плашка
+        if not (
+            p_g[1] > p_g[0] * 1.35
+            and p_g[1] > p_g[2] * 1.35
+            and (p_g[1] - max(p_g[0], p_g[2])) > 25.0
+        ):
+            continue
+        # Синяя плашка
+        if not (
+            p_b[2] > p_b[0] * 1.35
+            and p_b[2] > p_b[1] * 1.35
+            and (p_b[2] - max(p_b[0], p_b[1])) > 25.0
+        ):
+            continue
+
+        w_mean = float(np.mean(p_w))
+        gray_mean = float(np.mean(p_gray))
+        w_ratio = float(np.max(p_w)) / max(1.0, float(np.min(p_w)))
+        gray_ratio = float(np.max(p_gray)) / max(1.0, float(np.min(p_gray)))
+
+        # Белая и нейтральная серая плашки
+        if w_mean < 120.0 or float(np.min(p_w)) < 70.0 or w_ratio > 2.8:
+            continue
+        if gray_mean < 35.0 or gray_mean > 225.0 or gray_ratio > 2.8:
+            continue
+        if w_mean < gray_mean + 18.0:
+            continue
+        if gray_mean < border_luma + 12.0:
+            continue
+
+        gains = _compute_auto_rgb_gains(p_r, p_g, p_b, p_w, p_gray)
+        return True, gains
+
+    return False, None
+
+
+def detect_color_marker_in_bgr(
+    img: Any,
+) -> tuple[Any | None, tuple[float, float, float] | None]:
+    """Ищет эталонный цветовой маркер на BGR-кадре.
+
+    Возвращает (внешние_углы_4x2, (r, g, b)) или (None, None).
+    """
+    if not CV2_AVAILABLE or img is None:
+        return None, None
+
+    h, w = img.shape[:2]
+    min_area = max(600.0, float(w * h) * 0.0015)
+    max_area = float(w * h) * 0.92
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    bin_maps = [
+        cv2.adaptiveThreshold(
+            blurred,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            25,
+            4,
+        ),
+        cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+        cv2.dilate(
+            cv2.Canny(blurred, 40, 140), np.ones((3, 3), dtype=np.uint8), iterations=1
+        ),
+    ]
+
+    candidates: list[tuple[float, Any]] = []
+    seen_centers: list[tuple[float, float, float]] = []
+
+    for bmap in bin_maps:
+        contours, _ = cv2.findContours(bmap, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in contours:
+            area = float(cv2.contourArea(cnt))
+            if area < min_area or area > max_area:
+                continue
+            peri = cv2.arcLength(cnt, True)
+            if peri <= 0:
+                continue
+            for eps_factor in (0.02, 0.035, 0.05):
+                approx = cv2.approxPolyDP(cnt, eps_factor * peri, True)
+                if len(approx) == 4 and cv2.isContourConvex(approx):
+                    pts = _order_quad_long_horizontal(approx)
+                    l1 = float(np.linalg.norm(pts[1] - pts[0]))
+                    l2 = float(np.linalg.norm(pts[2] - pts[1]))
+                    if min(l1, l2) < 12.0:
+                        break
+                    aspect = max(l1, l2) / min(l1, l2)
+                    if not (1.25 <= aspect <= 6.0):
+                        break
+                    cx, cy = float(pts[:, 0].mean()), float(pts[:, 1].mean())
+                    dup = any(
+                        abs(cx - sx) < 8.0
+                        and abs(cy - sy) < 8.0
+                        and abs(area - sa) < max(200.0, area * 0.08)
+                        for sx, sy, sa in seen_centers
+                    )
+                    if not dup:
+                        seen_centers.append((cx, cy, area))
+                        candidates.append((area, pts))
+                    break
+
+    # Проверяем от самых крупных (чтобы внешний контур рамки имел приоритет над внутренним белым полем)
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    wx, wy, ww, wh = COLOR_MARKER_WHITE_FIELD
+    outer_dst = np.array(
+        [
+            [0.0, 0.0],
+            [float(COLOR_MARKER_CANON_W), 0.0],
+            [float(COLOR_MARKER_CANON_W), float(COLOR_MARKER_CANON_H)],
+            [0.0, float(COLOR_MARKER_CANON_H)],
+        ],
+        dtype=np.float32,
+    )
+    inner_dst = np.array(
+        [
+            [float(wx), float(wy)],
+            [float(wx + ww), float(wy)],
+            [float(wx + ww), float(wy + wh)],
+            [float(wx), float(wy + wh)],
+        ],
+        dtype=np.float32,
+    )
+
+    for _, pts in candidates:
+        # Вариант 1: кандидат — внешняя граница чёрной рамки
+        M_outer = cv2.getPerspectiveTransform(pts, outer_dst)
+        warped_outer = cv2.warpPerspective(
+            img, M_outer, (COLOR_MARKER_CANON_W, COLOR_MARKER_CANON_H)
+        )
+        ok, gains = _verify_warped_color_marker(warped_outer)
+        if ok and gains is not None:
+            return pts.copy(), gains
+
+        # Вариант 2: кандидат — внутреннее белое поле
+        M_inner = cv2.getPerspectiveTransform(pts, inner_dst)
+        warped_inner = cv2.warpPerspective(
+            img, M_inner, (COLOR_MARKER_CANON_W, COLOR_MARKER_CANON_H)
+        )
+        ok_in, gains_in = _verify_warped_color_marker(warped_inner)
+        if ok_in and gains_in is not None:
+            with_inv = np.linalg.inv(M_inner)
+            outer_pts = cv2.perspectiveTransform(
+                outer_dst.reshape(-1, 1, 2), with_inv
+            ).reshape(4, 2)
+            return outer_pts.astype(np.float32), gains_in
+
+    return None, None
+
+
 def draw_cv_annotations(
     img: Any,
     contours_with_area: list[tuple[Any, float]],
@@ -258,14 +617,17 @@ def draw_cv_annotations(
     camera_name: str | None = None,
     captured_at: str | None = None,
     aruco_corners: Any = None,
+    color_marker_corners: Any = None,
+    measurements: list[PlantMeasurementMeta] | None = None,
 ) -> Any:
     """Накладывает улучшенную CV-разметку:
 
-    - Линейка слева и снизу в см (при калибровке ArUco) или px, яркий фиолетовый (BGR: 240, 32, 160);
+    - Линейка слева и снизу в мм (при калибровке ArUco) или px, яркий фиолетовый (BGR: 240, 32, 160);
     - Жёлтая рамка (BGR: 0, 255, 255) и фиолетовые линейки в px вокруг обнаруженного ArUco-маркера;
+    - Синяя рамка (BGR: 255, 136, 0 / #0088FF) вокруг обнаруженного цветового маркера;
     - Красная точка в центре каждого найденного растения;
-    - Метаданные в углах кадра с поддержкой кириллицы через Pillow TTF-шрифты;
-    - Тонкая тёмная обводка ко всем элементам.
+    - Счётчик «Обнаружено кустов: N» и общая площадь в см² (при ArUco) или px;
+    - Метаданные в углах кадра с поддержкой кириллицы через Pillow TTF-шрифты.
     """
     if not CV2_AVAILABLE or img is None:
         return img
@@ -284,22 +646,24 @@ def draw_cv_annotations(
     COLOR_RED = (0, 0, 255)  # Красный
     COLOR_GREEN = (0, 220, 0)  # Зеленый контур
     COLOR_ARUCO_YELLOW = (0, 255, 255)  # Жёлтая рамка ArUco (#FFFF00)
+    COLOR_MARKER_BLUE = (255, 136, 0)  # Синяя рамка цветового маркера (#0088FF)
     COLOR_DARK = (15, 15, 15)  # Темная обводка
 
-    # Расчет масштабного коэффициента калибровки ArUco
-    px_per_cm: float | None = None
-    if aruco_area_px and aruco_area_px > 0 and aruco_size_mm and aruco_size_mm > 0:
-        marker_side_px = aruco_area_px**0.5
-        marker_side_cm = aruco_size_mm / 10.0
-        if marker_side_cm > 0:
-            px_per_cm = marker_side_px / marker_side_cm
+    has_aruco = bool(
+        aruco_corners is not None
+        or (aruco_area_px is not None and float(aruco_area_px) > 0)
+    )
+    H_px_to_mm = None
+    fallback_mm_per_px = None
+    if has_aruco:
+        H_px_to_mm, _, fallback_mm_per_px = compute_aruco_homography(
+            aruco_corners=aruco_corners,
+            aruco_size_mm=aruco_size_mm,
+            aruco_area_px=aruco_area_px,
+        )
 
+    plants_count = len(contours_with_area)
     total_area_px = sum(area for _, area in contours_with_area)
-    if px_per_cm and px_per_cm > 0:
-        total_area_cm2 = total_area_px / (px_per_cm**2)
-        area_str = f"{total_area_cm2:.1f} см²"
-    else:
-        area_str = f"{round(total_area_px)} px"
 
     # Списки для отрисовки меток линеек
     rulers_info: list[tuple[int, int, int, str, int, int, int, str, int, str, str]] = []
@@ -347,8 +711,33 @@ def draw_cv_annotations(
                     )
                 )
 
+    # 0.5. Синяя рамка вокруг обнаруженного цветового маркера (#0088FF / BGR: 255, 136, 0)
+    if color_marker_corners is not None:
+        c_pts = np.asarray(color_marker_corners, dtype=np.float32).reshape(-1, 2)
+        if len(c_pts) >= 4:
+            c_pts_int = np.round(c_pts).astype(np.int32)
+            cv2.polylines(
+                annotated,
+                [c_pts_int],
+                isClosed=True,
+                color=COLOR_DARK,
+                thickness=outline_thickness,
+                lineType=cv2.LINE_AA,
+            )
+            cv2.polylines(
+                annotated,
+                [c_pts_int],
+                isClosed=True,
+                color=COLOR_MARKER_BLUE,
+                thickness=thickness,
+                lineType=cv2.LINE_AA,
+            )
+
+    total_area_cm2 = 0.0
+    has_metric_area = has_aruco
+
     # Геометрическая обработка каждого обнаруженного растения
-    for cnt, _ in contours_with_area:
+    for idx, (cnt, _) in enumerate(contours_with_area):
         # 1. Контур с темной обводкой
         cv2.drawContours(
             annotated, [cnt], -1, COLOR_DARK, outline_thickness, cv2.LINE_AA
@@ -368,10 +757,45 @@ def draw_cv_annotations(
         cv2.circle(annotated, (cx, cy), point_r + 2, COLOR_DARK, -1, cv2.LINE_AA)
         cv2.circle(annotated, (cx, cy), point_r, COLOR_RED, -1, cv2.LINE_AA)
 
-        # 3. Линейка слева и снизу
+        # 3. Линейка слева и снизу (мм при ArUco, px без маркера)
         bx, by, bw, bh = cv2.boundingRect(cnt)
-        h_val_str = f"{bh / px_per_cm:.1f} см" if px_per_cm else f"{bh} px"
-        w_val_str = f"{bw / px_per_cm:.1f} см" if px_per_cm else f"{bw} px"
+        meas_item = (
+            measurements[idx]
+            if measurements is not None and idx < len(measurements)
+            else None
+        )
+        if has_aruco:
+            if (
+                meas_item is not None
+                and meas_item.width_mm is not None
+                and meas_item.height_mm is not None
+                and meas_item.area_cm2 is not None
+            ):
+                w_mm = meas_item.width_mm
+                h_mm = meas_item.height_mm
+                a_cm2 = meas_item.area_cm2
+            else:
+                metrics = measure_contour_metrics(
+                    cnt,
+                    H_px_to_mm=H_px_to_mm,
+                    fallback_mm_per_px=fallback_mm_per_px,
+                )
+                w_mm = metrics["width_mm"]
+                h_mm = metrics["height_mm"]
+                a_cm2 = metrics["area_cm2"]
+
+            if w_mm is not None and h_mm is not None and a_cm2 is not None:
+                total_area_cm2 += a_cm2
+                h_val_str = f"{h_mm:.1f} мм"
+                w_val_str = f"{w_mm:.1f} мм"
+            else:
+                has_metric_area = False
+                h_val_str = f"{bh} px"
+                w_val_str = f"{bw} px"
+        else:
+            h_val_str = f"{bh} px"
+            w_val_str = f"{bw} px"
+
         rulers_info.append(
             _draw_bbox_rulers(
                 annotated=annotated,
@@ -391,6 +815,12 @@ def draw_cv_annotations(
                 adaptive_side=False,
             )
         )
+
+    if has_aruco and has_metric_area:
+        area_str = f"{total_area_cm2:.1f} см²"
+    else:
+        area_str = f"{round(total_area_px)} px"
+    plants_count_str = f"Обнаружено кустов: {plants_count}"
 
     # 4. Отрисовка текста (Pillow с поддержкой TTF кириллицы либо cv2 fallback)
     if PIL_AVAILABLE and Image is not None and ImageDraw is not None:
@@ -524,6 +954,20 @@ def draw_cv_annotations(
                 stroke_fill=RGB_DARK,
             )
 
+        # Слева снизу (Обнаружено кустов: N)
+        bbox_cnt = draw.textbbox(
+            (0, 0), plants_count_str, font=main_font, stroke_width=stroke_w
+        )
+        th_cnt = bbox_cnt[3] - bbox_cnt[1]
+        draw.text(
+            (margin, h - margin - th_cnt),
+            plants_count_str,
+            font=main_font,
+            fill=RGB_WHITE,
+            stroke_width=stroke_w,
+            stroke_fill=RGB_DARK,
+        )
+
         # Справа снизу (Площадь: ...)
         text_area = f"Площадь: {area_str}"
         bbox = draw.textbbox((0, 0), text_area, font=main_font, stroke_width=stroke_w)
@@ -622,6 +1066,10 @@ def draw_cv_annotations(
             text_time = f"Время: {captured_at}"
             (tw, _), _ = cv2.getTextSize(text_time, font, font_scale, thickness)
             draw_text_with_outline(text_time, (w - margin - tw, cur_y))
+
+        draw_text_with_outline(
+            plants_count_str, (margin, h - margin), color=COLOR_WHITE
+        )
 
         text_area = f"Площадь: {area_str}"
         (tw, _), _ = cv2.getTextSize(text_area, font, font_scale, thickness)
@@ -747,6 +1195,129 @@ class VisionPipeline:
         area, _ = self.detect_aruco_details(image_bytes)
         return area
 
+    def detect_color_marker_details(
+        self, image_bytes: bytes
+    ) -> tuple[Any | None, tuple[float, float, float] | None]:
+        """Обнаруживает цветовой маркер в кадре и возвращает (углы_маркера, (r, g, b))."""
+        if not CV2_AVAILABLE or not image_bytes:
+            return None, None
+        try:
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is None:
+                return None, None
+            return detect_color_marker_in_bgr(img)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Ошибка при детекции цветового маркера: {exc}")
+            return None, None
+
+    def calibrate_color_from_marker(
+        self, image_bytes: bytes
+    ) -> tuple[float, float, float] | None:
+        """Вычисляет коэффициенты автоцветокоррекции (r, g, b) по эталонному цветовому маркеру."""
+        _, gains = self.detect_color_marker_details(image_bytes)
+        return gains
+
+    @staticmethod
+    def _build_measurements_and_annotate(
+        img: Any,
+        bin_mask_full: Any,
+        raw_contours: Any,
+        min_area: float,
+        aruco_area_px: float | None = None,
+        aruco_size_mm: float | None = None,
+        inst_name: str | None = None,
+        culture_name: str | None = None,
+        camera_name: str | None = None,
+        captured_at: str | None = None,
+        aruco_corners: Any = None,
+        color_marker_corners: Any = None,
+    ) -> tuple[bytes, list[PlantMeasurementMeta]]:
+        """Фильтрует контуры, считает пиксельные/метрические замеры и наносит CV-разметку."""
+        color_poly = None
+        if color_marker_corners is not None:
+            c_pts = np.asarray(color_marker_corners, dtype=np.float32).reshape(-1, 2)
+            if len(c_pts) >= 4:
+                color_poly = np.round(c_pts).astype(np.int32)
+
+        valid_contours_with_area: list[tuple[Any, float]] = []
+        for cnt in raw_contours:
+            area = float(cv2.contourArea(cnt))
+            if area < min_area:
+                continue
+            if color_poly is not None:
+                m = cv2.moments(cnt)
+                if m["m00"] != 0:
+                    cx = float(m["m10"] / m["m00"])
+                    cy = float(m["m01"] / m["m00"])
+                else:
+                    (cx, cy), _ = cv2.minEnclosingCircle(cnt)
+                if cv2.pointPolygonTest(color_poly, (float(cx), float(cy)), False) >= 0:
+                    continue
+            valid_contours_with_area.append((cnt, area))
+
+        valid_contours_with_area.sort(key=lambda x: x[1], reverse=True)
+
+        has_aruco = bool(
+            aruco_corners is not None
+            or (aruco_area_px is not None and float(aruco_area_px) > 0)
+        )
+        H_px_to_mm = None
+        fallback_mm_per_px = None
+        if has_aruco:
+            H_px_to_mm, _, fallback_mm_per_px = compute_aruco_homography(
+                aruco_corners=aruco_corners,
+                aruco_size_mm=aruco_size_mm,
+                aruco_area_px=aruco_area_px,
+            )
+
+        measurements: list[PlantMeasurementMeta] = []
+        annotated = img.copy()
+
+        if valid_contours_with_area:
+            overlay_mask = bin_mask_full.copy()
+            if color_poly is not None:
+                cv2.fillPoly(overlay_mask, [color_poly], 0)
+            color_mask = np.zeros_like(img)
+            color_mask[overlay_mask > 0] = (0, 255, 0)
+            annotated = cv2.addWeighted(annotated, 1.0, color_mask, 0.4, 0)
+
+        for plant_idx, (cnt, _) in enumerate(valid_contours_with_area):
+            metrics = measure_contour_metrics(
+                cnt,
+                H_px_to_mm=H_px_to_mm,
+                fallback_mm_per_px=fallback_mm_per_px,
+            )
+            measurements.append(
+                PlantMeasurementMeta(
+                    plant_index=plant_idx,
+                    area_px=metrics["area_px"] or 0.0,
+                    width_px=metrics["width_px"],
+                    height_px=metrics["height_px"],
+                    width_mm=metrics["width_mm"],
+                    height_mm=metrics["height_mm"],
+                    area_cm2=metrics["area_cm2"],
+                )
+            )
+
+        annotated = draw_cv_annotations(
+            annotated,
+            valid_contours_with_area,
+            aruco_area_px=aruco_area_px,
+            aruco_size_mm=aruco_size_mm,
+            inst_name=inst_name,
+            culture_name=culture_name,
+            camera_name=camera_name,
+            captured_at=captured_at,
+            aruco_corners=aruco_corners,
+            color_marker_corners=color_marker_corners,
+            measurements=measurements,
+        )
+
+        success, enc_img = cv2.imencode(".jpg", annotated)
+        annotated_bytes = enc_img.tobytes() if success else b""
+        return annotated_bytes, measurements
+
     def segment_plants(
         self,
         image_bytes: bytes,
@@ -757,6 +1328,7 @@ class VisionPipeline:
         camera_name: str | None = None,
         captured_at: str | None = None,
         aruco_corners: Any = None,
+        color_marker_corners: Any = None,
     ) -> tuple[bytes, list[PlantMeasurementMeta]]:
         """Выполняет сегментацию растений и отрисовку маски на кадре.
 
@@ -779,6 +1351,7 @@ class VisionPipeline:
                 camera_name=camera_name,
                 captured_at=captured_at,
                 aruco_corners=aruco_corners,
+                color_marker_corners=color_marker_corners,
             )
 
         # 2. Боевой режим без загруженной ONNX модели / сессии:
@@ -796,6 +1369,7 @@ class VisionPipeline:
                 camera_name=camera_name,
                 captured_at=captured_at,
                 aruco_corners=aruco_corners,
+                color_marker_corners=color_marker_corners,
             )
 
         try:
@@ -839,36 +1413,11 @@ class VisionPipeline:
 
             # Адаптивный порог минимальной площади от разрешения кадра: max(150.0, (w * h) * 0.0005)
             min_area = max(150.0, float(w * h) * 0.0005)
-
-            # Сортировка контуров по площади (убывание)
-            valid_contours_with_area = []
-            for cnt in raw_contours:
-                area = float(cv2.contourArea(cnt))
-                if area >= min_area:  # Фильтрация шума
-                    valid_contours_with_area.append((cnt, area))
-
-            valid_contours_with_area.sort(key=lambda x: x[1], reverse=True)
-
-            measurements: list[PlantMeasurementMeta] = []
-            annotated = img.copy()
-
-            if valid_contours_with_area:
-                color_mask = np.zeros_like(img)
-                color_mask[bin_mask_full > 0] = (0, 255, 0)
-                annotated = cv2.addWeighted(annotated, 1.0, color_mask, 0.4, 0)
-
-            # Нумерация plant_index подряд с 0
-            for plant_idx, (cnt, area) in enumerate(valid_contours_with_area):
-                measurements.append(
-                    PlantMeasurementMeta(
-                        plant_index=plant_idx,
-                        area_px=round(area, 1),
-                    )
-                )
-
-            annotated = draw_cv_annotations(
-                annotated,
-                valid_contours_with_area,
+            annotated_bytes, measurements = self._build_measurements_and_annotate(
+                img=img,
+                bin_mask_full=bin_mask_full,
+                raw_contours=raw_contours,
+                min_area=min_area,
                 aruco_area_px=aruco_area_px,
                 aruco_size_mm=aruco_size_mm,
                 inst_name=inst_name,
@@ -876,11 +1425,9 @@ class VisionPipeline:
                 camera_name=camera_name,
                 captured_at=captured_at,
                 aruco_corners=aruco_corners,
+                color_marker_corners=color_marker_corners,
             )
-
-            success, enc_img = cv2.imencode(".jpg", annotated)
-            annotated_bytes = enc_img.tobytes() if success else image_bytes
-            return annotated_bytes, measurements
+            return (annotated_bytes or image_bytes), measurements
 
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -895,6 +1442,7 @@ class VisionPipeline:
                 camera_name=camera_name,
                 captured_at=captured_at,
                 aruco_corners=aruco_corners,
+                color_marker_corners=color_marker_corners,
             )
 
     def _segment_plants_hsv(
@@ -907,6 +1455,7 @@ class VisionPipeline:
         camera_name: str | None = None,
         captured_at: str | None = None,
         aruco_corners: Any = None,
+        color_marker_corners: Any = None,
     ) -> tuple[bytes, list[PlantMeasurementMeta]]:
         """Сегментация растений в mock-режиме по цветовому порогу HSV."""
         if not CV2_AVAILABLE:
@@ -936,34 +1485,11 @@ class VisionPipeline:
             raw_contours, _ = cv2.findContours(
                 mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
-
-            valid_contours_with_area = []
-            for cnt in raw_contours:
-                area = float(cv2.contourArea(cnt))
-                if area >= min_area:  # Фильтрация шума адаптивным порогом
-                    valid_contours_with_area.append((cnt, area))
-
-            valid_contours_with_area.sort(key=lambda x: x[1], reverse=True)
-
-            measurements: list[PlantMeasurementMeta] = []
-            annotated = img.copy()
-
-            if valid_contours_with_area:
-                color_mask = np.zeros_like(img)
-                color_mask[mask > 0] = (0, 255, 0)
-                annotated = cv2.addWeighted(annotated, 1.0, color_mask, 0.4, 0)
-
-            for plant_idx, (cnt, area) in enumerate(valid_contours_with_area):
-                measurements.append(
-                    PlantMeasurementMeta(
-                        plant_index=plant_idx,
-                        area_px=round(area, 1),
-                    )
-                )
-
-            annotated = draw_cv_annotations(
-                annotated,
-                valid_contours_with_area,
+            annotated_bytes, measurements = self._build_measurements_and_annotate(
+                img=img,
+                bin_mask_full=mask,
+                raw_contours=raw_contours,
+                min_area=min_area,
                 aruco_area_px=aruco_area_px,
                 aruco_size_mm=aruco_size_mm,
                 inst_name=inst_name,
@@ -971,11 +1497,9 @@ class VisionPipeline:
                 camera_name=camera_name,
                 captured_at=captured_at,
                 aruco_corners=aruco_corners,
+                color_marker_corners=color_marker_corners,
             )
-
-            success, enc_img = cv2.imencode(".jpg", annotated)
-            annotated_bytes = enc_img.tobytes() if success else image_bytes
-            return annotated_bytes, measurements
+            return (annotated_bytes or image_bytes), measurements
 
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Ошибка при HSV-сегментации: {exc}")
@@ -1020,8 +1544,9 @@ class VisionPipeline:
         captured_at: str | None = None,
         aruco_size_mm: float | None = None,
     ) -> tuple[bytes, float | None, list[PlantMeasurementMeta]]:
-        """Полная обработка кадра: детекция ArUco + сегментация растений."""
+        """Полная обработка кадра: детекция ArUco, цветового маркера и сегментация растений."""
         aruco_area, aruco_corners = self.detect_aruco_details(image_bytes)
+        color_corners, _ = self.detect_color_marker_details(image_bytes)
         annotated_bytes, measurements = self.segment_plants(
             image_bytes,
             aruco_area_px=aruco_area,
@@ -1031,5 +1556,6 @@ class VisionPipeline:
             camera_name=camera_name,
             captured_at=captured_at,
             aruco_corners=aruco_corners,
+            color_marker_corners=color_corners,
         )
         return annotated_bytes, aruco_area, measurements
