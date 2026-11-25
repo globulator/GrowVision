@@ -131,7 +131,7 @@ def test_shared_gpio_pins_creation_and_warnings(client: TestClient, test_env):
     assert "«Установка 1»" in w and "«Установка 2»" in w
 
     # 4. Попытка создать установку с совпадающими light и flash внутри одной установки:
-    # разрешена на этапе 8.1 со статусом 201 и предупреждением
+    # на этапе 12 строго запрещена с HTTP 422
     r_bad = client.post(
         "/api/installations",
         headers=hdrs,
@@ -142,8 +142,8 @@ def test_shared_gpio_pins_creation_and_warnings(client: TestClient, test_env):
             "flash_gpio_pin": 8,
         },
     )
-    assert r_bad.status_code == 201
-    assert any("совпадают" in w for w in r_bad.json().get("warnings", []))
+    assert r_bad.status_code == 422
+    assert "пересекаться" in r_bad.json()["detail"]
 
     # 5. Редактирование пинов (PATCH) возвращает warning
     inst2_id = data2["id"]

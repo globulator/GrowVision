@@ -353,7 +353,7 @@ def test_qa_installation_crud_permissions_and_constraints(client_api_test_env):
     assert "warnings" in r_dup_pin.json()
     assert any("Пин 12 уже занят" in w for w in r_dup_pin.json()["warnings"])
 
-    # На этапе 8.1: одинаковые пины света и вспышки внутри одной установки разрешены (201) с предупреждением
+    # На этапе 12: одинаковые пины света и вспышки внутри одной установки строго запрещены (422)
     r_same_pin = client.post(
         "/api/installations",
         headers=dev_headers,
@@ -364,8 +364,8 @@ def test_qa_installation_crud_permissions_and_constraints(client_api_test_env):
             "flash_gpio_pin": 20,
         },
     )
-    assert r_same_pin.status_code == 201
-    assert any("совпадают" in w for w in r_same_pin.json().get("warnings", []))
+    assert r_same_pin.status_code == 422
+    assert "пересекаться" in r_same_pin.json()["detail"]
 
     # 2. PATCH: Biologist может менять name и culture_name
     r_patch_bio_ok = client.patch(

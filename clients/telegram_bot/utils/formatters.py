@@ -111,8 +111,14 @@ def format_installation_card(
     if role == "developer":
         light_pin = inst.get("light_gpio_pin", "?")
         flash_pin = inst.get("flash_gpio_pin", "?")
-        lines.append(f"💡 <b>Пин света (GPIO):</b> {light_pin}")
-        lines.append(f"⚡ <b>Пин вспышки (GPIO):</b> {flash_pin}")
+        light_rgb_note = ""
+        if inst.get("light_is_rgb") or "," in str(light_pin):
+            light_rgb_note = f" (RGB, <code>{html.escape(str(inst.get('light_color') or '#FFFFFF'))}</code>)"
+        flash_rgb_note = ""
+        if inst.get("flash_is_rgb") or "," in str(flash_pin):
+            flash_rgb_note = f" (RGB, <code>{html.escape(str(inst.get('flash_color') or '#FFFFFF'))}</code>)"
+        lines.append(f"💡 <b>Пин света (GPIO):</b> {light_pin}{light_rgb_note}")
+        lines.append(f"⚡ <b>Пин вспышки (GPIO):</b> {flash_pin}{flash_rgb_note}")
 
     if web_public_url:
         web_link = f"{web_public_url.rstrip('/')}/timelapse/{inst_id}"

@@ -2,7 +2,14 @@ import shutil
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy.orm import Session
 
 from server.api import edge as edge_api
@@ -15,12 +22,23 @@ from server.api.deps import (
 )
 from server.core.area import calculate_area_display
 from server.core.light_state import (
+    delete_installation_light_settings,
+    get_installation_channel_pins,
     get_installation_light_snapshot,
     set_individual_light_state,
+    set_installation_channel_color,
+    set_installation_channel_pins,
 )
 from server.core.rgb import resolve_capture_display_rel_path
 from server.core.state import app_state
 from server.db.models import Capture, Installation, SystemSetting, User
+from shared.pins import (
+    DEFAULT_COLOR_HEX,
+    format_gpio_pins,
+    normalize_hex_color,
+    parse_gpio_pins,
+    validate_light_flash_disjoint,
+)
 from shared.schedule import compute_next_capture_at
 
 router = APIRouter(prefix="/api/installations", tags=["installations"])
@@ -33,8 +51,10 @@ class InstallationCreate(BaseModel):
 
     name: str = Field(..., max_length=100)
     culture_name: str = Field(..., max_length=100)
-    light_gpio_pin: int = Field(..., strict=True, ge=0, le=53)
-    flash_gpio_pin: int = Field(..., strict=True, ge=0, le=53)
+    light_gpio_pin: int | str
+    flash_gpio_pin: int | str
+    light_color: str | None = None
+    flash_color: str | None = None
     aruco_size_mm: float | None = Field(default=None, gt=0)
     capture_delay_sec: float | None = Field(default=None, ge=0.0, le=30.0)
 
@@ -45,6 +65,26 @@ class InstallationCreate(BaseModel):
             raise ValueError(f"Поле {info.field_name} не может быть пустым")
         return v.strip()
 
+    @field_validator("light_gpio_pin", "flash_gpio_pin")
+    @classmethod
+    def validate_pins(cls, v: Any, info: ValidationInfo) -> int | str:
+        pins = parse_gpio_pins(v, field_label=info.field_name)
+        return format_gpio_pins(pins)
+
+    @field_validator("light_color", "flash_color")
+    @classmethod
+    def validate_color(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return normalize_hex_color(v)
+
+    @model_validator(mode="after")
+    def validate_disjoint_pins(self) -> "InstallationCreate":
+        light_pins = parse_gpio_pins(self.light_gpio_pin, field_label="light_gpio_pin")
+        flash_pins = parse_gpio_pins(self.flash_gpio_pin, field_label="flash_gpio_pin")
+        validate_light_flash_disjoint(light_pins, flash_pins)
+        return self
+
 
 class InstallationPatch(BaseModel):
     """Тело запроса PATCH /api/installations/{id}."""
@@ -53,12 +93,21 @@ class InstallationPatch(BaseModel):
 
     name: str | None = Field(default=None, max_length=100)
     culture_name: str | None = Field(default=None, max_length=100)
-    light_gpio_pin: int | None = Field(default=None, strict=True, ge=0, le=53)
-    flash_gpio_pin: int | None = Field(default=None, strict=True, ge=0, le=53)
+    light_gpio_pin: int | str | None = None
+    flash_gpio_pin: int | str | None = None
+    light_color: str | None = None
+    flash_color: str | None = None
     aruco_size_mm: float | None = Field(default=None, gt=0)
     capture_delay_sec: float | None = Field(default=None, ge=0.0, le=30.0)
 
-    @field_validator("name", "culture_name", "light_gpio_pin", "flash_gpio_pin")
+    @field_validator(
+        "name",
+        "culture_name",
+        "light_gpio_pin",
+        "flash_gpio_pin",
+        "light_color",
+        "flash_color",
+    )
     @classmethod
     def validate_not_null(cls, v: Any, info: ValidationInfo) -> Any:
         if v is None:
@@ -67,6 +116,11 @@ class InstallationPatch(BaseModel):
             if not isinstance(v, str) or not v.strip():
                 raise ValueError(f"Поле {info.field_name} не может быть пустым")
             return v.strip()
+        if info.field_name in ("light_gpio_pin", "flash_gpio_pin"):
+            pins = parse_gpio_pins(v, field_label=info.field_name)
+            return format_gpio_pins(pins)
+        if info.field_name in ("light_color", "flash_color"):
+            return normalize_hex_color(v)
         return v
 
 
@@ -175,8 +229,8 @@ def serialize_installation(
         light_snap = get_installation_light_snapshot(db, inst)
         data.update(
             {
-                "light_gpio_pin": inst.light_gpio_pin,
-                "flash_gpio_pin": inst.flash_gpio_pin,
+                "light_gpio_pin": format_gpio_pins(light_snap["light_pins"]),
+                "flash_gpio_pin": format_gpio_pins(light_snap["flash_pins"]),
                 **light_snap,
             }
         )
@@ -185,50 +239,45 @@ def serialize_installation(
 
 
 def check_pin_conflicts_and_warnings(
-    light_pin: int,
-    flash_pin: int,
+    light_pins_raw: int | str | list[int],
+    flash_pins_raw: int | str | list[int],
     db: Session,
     exclude_id: int | None = None,
 ) -> list[str]:
-    """Проверяет пины внутри одной установки и собирает предупреждения о занятых пинах."""
-    warnings: list[str] = []
+    """Проверяет пины внутри одной установки (строго 422 при пересечении) и собирает предупреждения о занятых пинах."""
+    light_pins = parse_gpio_pins(light_pins_raw, field_label="light_gpio_pin")
+    flash_pins = parse_gpio_pins(flash_pins_raw, field_label="flash_gpio_pin")
+    try:
+        validate_light_flash_disjoint(light_pins, flash_pins)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
 
-    # Предупреждение о совпадении пинов света и вспышки
-    if light_pin == flash_pin:
-        warnings.append(
-            f"⚠️ Пины света и вспышки совпадают (пин {light_pin}). "
-            "Управляется только свет, при съёмке он не выключается."
-        )
+    warnings: list[str] = []
 
     query = db.query(Installation).filter(Installation.is_archived.is_(False))
     if exclude_id is not None:
         query = query.filter(Installation.id != exclude_id)
     active_installations = query.all()
 
-    # Проверка занятости light_pin
-    light_used_by = [
-        inst.name
-        for inst in active_installations
-        if light_pin in (inst.light_gpio_pin, inst.flash_gpio_pin)
-    ]
-    if light_used_by:
-        names_str = ", ".join(f"«{name}»" for name in light_used_by)
-        warnings.append(
-            f"⚠️ Пин {light_pin} уже занят ({names_str}). Реле будут общими."
+    inst_pins_map: list[tuple[str, set[int]]] = []
+    for inst in active_installations:
+        used = set(get_installation_channel_pins(db, inst, is_flash=False)) | set(
+            get_installation_channel_pins(db, inst, is_flash=True)
         )
+        inst_pins_map.append((inst.name, used))
 
-    # Проверка занятости flash_pin (только если отличается от light_pin)
-    if flash_pin != light_pin:
-        flash_used_by = [
-            inst.name
-            for inst in active_installations
-            if flash_pin in (inst.light_gpio_pin, inst.flash_gpio_pin)
-        ]
-        if flash_used_by:
-            names_str = ", ".join(f"«{name}»" for name in flash_used_by)
-            warnings.append(
-                f"⚠️ Пин {flash_pin} уже занят ({names_str}). Реле будут общими."
-            )
+    seen_pins: set[int] = set()
+    for pin in light_pins + flash_pins:
+        if pin in seen_pins:
+            continue
+        seen_pins.add(pin)
+        used_by = [name for name, used in inst_pins_map if pin in used]
+        if used_by:
+            names_str = ", ".join(f"«{name}»" for name in used_by)
+            warnings.append(f"⚠️ Пин {pin} уже занят ({names_str}). Реле будут общими.")
 
     return warnings
 
@@ -310,15 +359,15 @@ def create_installation(
     Создание новой установки с валидацией имени и пинов.
     """
     validate_name_uniqueness(body.name, db)
-    warnings = check_pin_conflicts_and_warnings(
-        body.light_gpio_pin, body.flash_gpio_pin, db
-    )
+    light_pins = parse_gpio_pins(body.light_gpio_pin, field_label="light_gpio_pin")
+    flash_pins = parse_gpio_pins(body.flash_gpio_pin, field_label="flash_gpio_pin")
+    warnings = check_pin_conflicts_and_warnings(light_pins, flash_pins, db)
 
     inst = Installation(
         name=body.name,
         culture_name=body.culture_name,
-        light_gpio_pin=body.light_gpio_pin,
-        flash_gpio_pin=body.flash_gpio_pin,
+        light_gpio_pin=light_pins[0],
+        flash_gpio_pin=flash_pins[0],
         aruco_size_mm=body.aruco_size_mm,
         capture_delay_sec=body.capture_delay_sec,
         is_archived=False,
@@ -330,12 +379,21 @@ def create_installation(
     # По умолчанию индивидуальный свет включен, вспышка выключена; физика учитывает global_*_mode
     set_individual_light_state(db, inst.id, True, is_flash=False)
     set_individual_light_state(db, inst.id, False, is_flash=True)
+    set_installation_channel_pins(db, inst.id, light_pins, is_flash=False)
+    set_installation_channel_pins(db, inst.id, flash_pins, is_flash=True)
+    set_installation_channel_color(
+        db, inst.id, body.light_color or DEFAULT_COLOR_HEX, is_flash=False
+    )
+    set_installation_channel_color(
+        db, inst.id, body.flash_color or DEFAULT_COLOR_HEX, is_flash=True
+    )
     db.commit()
 
     light_snap = get_installation_light_snapshot(db, inst)
-    app_state.set_pin_state(inst.light_gpio_pin, light_snap["light_state"])
-    if inst.flash_gpio_pin != inst.light_gpio_pin:
-        app_state.set_pin_state(inst.flash_gpio_pin, light_snap["flash_state"])
+    for p in light_pins:
+        app_state.set_pin_state(p, light_snap["light_state"])
+    for p in flash_pins:
+        app_state.set_pin_state(p, light_snap["flash_state"])
 
     return serialize_installation(inst, current_user.role, db, warnings=warnings)
 
@@ -388,13 +446,40 @@ def patch_installation(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Установка в архиве",
             )
-        new_light = update_data.get("light_gpio_pin", inst.light_gpio_pin)
-        new_flash = update_data.get("flash_gpio_pin", inst.flash_gpio_pin)
-        warnings = check_pin_conflicts_and_warnings(
-            new_light, new_flash, db, exclude_id=inst.id
+        cur_light_pins = get_installation_channel_pins(db, inst, is_flash=False)
+        cur_flash_pins = get_installation_channel_pins(db, inst, is_flash=True)
+        new_light_pins = (
+            parse_gpio_pins(update_data["light_gpio_pin"], field_label="light_gpio_pin")
+            if "light_gpio_pin" in update_data
+            else cur_light_pins
         )
-        inst.light_gpio_pin = new_light
-        inst.flash_gpio_pin = new_flash
+        new_flash_pins = (
+            parse_gpio_pins(update_data["flash_gpio_pin"], field_label="flash_gpio_pin")
+            if "flash_gpio_pin" in update_data
+            else cur_flash_pins
+        )
+        warnings = check_pin_conflicts_and_warnings(
+            new_light_pins, new_flash_pins, db, exclude_id=inst.id
+        )
+        inst.light_gpio_pin = new_light_pins[0]
+        inst.flash_gpio_pin = new_flash_pins[0]
+        set_installation_channel_pins(db, inst.id, new_light_pins, is_flash=False)
+        set_installation_channel_pins(db, inst.id, new_flash_pins, is_flash=True)
+
+        light_snap = get_installation_light_snapshot(db, inst)
+        for p in new_light_pins:
+            app_state.set_pin_state(p, light_snap["light_state"])
+        for p in new_flash_pins:
+            app_state.set_pin_state(p, light_snap["flash_state"])
+
+    if "light_color" in update_data:
+        set_installation_channel_color(
+            db, inst.id, update_data["light_color"], is_flash=False
+        )
+    if "flash_color" in update_data:
+        set_installation_channel_color(
+            db, inst.id, update_data["flash_color"], is_flash=True
+        )
 
     if "aruco_size_mm" in update_data:
         inst.aruco_size_mm = update_data["aruco_size_mm"]
@@ -462,12 +547,13 @@ def unarchive_installation(
     db.refresh(inst)
 
     light_snap = get_installation_light_snapshot(db, inst)
-    app_state.set_pin_state(inst.light_gpio_pin, light_snap["light_state"])
-    if inst.flash_gpio_pin != inst.light_gpio_pin:
-        app_state.set_pin_state(inst.flash_gpio_pin, light_snap["flash_state"])
+    for p in light_snap["light_pins"]:
+        app_state.set_pin_state(p, light_snap["light_state"])
+    for p in light_snap["flash_pins"]:
+        app_state.set_pin_state(p, light_snap["flash_state"])
 
     warnings = check_pin_conflicts_and_warnings(
-        inst.light_gpio_pin, inst.flash_gpio_pin, db, exclude_id=inst.id
+        light_snap["light_pins"], light_snap["flash_pins"], db, exclude_id=inst.id
     )
 
     return serialize_installation(inst, current_user.role, db, warnings=warnings)
@@ -515,6 +601,7 @@ def delete_installation(
         for cam in inst.cameras:
             cam.installation_id = None
 
+    delete_installation_light_settings(db, inst.id)
     db.delete(inst)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

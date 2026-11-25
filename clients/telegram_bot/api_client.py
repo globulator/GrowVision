@@ -393,13 +393,18 @@ class GrowVisionApiClient:
         self,
         user_id: int,
         target: int | str | None = "all",
-        state: bool = False,
+        state: bool | None = False,
         installation_id: int | None = None,
+        color: str | None = None,
     ) -> dict[str, Any]:
         """Управление основным светом (Developer)."""
         effective_target = target if installation_id is None else installation_id
         resolved_target = self._resolve_target(effective_target)
-        payload = {"target": resolved_target, "state": state}
+        payload: dict[str, Any] = {"target": resolved_target}
+        if state is not None:
+            payload["state"] = state
+        if color is not None:
+            payload["color"] = color
         return await self._request(
             "POST",
             "/api/control/light/main",
@@ -413,13 +418,18 @@ class GrowVisionApiClient:
         self,
         user_id: int,
         target: int | str | None = "all",
-        state: bool = False,
+        state: bool | None = False,
         installation_id: int | None = None,
+        color: str | None = None,
     ) -> dict[str, Any]:
         """Управление вспышкой (Developer)."""
         effective_target = target if installation_id is None else installation_id
         resolved_target = self._resolve_target(effective_target)
-        payload = {"target": resolved_target, "state": state}
+        payload: dict[str, Any] = {"target": resolved_target}
+        if state is not None:
+            payload["state"] = state
+        if color is not None:
+            payload["color"] = color
         return await self._request(
             "POST",
             "/api/control/light/flash",

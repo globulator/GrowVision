@@ -28,6 +28,11 @@ from clients.telegram_bot.states import (
 )
 from clients.telegram_bot.utils.errors import ApiError, format_api_error
 from clients.telegram_bot.utils.formatters import format_installation_card
+from clients.telegram_bot.utils.pins import (
+    format_gpio_pins,
+    parse_gpio_pins,
+    validate_light_flash_disjoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -322,7 +327,8 @@ async def process_create_crop(message: Message, state: FSMContext) -> None:
     await state.set_state(InstallationCreateStates.waiting_light_pin)
     await message.answer(
         f"Культура: <b>{html.escape(crop)}</b>\n\n"
-        "Шаг 3 из 5. Введите GPIO-пин основного света на Raspberry Pi (целое число, например: <code>17</code>):",
+        "Шаг 3 из 5. Введите GPIO-пин основного света на Raspberry Pi "
+        "(1 число от 0 до 53, например: <code>17</code>, или 3 пина RGB через запятую, например: <code>17,27,22</code>):",
         reply_markup=get_cancel_inline_keyboard("inst:list"),
     )
 
@@ -330,18 +336,21 @@ async def process_create_crop(message: Message, state: FSMContext) -> None:
 @router.message(InstallationCreateStates.waiting_light_pin)
 async def process_create_light_pin(message: Message, state: FSMContext) -> None:
     raw_pin = (message.text or "").strip()
-    if not raw_pin.isdigit() or not (0 <= int(raw_pin) <= 53):
+    try:
+        light_pins = parse_gpio_pins(raw_pin, field_label="Пин света")
+    except ValueError as exc:
         await message.answer(
-            "Пин света должен быть целым числом в диапазоне от 0 до 53 (например, 17). Повторите ввод:",
+            f"{exc}. Введите 1 пин от 0 до 53 (например, 17) или 3 уникальных пина RGB от 0 до 53 через запятую (например, 17,27,22):",
             reply_markup=get_cancel_inline_keyboard("inst:list"),
         )
         return
-    light_pin = int(raw_pin)
-    await state.update_data(light_gpio_pin=light_pin)
+    light_pin_val = format_gpio_pins(light_pins)
+    await state.update_data(light_gpio_pin=light_pin_val)
     await state.set_state(InstallationCreateStates.waiting_flash_pin)
     await message.answer(
-        f"Пин света: <b>GPIO {light_pin}</b>\n\n"
-        "Шаг 4 из 5. Введите GPIO-пин вспышки на Raspberry Pi (целое число от 0 до 53, например: <code>27</code>):",
+        f"Пин света: <b>GPIO {light_pin_val}</b>\n\n"
+        "Шаг 4 из 5. Введите GPIO-пин вспышки на Raspberry Pi "
+        "(1 число от 0 до 53, например: <code>27</code>, или 3 уникальных пина RGB через запятую):",
         reply_markup=get_cancel_inline_keyboard("inst:list"),
     )
 
@@ -349,23 +358,29 @@ async def process_create_light_pin(message: Message, state: FSMContext) -> None:
 @router.message(InstallationCreateStates.waiting_flash_pin)
 async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
     raw_pin = (message.text or "").strip()
-    if not raw_pin.isdigit() or not (0 <= int(raw_pin) <= 53):
+    try:
+        flash_pins = parse_gpio_pins(raw_pin, field_label="Пин вспышки")
+    except ValueError as exc:
         await message.answer(
-            "Пин вспышки должен быть целым числом в диапазоне от 0 до 53 (например, 27). Повторите ввод:",
+            f"{exc}. Введите 1 пин от 0 до 53 (например, 27) или 3 уникальных пина RGB от 0 до 53 через запятую:",
             reply_markup=get_cancel_inline_keyboard("inst:cancel"),
         )
         return
-    flash_pin = int(raw_pin)
     data = await state.get_data()
-    light_pin = data.get("light_gpio_pin")
-    if light_pin is not None and flash_pin == light_pin:
-        await message.answer(
-            f"Пин вспышки не может совпадать с пином света (GPIO {light_pin}). Введите другой GPIO-пин:",
-            reply_markup=get_cancel_inline_keyboard("inst:cancel"),
-        )
-        return
+    raw_light = data.get("light_gpio_pin")
+    if raw_light is not None:
+        try:
+            light_pins = parse_gpio_pins(raw_light, field_label="Пин света")
+            validate_light_flash_disjoint(light_pins, flash_pins)
+        except ValueError as exc:
+            await message.answer(
+                f"{exc}. Введите другие пины вспышки (от 0 до 53):",
+                reply_markup=get_cancel_inline_keyboard("inst:cancel"),
+            )
+            return
 
-    await state.update_data(flash_gpio_pin=flash_pin)
+    flash_pin_val = format_gpio_pins(flash_pins)
+    await state.update_data(flash_gpio_pin=flash_pin_val)
     await state.set_state(InstallationCreateStates.waiting_aruco)
 
     aruco_kb = InlineKeyboardMarkup(
@@ -380,7 +395,7 @@ async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
         ]
     )
     await message.answer(
-        f"Пин вспышки: <b>GPIO {flash_pin}</b>\n\n"
+        f"Пин вспышки: <b>GPIO {flash_pin_val}</b>\n\n"
         "Шаг 5 из 5. Введите размер стороны маркера ArUco в миллиметрах (например: <code>50.0</code>) "
         "или нажмите [ Пропустить ]:",
         reply_markup=aruco_kb,
@@ -549,8 +564,8 @@ async def handle_edit_field_selected(
     prompts = {
         "name": "Введите новое название установки:",
         "crop_type": "Введите новое название культуры:",
-        "light_pin": "Введите новый GPIO-пин основного света (целое число):",
-        "flash_pin": "Введите новый GPIO-пин вспышки (целое число):",
+        "light_pin": "Введите новый GPIO-пин основного света (1 число 0..53 или 3 уникальных пина RGB через запятую):",
+        "flash_pin": "Введите новый GPIO-пин вспышки (1 число 0..53 или 3 уникальных пина RGB через запятую):",
         "aruco": "Введите новый размер стороны ArUco в мм (число > 0):",
     }
     prompt = prompts.get(field, "Введите новое значение:")
@@ -594,13 +609,11 @@ async def process_edit_value(
                 raise ValueError("Культура не может быть пустой")
             patch_payload["culture_name"] = val_text
         elif field == "light_pin":
-            if not val_text.isdigit() or not (0 <= int(val_text) <= 53):
-                raise ValueError("Пин света должен быть целым числом от 0 до 53")
-            patch_payload["light_gpio_pin"] = int(val_text)
+            pins = parse_gpio_pins(val_text, field_label="Пин света")
+            patch_payload["light_gpio_pin"] = format_gpio_pins(pins)
         elif field == "flash_pin":
-            if not val_text.isdigit() or not (0 <= int(val_text) <= 53):
-                raise ValueError("Пин вспышки должен быть целым числом от 0 до 53")
-            patch_payload["flash_gpio_pin"] = int(val_text)
+            pins = parse_gpio_pins(val_text, field_label="Пин вспышки")
+            patch_payload["flash_gpio_pin"] = format_gpio_pins(pins)
         elif field == "delay":
             if val_text.lower() in ("default", "none", "общая", "сброс"):
                 patch_payload["capture_delay_sec"] = None

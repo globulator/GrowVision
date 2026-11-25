@@ -43,6 +43,7 @@ from server.db.models import (
     PlantMeasurement,
     SystemSetting,
 )
+from shared.pins import format_gpio_pins
 from shared.schemas import (
     CaptureMeta,
     CommandResult,
@@ -177,8 +178,12 @@ def edge_heartbeat(
         active_inst_data.append(
             HeartbeatActiveInstallation(
                 id=inst.id,
-                light_gpio_pin=inst.light_gpio_pin,
-                flash_gpio_pin=inst.flash_gpio_pin,
+                light_gpio_pin=format_gpio_pins(light_snap["light_pins"]),
+                flash_gpio_pin=format_gpio_pins(light_snap["flash_pins"]),
+                light_pins=light_snap["light_pins"],
+                flash_pins=light_snap["flash_pins"],
+                light_color=light_snap["light_color"],
+                flash_color=light_snap["flash_color"],
                 camera_hardware_ids=cam_ids,
                 capture_delay_sec=inst.capture_delay_sec,
                 name=inst.name,
@@ -257,8 +262,12 @@ def edge_claim_command(
         )
         return {
             "id": item.id,
-            "light_gpio_pin": item.light_gpio_pin,
-            "flash_gpio_pin": item.flash_gpio_pin,
+            "light_gpio_pin": format_gpio_pins(light_snap["light_pins"]),
+            "flash_gpio_pin": format_gpio_pins(light_snap["flash_pins"]),
+            "light_pins": light_snap["light_pins"],
+            "flash_pins": light_snap["flash_pins"],
+            "light_color": light_snap["light_color"],
+            "flash_color": light_snap["flash_color"],
             "camera_hardware_ids": cam_ids,
             "capture_delay_sec": item.capture_delay_sec,
             "name": item.name,

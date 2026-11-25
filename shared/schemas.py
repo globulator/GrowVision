@@ -1,7 +1,13 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from shared.pins import (
+    DEFAULT_COLOR_HEX,
+    normalize_hex_color,
+    parse_gpio_pins,
+)
 
 SegmentationMode = Literal["auto", "onnx", "hsv"]
 
@@ -63,8 +69,12 @@ class HeartbeatActiveInstallation(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: int
-    light_gpio_pin: int
-    flash_gpio_pin: int
+    light_gpio_pin: int | str
+    flash_gpio_pin: int | str
+    light_pins: list[int] = Field(default_factory=list)
+    flash_pins: list[int] = Field(default_factory=list)
+    light_color: str = DEFAULT_COLOR_HEX
+    flash_color: str = DEFAULT_COLOR_HEX
     camera_hardware_ids: list[str] = Field(default_factory=list)
     capture_delay_sec: float | None = None
     name: str | None = None
@@ -74,6 +84,24 @@ class HeartbeatActiveInstallation(BaseModel):
     camera_segmentation_modes: dict[str, SegmentationMode] = Field(default_factory=dict)
     light_state: bool = True
     flash_state: bool = False
+
+    @model_validator(mode="after")
+    def _normalize_pins_and_colors(self) -> "HeartbeatActiveInstallation":
+        if not self.light_pins:
+            self.light_pins = parse_gpio_pins(
+                self.light_gpio_pin, field_label="light_gpio_pin"
+            )
+        if not self.flash_pins:
+            self.flash_pins = parse_gpio_pins(
+                self.flash_gpio_pin, field_label="flash_gpio_pin"
+            )
+        self.light_color = normalize_hex_color(
+            self.light_color, default=DEFAULT_COLOR_HEX
+        )
+        self.flash_color = normalize_hex_color(
+            self.flash_color, default=DEFAULT_COLOR_HEX
+        )
+        return self
 
 
 class HeartbeatResponse(BaseModel):
@@ -97,8 +125,12 @@ class CommandInstallation(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: int
-    light_gpio_pin: int
-    flash_gpio_pin: int
+    light_gpio_pin: int | str
+    flash_gpio_pin: int | str
+    light_pins: list[int] = Field(default_factory=list)
+    flash_pins: list[int] = Field(default_factory=list)
+    light_color: str = DEFAULT_COLOR_HEX
+    flash_color: str = DEFAULT_COLOR_HEX
     camera_hardware_ids: list[str] = Field(default_factory=list)
     capture_delay_sec: float | None = None
     name: str | None = None
@@ -108,6 +140,24 @@ class CommandInstallation(BaseModel):
     camera_segmentation_modes: dict[str, SegmentationMode] = Field(default_factory=dict)
     light_state: bool = True
     flash_state: bool = False
+
+    @model_validator(mode="after")
+    def _normalize_pins_and_colors(self) -> "CommandInstallation":
+        if not self.light_pins:
+            self.light_pins = parse_gpio_pins(
+                self.light_gpio_pin, field_label="light_gpio_pin"
+            )
+        if not self.flash_pins:
+            self.flash_pins = parse_gpio_pins(
+                self.flash_gpio_pin, field_label="flash_gpio_pin"
+            )
+        self.light_color = normalize_hex_color(
+            self.light_color, default=DEFAULT_COLOR_HEX
+        )
+        self.flash_color = normalize_hex_color(
+            self.flash_color, default=DEFAULT_COLOR_HEX
+        )
+        return self
 
 
 class CommandItem(BaseModel):

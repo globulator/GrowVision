@@ -15,10 +15,11 @@ from server.core.light_state import (
     compute_active_pin_states,
     compute_effective_state,
     get_global_light_mode,
-    get_individual_light_state,
+    get_installation_channel_pins,
     get_installation_light_snapshot,
     set_global_light_mode,
     set_individual_light_state,
+    set_installation_channel_color,
     sync_app_state_pins,
 )
 from server.core.rgb import resolve_capture_display_rel_path
@@ -29,6 +30,7 @@ from server.core.system_status import (
     validate_target_value,
 )
 from server.db.models import Capture, EdgeCommand, Installation, SystemSetting, User
+from shared.pins import format_gpio_pins, normalize_hex_color
 
 router = APIRouter(prefix="/api/control", tags=["control"])
 
@@ -54,22 +56,32 @@ class LightRequest(BaseModel):
     target: int | Literal["all"]
     state: bool | None = Field(default=None, strict=True)
     mode: LightMode | None = None
+    color: str | None = None
 
     @field_validator("target", mode="before")
     @classmethod
     def validate_target(cls, v: Any) -> int | Literal["all"]:
         return validate_target_value(v)
 
+    @field_validator("color")
+    @classmethod
+    def validate_color(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return normalize_hex_color(v)
+
     @model_validator(mode="after")
     def validate_state_or_mode(self) -> "LightRequest":
-        if self.state is None and self.mode is None:
-            raise ValueError("Необходимо указать state или mode")
+        if self.target == "all" and self.color is not None:
+            raise ValueError("Выбор HEX-цвета доступен только для конкретной установки")
+        if self.state is None and self.mode is None and self.color is None:
+            raise ValueError("Необходимо указать state, mode или color")
         if self.target != "all" and self.state is None:
             if self.mode in ("on", "off"):
                 self.state = self.mode == "on"
-            else:
+            elif self.color is None:
                 raise ValueError(
-                    "Для конкретной установки необходимо указать state (true/false)"
+                    "Для конкретной установки необходимо указать state (true/false) или color (#RRGGBB)"
                 )
         return self
 
@@ -398,13 +410,13 @@ async def _execute_light_control(
     *,
     is_flash: bool,
 ) -> dict[str, Any]:
-    """Общий обработчик управления основным светом и вспышкой с учётом иерархии режимов."""
+    """Общий обработчик управления основным светом и вспышкой с учётом иерархии режимов и HEX-цвета."""
     inst_id, is_global, _ = validate_target_and_resolve(body.target, db)
-    check_rpi_online(db)
 
     command_type = "LIGHT_FLASH" if is_flash else "LIGHT_MAIN"
 
     if is_global:
+        check_rpi_online(db)
         next_mode: LightMode = (
             body.mode
             if body.mode is not None
@@ -423,20 +435,31 @@ async def _execute_light_control(
         target_pin_states: dict[int, bool] = {}
         inst_states_map: dict[str, dict[str, Any]] = {}
         for item in active_insts:
-            ind_light = get_individual_light_state(db, item.id, is_flash=False)
-            ind_flash = get_individual_light_state(db, item.id, is_flash=True)
-            eff_light = compute_effective_state(g_light, ind_light)
-            eff_flash = compute_effective_state(g_flash, ind_flash)
+            snap = get_installation_light_snapshot(
+                db,
+                item,
+                global_light_mode=g_light,
+                global_flash_mode=g_flash,
+            )
+            eff_light = snap["light_state"]
+            eff_flash = snap["flash_state"]
             inst_states_map[str(item.id)] = {
-                "light_gpio_pin": item.light_gpio_pin,
-                "flash_gpio_pin": item.flash_gpio_pin,
+                "light_gpio_pin": format_gpio_pins(snap["light_pins"]),
+                "flash_gpio_pin": format_gpio_pins(snap["flash_pins"]),
+                "light_pins": snap["light_pins"],
+                "flash_pins": snap["flash_pins"],
+                "light_color": snap["light_color"],
+                "flash_color": snap["flash_color"],
                 "light_state": eff_light,
                 "flash_state": eff_flash,
             }
             if not is_flash:
-                target_pin_states[item.light_gpio_pin] = eff_light
-            elif item.flash_gpio_pin != item.light_gpio_pin:
-                target_pin_states[item.flash_gpio_pin] = eff_flash
+                for p in snap["light_pins"]:
+                    target_pin_states[p] = eff_light
+            else:
+                for p in snap["flash_pins"]:
+                    if p not in snap["light_pins"]:
+                        target_pin_states[p] = eff_flash
 
         cmd_payload: dict[str, Any] = {
             "mode": next_mode,
@@ -472,68 +495,120 @@ async def _execute_light_control(
                 str(k): v for k, v in app_state.get_all_pin_states().items()
             },
         }
-    else:
-        inst = db.query(Installation).filter(Installation.id == inst_id).first()
-        if not inst:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Установка не найдена",
-            )
-        next_state = bool(body.state)
-        global_mode = get_global_light_mode(db, is_flash=is_flash)
-        eff_state = compute_effective_state(global_mode, next_state)
-        target_pin = inst.flash_gpio_pin if is_flash else inst.light_gpio_pin
-        target_pin_states = {target_pin: eff_state}
+        debug_info = build_debug_info(finished_cmd, current_user, db)
+        if debug_info:
+            resp["debug_info"] = debug_info
+        return resp
 
-        cmd_payload = {
-            "state": eff_state,
-            "individual_state": next_state,
-            "mode": global_mode,
-            "pin_states": {str(target_pin): eff_state},
-        }
-        cmd = EdgeCommand(
-            command_type=command_type,
-            installation_id=inst_id,
-            is_global=False,
-            payload=json.dumps(cmd_payload),
-            status="pending",
+    inst = db.query(Installation).filter(Installation.id == inst_id).first()
+    if not inst:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Установка не найдена",
         )
-        db.add(cmd)
-        db.commit()
-        db.refresh(cmd)
 
-        finished_cmd = await wait_command_result(cmd.id, 10.0, db)
-        if finished_cmd.status == "done":
-            set_individual_light_state(db, inst.id, next_state, is_flash=is_flash)
-            # Синхронизируем установки, разделяющие тот же физический GPIO-пин
-            shared_query = db.query(Installation).filter(
-                Installation.is_archived.is_(False),
-                Installation.id != inst.id,
-            )
-            if is_flash:
-                shared_query = shared_query.filter(
-                    Installation.flash_gpio_pin == target_pin
-                )
-            else:
-                shared_query = shared_query.filter(
-                    Installation.light_gpio_pin == target_pin
-                )
-            for other in shared_query.all():
-                set_individual_light_state(db, other.id, next_state, is_flash=is_flash)
+    snap = get_installation_light_snapshot(db, inst)
+    channel_pins = snap["flash_pins"] if is_flash else snap["light_pins"]
+    saved_color = snap["flash_color"] if is_flash else snap["light_color"]
+    next_color = body.color if body.color is not None else saved_color
+    current_ind_state = (
+        snap["individual_flash_state"] if is_flash else snap["individual_light_state"]
+    )
+    next_ind_state = bool(body.state) if body.state is not None else current_ind_state
+    global_mode = get_global_light_mode(db, is_flash=is_flash)
+    eff_state = compute_effective_state(global_mode, next_ind_state)
+
+    # Изменение только цвета при эффективно выключенном канале:
+    # сохраняем цвет в БД, не включая лампу!
+    if body.state is None and not eff_state:
+        if body.color is not None:
+            set_installation_channel_color(db, inst.id, next_color, is_flash=is_flash)
+            for other in (
+                db.query(Installation)
+                .filter(Installation.is_archived.is_(False), Installation.id != inst.id)
+                .all()
+            ):
+                other_pins = get_installation_channel_pins(db, other, is_flash=is_flash)
+                if other_pins == channel_pins:
+                    set_installation_channel_color(
+                        db, other.id, next_color, is_flash=is_flash
+                    )
             db.commit()
-            sync_app_state_pins(target_pin_states)
-
-        resp = {
-            "command_id": finished_cmd.id,
-            "status": finished_cmd.status,
-            "result_message": finished_cmd.result_message or "OK",
-            "individual_state": next_state,
+        return {
+            "command_id": None,
+            "status": "done",
+            "result_message": f"Цвет сохранён ({next_color}), канал выключен",
+            "individual_state": next_ind_state,
             "effective_state": eff_state,
             "locked": global_mode != "default",
+            "color": next_color,
+            "pins": channel_pins,
+            "is_rgb": len(channel_pins) == 3,
             "pin_states": {
                 str(k): v for k, v in app_state.get_all_pin_states().items()
             },
         }
+
+    check_rpi_online(db)
+    target_pin_states = {p: eff_state for p in channel_pins}
+
+    cmd_payload = {
+        "state": eff_state,
+        "individual_state": next_ind_state,
+        "mode": global_mode,
+        "pins": channel_pins,
+        "color": next_color,
+        "pin_states": {str(p): eff_state for p in channel_pins},
+    }
+    cmd = EdgeCommand(
+        command_type=command_type,
+        installation_id=inst_id,
+        is_global=False,
+        payload=json.dumps(cmd_payload),
+        status="pending",
+    )
+    db.add(cmd)
+    db.commit()
+    db.refresh(cmd)
+
+    finished_cmd = await wait_command_result(cmd.id, 10.0, db)
+    if finished_cmd.status == "done":
+        if body.state is not None:
+            set_individual_light_state(db, inst.id, next_ind_state, is_flash=is_flash)
+        if body.color is not None:
+            set_installation_channel_color(db, inst.id, next_color, is_flash=is_flash)
+        # Синхронизируем установки, разделяющие те же физические GPIO-пины
+        channel_set = set(channel_pins)
+        other_insts = (
+            db.query(Installation)
+            .filter(Installation.is_archived.is_(False), Installation.id != inst.id)
+            .all()
+        )
+        for other in other_insts:
+            other_pins = get_installation_channel_pins(db, other, is_flash=is_flash)
+            if body.state is not None and (set(other_pins) & channel_set):
+                set_individual_light_state(
+                    db, other.id, next_ind_state, is_flash=is_flash
+                )
+            if body.color is not None and other_pins == channel_pins:
+                set_installation_channel_color(
+                    db, other.id, next_color, is_flash=is_flash
+                )
+        db.commit()
+        sync_app_state_pins(target_pin_states)
+
+    resp = {
+        "command_id": finished_cmd.id,
+        "status": finished_cmd.status,
+        "result_message": finished_cmd.result_message or "OK",
+        "individual_state": next_ind_state,
+        "effective_state": eff_state,
+        "locked": global_mode != "default",
+        "color": next_color,
+        "pins": channel_pins,
+        "is_rgb": len(channel_pins) == 3,
+        "pin_states": {str(k): v for k, v in app_state.get_all_pin_states().items()},
+    }
 
     debug_info = build_debug_info(finished_cmd, current_user, db)
     if debug_info:
@@ -584,12 +659,38 @@ async def control_relay_test(
     initial_states: dict[str, bool] = {
         str(pin): val for pin, val in computed_pins.items()
     }
+    channels_payload: list[dict[str, Any]] = []
+    for t_inst in target_insts:
+        t_snap = get_installation_light_snapshot(db, t_inst)
+        channels_payload.append(
+            {
+                "installation_id": t_inst.id,
+                "role": "light",
+                "pins": t_snap["light_pins"],
+                "state": t_snap["light_state"],
+                "color": t_snap["light_color"],
+            }
+        )
+        channels_payload.append(
+            {
+                "installation_id": t_inst.id,
+                "role": "flash",
+                "pins": t_snap["flash_pins"],
+                "state": t_snap["flash_state"],
+                "color": t_snap["flash_color"],
+            }
+        )
 
     cmd = EdgeCommand(
         command_type="RELAY_TEST",
         installation_id=inst_id,
         is_global=is_global,
-        payload=json.dumps({"initial_states": initial_states}),
+        payload=json.dumps(
+            {
+                "initial_states": initial_states,
+                "channels": channels_payload,
+            }
+        ),
         status="pending",
     )
     db.add(cmd)
@@ -650,18 +751,26 @@ def get_relays_status(
             global_light_mode=global_light_mode,
             global_flash_mode=global_flash_mode,
         )
-        pins[str(inst.light_gpio_pin)] = snap["light_state"]
-        app_state.set_pin_state(inst.light_gpio_pin, snap["light_state"])
-        if inst.flash_gpio_pin != inst.light_gpio_pin:
-            pins[str(inst.flash_gpio_pin)] = snap["flash_state"]
-            app_state.set_pin_state(inst.flash_gpio_pin, snap["flash_state"])
+        for p in snap["light_pins"]:
+            pins[str(p)] = snap["light_state"]
+            app_state.set_pin_state(p, snap["light_state"])
+        for p in snap["flash_pins"]:
+            if p not in snap["light_pins"]:
+                pins[str(p)] = snap["flash_state"]
+                app_state.set_pin_state(p, snap["flash_state"])
 
         installations_relays.append(
             {
                 "installation_id": inst.id,
                 "name": inst.name,
-                "light_gpio_pin": inst.light_gpio_pin,
-                "flash_gpio_pin": inst.flash_gpio_pin,
+                "light_gpio_pin": format_gpio_pins(snap["light_pins"]),
+                "flash_gpio_pin": format_gpio_pins(snap["flash_pins"]),
+                "light_pins": snap["light_pins"],
+                "flash_pins": snap["flash_pins"],
+                "light_is_rgb": snap["light_is_rgb"],
+                "flash_is_rgb": snap["flash_is_rgb"],
+                "light_color": snap["light_color"],
+                "flash_color": snap["flash_color"],
                 "individual_light_state": snap["individual_light_state"],
                 "individual_flash_state": snap["individual_flash_state"],
                 "light_state": snap["light_state"],
@@ -685,7 +794,7 @@ def get_relays_status(
     flash_pins_items = [
         item
         for item in installations_relays
-        if item["flash_gpio_pin"] != item["light_gpio_pin"]
+        if set(item["flash_pins"]) != set(item["light_pins"])
     ]
     flash_state = any(item["flash_state"] for item in flash_pins_items)
 
@@ -716,7 +825,7 @@ def get_installation_relays(
     snap = get_installation_light_snapshot(db, inst)
     return {
         "installation_id": inst.id,
-        "light_gpio_pin": inst.light_gpio_pin,
-        "flash_gpio_pin": inst.flash_gpio_pin,
+        "light_gpio_pin": format_gpio_pins(snap["light_pins"]),
+        "flash_gpio_pin": format_gpio_pins(snap["flash_pins"]),
         **snap,
     }

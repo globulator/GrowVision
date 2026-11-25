@@ -177,24 +177,30 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getRelays: () => request('/api/control/relays'),
-  controlLightMain: (target, stateOrMode) =>
-    request('/api/control/light/main', {
+  controlLightMain: (target, stateOrModeOrPayload) => {
+    const body =
+      stateOrModeOrPayload !== null && typeof stateOrModeOrPayload === 'object'
+        ? { target, ...stateOrModeOrPayload }
+        : typeof stateOrModeOrPayload === 'string'
+          ? { target, mode: stateOrModeOrPayload }
+          : { target, state: Boolean(stateOrModeOrPayload) };
+    return request('/api/control/light/main', {
       method: 'POST',
-      body: JSON.stringify(
-        typeof stateOrMode === 'string'
-          ? { target, mode: stateOrMode }
-          : { target, state: Boolean(stateOrMode) }
-      ),
-    }),
-  controlLightFlash: (target, stateOrMode) =>
-    request('/api/control/light/flash', {
+      body: JSON.stringify(body),
+    });
+  },
+  controlLightFlash: (target, stateOrModeOrPayload) => {
+    const body =
+      stateOrModeOrPayload !== null && typeof stateOrModeOrPayload === 'object'
+        ? { target, ...stateOrModeOrPayload }
+        : typeof stateOrModeOrPayload === 'string'
+          ? { target, mode: stateOrModeOrPayload }
+          : { target, state: Boolean(stateOrModeOrPayload) };
+    return request('/api/control/light/flash', {
       method: 'POST',
-      body: JSON.stringify(
-        typeof stateOrMode === 'string'
-          ? { target, mode: stateOrMode }
-          : { target, state: Boolean(stateOrMode) }
-      ),
-    }),
+      body: JSON.stringify(body),
+    });
+  },
   controlRelayTest: (target = 'all') =>
     request('/api/control/relay-test', {
       method: 'POST',

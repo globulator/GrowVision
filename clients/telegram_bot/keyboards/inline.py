@@ -152,26 +152,44 @@ def get_control_panel_keyboard(
     target: str,  # 'all' или str(installation_id)
     light_state: bool = False,
     flash_state: bool = False,
+    *,
+    light_is_rgb: bool = False,
+    flash_is_rgb: bool = False,
+    light_color: str = "#FFFFFF",
+    flash_color: str = "#FFFFFF",
 ) -> InlineKeyboardMarkup:
-    """Панель управления реле: 2 кнопки-переключателя с текущим статусом."""
+    """Панель управления реле: кнопки-переключатели или вход в RGB HEX-меню."""
     light_next = 0 if light_state else 1
     light_icon = "🟢 ВКЛ" if light_state else "⚪️ ВЫКЛ"
 
     flash_next = 0 if flash_state else 1
     flash_icon = "🟢 ВКЛ" if flash_state else "⚪️ ВЫКЛ"
 
+    if target != "all" and light_is_rgb:
+        light_btn = InlineKeyboardButton(
+            text=f"💡 Свет RGB ({light_color}): {light_icon}",
+            callback_data=f"ctrl:rgb:light:{target}",
+        )
+    else:
+        light_btn = InlineKeyboardButton(
+            text=f"💡 Свет: {light_icon}",
+            callback_data=f"ctrl:light:{light_next}:{target}",
+        )
+
+    if target != "all" and flash_is_rgb:
+        flash_btn = InlineKeyboardButton(
+            text=f"⚡ Вспышка RGB ({flash_color}): {flash_icon}",
+            callback_data=f"ctrl:rgb:flash:{target}",
+        )
+    else:
+        flash_btn = InlineKeyboardButton(
+            text=f"⚡ Вспышка: {flash_icon}",
+            callback_data=f"ctrl:flash:{flash_next}:{target}",
+        )
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"💡 Свет: {light_icon}",
-                    callback_data=f"ctrl:light:{light_next}:{target}",
-                ),
-                InlineKeyboardButton(
-                    text=f"⚡ Вспышка: {flash_icon}",
-                    callback_data=f"ctrl:flash:{flash_next}:{target}",
-                ),
-            ],
+            [light_btn, flash_btn],
             [
                 InlineKeyboardButton(
                     text="🧪 Тест реле (3 сек)",
@@ -183,6 +201,39 @@ def get_control_panel_keyboard(
                 ),
             ],
             [InlineKeyboardButton(text="⬅️ К выбору цели", callback_data="ctrl:menu")],
+        ]
+    )
+
+
+def get_rgb_channel_menu_keyboard(
+    target: str,
+    channel: str,  # 'light' | 'flash'
+    state: bool,
+    color: str,
+) -> InlineKeyboardMarkup:
+    """Подменю RGB-лампы конкретной установки (статус + Вкл/Выкл + Задать HEX-цвет)."""
+    next_val = 0 if state else 1
+    toggle_text = "⚪️ Выключить" if state else "🟢 Включить"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"{toggle_text} ({color})",
+                    callback_data=f"ctrl:rgb_toggle:{channel}:{next_val}:{target}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎨 Задать HEX-цвет",
+                    callback_data=f"ctrl:rgb_hex:{channel}:{target}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад к управлению",
+                    callback_data=f"ctrl:target:{target}",
+                )
+            ],
         ]
     )
 

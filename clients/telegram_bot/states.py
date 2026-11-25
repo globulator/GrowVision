@@ -72,3 +72,9 @@ class SessionStates(StatesGroup):
     """FSM-состояния управления сессиями."""
 
     waiting_rename_name = State()
+
+
+class ControlColorStates(StatesGroup):
+    """FSM-состояния задания HEX-цвета для RGB-лампы."""
+
+    waiting_hex = State()
