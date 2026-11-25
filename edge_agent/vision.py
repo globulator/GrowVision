@@ -403,11 +403,80 @@ def _compute_auto_rgb_gains(
     return (r_out, g_out, b_out)
 
 
+def _reduce_poly_to_quad(pts: Any) -> Any | None:
+    """Сводит 4–6-угольник к 4 вершинам, удаляя наименее значимые вершины по площади треугольника."""
+    arr = np.asarray(pts, dtype=np.float32).reshape(-1, 2)
+    if len(arr) < 4:
+        return None
+    while len(arr) > 4:
+        n = len(arr)
+        min_area = float("inf")
+        drop_idx = 0
+        for i in range(n):
+            p_prev = arr[(i - 1) % n]
+            p_curr = arr[i]
+            p_next = arr[(i + 1) % n]
+            # Удвоенная площадь треугольника (p_prev, p_curr, p_next)
+            tri_area2 = abs(
+                float(
+                    (p_curr[0] - p_prev[0]) * (p_next[1] - p_prev[1])
+                    - (p_curr[1] - p_prev[1]) * (p_next[0] - p_prev[0])
+                )
+            )
+            if tri_area2 < min_area:
+                min_area = tri_area2
+                drop_idx = i
+        arr = np.delete(arr, drop_idx, axis=0)
+    return arr.astype(np.float32)
+
+
+def crop_color_marker_roi_jpeg(
+    img: Any,
+    corners: Any,
+    padding_ratio: float = 0.12,
+    max_width: int = 480,
+) -> bytes | None:
+    """Вырезает ROI-фрагмент обнаруженного цветового маркера из BGR-кадра и кодирует в JPEG."""
+    if not CV2_AVAILABLE or img is None or corners is None:
+        return None
+    h, w = img.shape[:2]
+    pts = np.asarray(corners, dtype=np.float32).reshape(-1, 2)
+    if len(pts) < 4:
+        return None
+
+    x_min, y_min = float(np.min(pts[:, 0])), float(np.min(pts[:, 1]))
+    x_max, y_max = float(np.max(pts[:, 0])), float(np.max(pts[:, 1]))
+    bw = max(1.0, x_max - x_min)
+    bh = max(1.0, y_max - y_min)
+    pad_x = bw * padding_ratio
+    pad_y = bh * padding_ratio
+
+    x1 = max(0, int(np.floor(x_min - pad_x)))
+    y1 = max(0, int(np.floor(y_min - pad_y)))
+    x2 = min(w, int(np.ceil(x_max + pad_x)))
+    y2 = min(h, int(np.ceil(y_max + pad_y)))
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    roi = img[y1:y2, x1:x2]
+    if roi.size == 0:
+        return None
+
+    rh, rw = roi.shape[:2]
+    if rw > max_width > 0:
+        scale = float(max_width) / float(rw)
+        new_h = max(1, round(rh * scale))
+        roi = cv2.resize(roi, (max_width, new_h), interpolation=cv2.INTER_AREA)
+
+    ok, enc = cv2.imencode(".jpg", roi, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+    return enc.tobytes() if ok else None
+
+
 def _verify_warped_color_marker(
     warped_bgr: Any,
 ) -> tuple[bool, tuple[float, float, float] | None]:
     """Проверяет выпрямленного кандидата цветового маркера (500x200) и вычисляет RGB-коэффициенты."""
-    # 1. Проверка контрастной чёрной рамки и внутреннего белого поля
+    # 1. Проверка контрастной чёрной рамки и внутреннего белого поля (с допуском на блики экрана)
     border_strips = [
         warped_bgr[3:14, 30:470],
         warped_bgr[186:197, 30:470],
@@ -425,11 +494,11 @@ def _verify_warped_color_marker(
     field_luma = float(np.median(field_pixels))
     field_std = float(np.max(np.std(field_pixels, axis=0)))
 
-    if border_luma > 140.0 or field_luma < 85.0:
+    if border_luma > 175.0 or field_luma < 70.0:
         return False, None
-    if field_luma < border_luma + 35.0:
+    if field_luma < border_luma + 20.0:
         return False, None
-    if field_std > 48.0:
+    if field_std > 68.0:
         return False, None
 
     # 2. Извлекаем 5 плашек (медиана RGB по центральной зоне каждой плашки)
@@ -439,7 +508,7 @@ def _verify_warped_color_marker(
         if roi_bgr.size == 0:
             return False, None
         roi_rgb = roi_bgr[:, :, ::-1].astype(np.float64)
-        if float(np.max(np.std(roi_rgb, axis=(0, 1)))) > 42.0:
+        if float(np.max(np.std(roi_rgb, axis=(0, 1)))) > 60.0:
             return False, None
         med_rgb = np.median(roi_rgb.reshape(-1, 3), axis=0)
         patches_rgb.append(med_rgb)
@@ -448,25 +517,25 @@ def _verify_warped_color_marker(
     for order in ((0, 1, 2, 3, 4), (4, 3, 2, 1, 0)):
         p_r, p_g, p_b, p_w, p_gray = (patches_rgb[i] for i in order)
 
-        # Красная плашка
+        # Красная плашка (устойчивое относительное доминирование R > G, B)
         if not (
-            p_r[0] > p_r[1] * 1.35
-            and p_r[0] > p_r[2] * 1.35
-            and (p_r[0] - max(p_r[1], p_r[2])) > 25.0
+            p_r[0] > p_r[1] * 1.12
+            and p_r[0] > p_r[2] * 1.12
+            and (p_r[0] - max(p_r[1], p_r[2])) > 10.0
         ):
             continue
-        # Зелёная плашка
+        # Зелёная плашка (устойчивое относительное доминирование G > R, B)
         if not (
-            p_g[1] > p_g[0] * 1.35
-            and p_g[1] > p_g[2] * 1.35
-            and (p_g[1] - max(p_g[0], p_g[2])) > 25.0
+            p_g[1] > p_g[0] * 1.12
+            and p_g[1] > p_g[2] * 1.12
+            and (p_g[1] - max(p_g[0], p_g[2])) > 10.0
         ):
             continue
-        # Синяя плашка
+        # Синяя плашка (устойчивое относительное доминирование B > R, G)
         if not (
-            p_b[2] > p_b[0] * 1.35
-            and p_b[2] > p_b[1] * 1.35
-            and (p_b[2] - max(p_b[0], p_b[1])) > 25.0
+            p_b[2] > p_b[0] * 1.12
+            and p_b[2] > p_b[1] * 1.12
+            and (p_b[2] - max(p_b[0], p_b[1])) > 10.0
         ):
             continue
 
@@ -475,14 +544,12 @@ def _verify_warped_color_marker(
         w_ratio = float(np.max(p_w)) / max(1.0, float(np.min(p_w)))
         gray_ratio = float(np.max(p_gray)) / max(1.0, float(np.min(p_gray)))
 
-        # Белая и нейтральная серая плашки
-        if w_mean < 120.0 or float(np.min(p_w)) < 70.0 or w_ratio > 2.8:
+        # Белая и нейтральная серая плашки (низкая насыщенность и разница яркости)
+        if w_mean < 95.0 or float(np.min(p_w)) < 45.0 or w_ratio > 3.2:
             continue
-        if gray_mean < 35.0 or gray_mean > 225.0 or gray_ratio > 2.8:
+        if gray_mean < 25.0 or gray_mean > 235.0 or gray_ratio > 3.2:
             continue
-        if w_mean < gray_mean + 18.0:
-            continue
-        if gray_mean < border_luma + 12.0:
+        if w_mean <= gray_mean + 10.0:
             continue
 
         gains = _compute_auto_rgb_gains(p_r, p_g, p_b, p_w, p_gray)
@@ -526,6 +593,26 @@ def detect_color_marker_in_bgr(
     candidates: list[tuple[float, Any]] = []
     seen_centers: list[tuple[float, float, float]] = []
 
+    def _register_quad(quad_pts: Any, ref_area: float) -> None:
+        pts = _order_quad_long_horizontal(quad_pts)
+        l1 = float(np.linalg.norm(pts[1] - pts[0]))
+        l2 = float(np.linalg.norm(pts[2] - pts[1]))
+        if min(l1, l2) < 12.0:
+            return
+        aspect = max(l1, l2) / min(l1, l2)
+        if not (1.1 <= aspect <= 8.5):
+            return
+        cx, cy = float(pts[:, 0].mean()), float(pts[:, 1].mean())
+        dup = any(
+            abs(cx - sx) < 8.0
+            and abs(cy - sy) < 8.0
+            and abs(ref_area - sa) < max(200.0, ref_area * 0.08)
+            for sx, sy, sa in seen_centers
+        )
+        if not dup:
+            seen_centers.append((cx, cy, ref_area))
+            candidates.append((ref_area, pts))
+
     for bmap in bin_maps:
         contours, _ = cv2.findContours(bmap, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         for cnt in contours:
@@ -535,28 +622,26 @@ def detect_color_marker_in_bgr(
             peri = cv2.arcLength(cnt, True)
             if peri <= 0:
                 continue
-            for eps_factor in (0.02, 0.035, 0.05):
+            for eps_factor in (0.02, 0.035, 0.05, 0.075, 0.1):
                 approx = cv2.approxPolyDP(cnt, eps_factor * peri, True)
-                if len(approx) == 4 and cv2.isContourConvex(approx):
-                    pts = _order_quad_long_horizontal(approx)
-                    l1 = float(np.linalg.norm(pts[1] - pts[0]))
-                    l2 = float(np.linalg.norm(pts[2] - pts[1]))
-                    if min(l1, l2) < 12.0:
-                        break
-                    aspect = max(l1, l2) / min(l1, l2)
-                    if not (1.25 <= aspect <= 6.0):
-                        break
-                    cx, cy = float(pts[:, 0].mean()), float(pts[:, 1].mean())
-                    dup = any(
-                        abs(cx - sx) < 8.0
-                        and abs(cy - sy) < 8.0
-                        and abs(area - sa) < max(200.0, area * 0.08)
-                        for sx, sy, sa in seen_centers
-                    )
-                    if not dup:
-                        seen_centers.append((cx, cy, area))
-                        candidates.append((area, pts))
+                n_pts = len(approx)
+                if n_pts == 4 and cv2.isContourConvex(approx):
+                    _register_quad(approx, area)
                     break
+                if n_pts in (5, 6):
+                    hull = cv2.convexHull(approx)
+                    if len(hull) == 4:
+                        _register_quad(hull, area)
+                        break
+                    if len(hull) in (5, 6):
+                        reduced = _reduce_poly_to_quad(hull)
+                        if reduced is not None and cv2.isContourConvex(
+                            reduced.reshape(-1, 1, 2)
+                        ):
+                            _register_quad(reduced, area)
+                        # Перспективный запасной вариант через minAreaRect при скошенных углах
+                        box = cv2.boxPoints(cv2.minAreaRect(cnt))
+                        _register_quad(box, area)
 
     # Проверяем от самых крупных (чтобы внешний контур рамки имел приоритет над внутренним белым полем)
     candidates.sort(key=lambda x: x[0], reverse=True)
@@ -1211,6 +1296,26 @@ class VisionPipeline:
             logger.debug(f"Ошибка при детекции цветового маркера: {exc}")
             return None, None
 
+    def detect_color_marker_with_roi(
+        self, image_bytes: bytes
+    ) -> tuple[Any | None, tuple[float, float, float] | None, bytes | None]:
+        """Обнаруживает цветовой маркер и возвращает (углы_маркера, (r, g, b), jpeg_roi_кроп)."""
+        if not CV2_AVAILABLE or not image_bytes:
+            return None, None, None
+        try:
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is None:
+                return None, None, None
+            corners, gains = detect_color_marker_in_bgr(img)
+            if corners is None or gains is None:
+                return None, None, None
+            roi_bytes = crop_color_marker_roi_jpeg(img, corners)
+            return corners, gains, roi_bytes
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Ошибка при детекции цветового маркера с ROI: {exc}")
+            return None, None, None
+
     def calibrate_color_from_marker(
         self, image_bytes: bytes
     ) -> tuple[float, float, float] | None:
@@ -1468,12 +1573,15 @@ class VisionPipeline:
                 return image_bytes, []
 
             h, w = img.shape[:2]
-            # Адаптивный порог минимальной площади от разрешения кадра: max(150.0, (w * h) * 0.0005)
-            min_area = max(150.0, float(w * h) * 0.0005)
+            # Адаптивный порог минимальной площади от разрешения кадра: отсекает мелкий шум теней
+            min_area = max(350.0, float(w * h) * 0.0012)
 
-            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-            # Повышен порог насыщенности S (65 вместо 40), чтобы слабо-зелёный серый фон не сливался в контур
-            lower_green = np.array([30, 65, 40], dtype=np.uint8)
+            # Шумоподавление перед HSV, чтобы убрать матричный цветовой шум камеры в тёмных участках
+            denoised = cv2.medianBlur(img, 5)
+            denoised = cv2.GaussianBlur(denoised, (3, 3), 0)
+            hsv = cv2.cvtColor(denoised, cv2.COLOR_BGR2HSV)
+            # Повышены пороги S >= 80 и V >= 60 для фильтрации тёмного и слабонасыщенного фона
+            lower_green = np.array([30, 80, 60], dtype=np.uint8)
             upper_green = np.array([85, 255, 255], dtype=np.uint8)
             mask = cv2.inRange(hsv, lower_green, upper_green)
 

@@ -1,3 +1,4 @@
+import base64
 import logging
 import os
 import platform
@@ -911,7 +912,13 @@ class EdgeOrchestrator:
             )
             return
 
-        gains = self.vision.calibrate_color_from_marker(raw_frame)
+        preview = bool(payload.get("preview", False))
+        roi_bytes: bytes | None = None
+        detect_with_roi = getattr(self.vision, "detect_color_marker_with_roi", None)
+        if callable(detect_with_roi):
+            _, gains, roi_bytes = detect_with_roi(raw_frame)
+        else:
+            gains = self.vision.calibrate_color_from_marker(raw_frame)
         if gains is None:
             self.client.send_command_result(
                 cmd.id,
@@ -923,24 +930,40 @@ class EdgeOrchestrator:
             return
 
         norm = self._normalize_rgb_tuple(gains)
-        self._camera_rgb[hw_id] = norm
-        self._last_server_rgb[hw_id] = norm
-        if (
-            getattr(self.live_stream, "is_running", False)
-            and getattr(self.live_stream, "active_camera_id", None) == hw_id
-        ):
-            self.live_stream.set_rgb_gains(*norm)
+        if not preview:
+            self._camera_rgb[hw_id] = norm
+            self._last_server_rgb[hw_id] = norm
+            if (
+                getattr(self.live_stream, "is_running", False)
+                and getattr(self.live_stream, "active_camera_id", None) == hw_id
+            ):
+                self.live_stream.set_rgb_gains(*norm)
 
         rgb_dict = {"r": norm[0], "g": norm[1], "b": norm[2]}
+        result_data: dict[str, Any] = {
+            "rgb": rgb_dict,
+            "recommended_rgb": rgb_dict,
+            "preview": preview,
+        }
+        if isinstance(roi_bytes, (bytes, bytearray)) and len(roi_bytes) > 0:
+            result_data["roi_image_base64"] = base64.b64encode(bytes(roi_bytes)).decode(
+                "ascii"
+            )
+
+        msg_prefix = (
+            "Предпросмотр автоцветокоррекции" if preview else "Автоцветокоррекция"
+        )
         self.client.send_command_result(
             cmd.id,
             CommandResult(
                 status="done",
                 result_message=(
-                    f"Автоцветокоррекция: R={norm[0]:.2f}, G={norm[1]:.2f}, B={norm[2]:.2f}"
+                    f"{msg_prefix}: R={norm[0]:.2f}, G={norm[1]:.2f}, B={norm[2]:.2f}"
                 ),
-                data={"rgb": rgb_dict},
-                debug_log_line=f"[COLOR] AUTO_COLOR_CALIBRATE {hw_id} -> {rgb_dict}",
+                data=result_data,
+                debug_log_line=(
+                    f"[COLOR] AUTO_COLOR_CALIBRATE preview={preview} {hw_id} -> {rgb_dict}"
+                ),
             ),
         )
 
