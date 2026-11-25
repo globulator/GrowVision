@@ -379,7 +379,7 @@ def test_installation_crud_and_pin_validations(client: TestClient, test_env):
     )
     assert r_dup_name.status_code == 409
 
-    # 3. Совпадение пинов света и вспышки внутри одной установки разрешено (201) с предупреждением (Этап 8.1)
+    # 3. Совпадение пинов света и вспышки внутри одной установки строго запрещено (422) (Этап 12)
     r_same_pins = client.post(
         "/api/installations",
         headers=dev_hdrs,
@@ -390,8 +390,8 @@ def test_installation_crud_and_pin_validations(client: TestClient, test_env):
             "flash_gpio_pin": 21,
         },
     )
-    assert r_same_pins.status_code == 201
-    assert any("совпадают" in w for w in r_same_pins.json().get("warnings", []))
+    assert r_same_pins.status_code == 422
+    assert "пересекаться" in r_same_pins.json()["detail"]
 
     # Использование пина другой установки разрешено (201) с предупреждением (Этап 7.4)
     r_shared_pin = client.post(

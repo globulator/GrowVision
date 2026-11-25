@@ -858,8 +858,13 @@
           <div id="unit-editor-light-card" class="unit-light-card hidden">
             <div class="unit-light-card-main">
               <div class="unit-light-card-info">
-                <span class="unit-light-card-title">Основной свет</span>
+                <div class="unit-light-card-title-row">
+                  <span id="unit-editor-light-swatch" class="unit-light-swatch hidden" title="Текущий цвет RGB"></span>
+                  <span class="unit-light-card-title">Основной свет</span>
+                  <span id="unit-editor-light-hex" class="unit-light-hex hidden">#FFFFFF</span>
+                </div>
                 <span id="unit-editor-light-locked" class="unit-light-locked-hint hidden">Заблокировано</span>
+                <span id="unit-editor-light-rgb-hint" class="unit-light-rgb-hint hidden">Нажмите на плашку для выбора цвета</span>
               </div>
               <label class="toggle-switch" aria-label="Основной свет установки">
                 <input type="checkbox" id="unit-editor-light-toggle">
@@ -871,13 +876,76 @@
           <div id="unit-editor-flash-card" class="unit-light-card hidden">
             <div class="unit-light-card-main">
               <div class="unit-light-card-info">
-                <span class="unit-light-card-title">Вспышка</span>
+                <div class="unit-light-card-title-row">
+                  <span id="unit-editor-flash-swatch" class="unit-light-swatch hidden" title="Текущий цвет RGB"></span>
+                  <span class="unit-light-card-title">Вспышка</span>
+                  <span id="unit-editor-flash-hex" class="unit-light-hex hidden">#FFFFFF</span>
+                </div>
                 <span id="unit-editor-flash-locked" class="unit-light-locked-hint hidden">Заблокировано</span>
+                <span id="unit-editor-flash-rgb-hint" class="unit-light-rgb-hint hidden">Нажмите на плашку для выбора цвета</span>
               </div>
               <label class="toggle-switch" aria-label="Вспышка установки">
                 <input type="checkbox" id="unit-editor-flash-toggle">
                 <span class="toggle-slider"></span>
               </label>
+            </div>
+          </div>
+
+          <!-- Раскрывающаяся панель настройки RGB-цвета (на всю ширину формы) -->
+          <div id="unit-editor-color-panel" class="unit-color-panel hidden">
+            <div class="unit-color-panel-header">
+              <span id="unit-color-panel-title" class="unit-color-panel-title">Цвет RGB</span>
+              <button type="button" id="unit-color-panel-close" class="btn-icon unit-color-panel-close" title="Свернуть палитру" aria-label="Свернуть палитру">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+            <div class="unit-color-panel-body">
+              <div class="unit-color-sliders">
+                <div class="unit-color-slider-row">
+                  <label for="unit-color-r">Красный (R)</label>
+                  <input type="range" id="unit-color-r" min="0" max="255" step="1" value="255">
+                  <span id="unit-color-r-val" class="unit-color-slider-val">255</span>
+                </div>
+                <div class="unit-color-slider-row">
+                  <label for="unit-color-g">Зелёный (G)</label>
+                  <input type="range" id="unit-color-g" min="0" max="255" step="1" value="255">
+                  <span id="unit-color-g-val" class="unit-color-slider-val">255</span>
+                </div>
+                <div class="unit-color-slider-row">
+                  <label for="unit-color-b">Синий (B)</label>
+                  <input type="range" id="unit-color-b" min="0" max="255" step="1" value="255">
+                  <span id="unit-color-b-val" class="unit-color-slider-val">255</span>
+                </div>
+                <div class="unit-color-slider-row">
+                  <label for="unit-color-v">Яркость (V)</label>
+                  <input type="range" id="unit-color-v" min="0" max="100" step="1" value="100">
+                  <span id="unit-color-v-val" class="unit-color-slider-val">100%</span>
+                </div>
+                <div class="unit-color-slider-row">
+                  <label for="unit-color-s">Насыщенность (S)</label>
+                  <input type="range" id="unit-color-s" min="0" max="100" step="1" value="0">
+                  <span id="unit-color-s-val" class="unit-color-slider-val">0%</span>
+                </div>
+              </div>
+
+              <div class="unit-color-picker-col">
+                <div class="unit-color-sv-wrap">
+                  <canvas id="unit-color-sv-canvas" class="unit-color-sv-canvas" width="240" height="140"></canvas>
+                  <div id="unit-color-sv-cursor" class="unit-color-sv-cursor"></div>
+                </div>
+                <div class="unit-color-hue-wrap">
+                  <canvas id="unit-color-hue-canvas" class="unit-color-hue-canvas" width="240" height="16"></canvas>
+                  <div id="unit-color-hue-cursor" class="unit-color-hue-cursor"></div>
+                </div>
+                <div class="unit-color-hex-row">
+                  <div id="unit-color-preview" class="unit-color-preview" title="Итоговый цвет"></div>
+                  <input type="text" id="unit-color-hex-input" class="form-input unit-color-hex-input" maxlength="7" placeholder="#FFFFFF" aria-label="HEX-код цвета">
+                  <input type="color" id="unit-color-native-picker" class="unit-color-native-picker" value="#ffffff" title="Системная палитра" aria-label="Системная палитра">
+                </div>
+              </div>
             </div>
           </div>
 
@@ -895,12 +963,12 @@
 
           <div class="form-group">
             <label for="unit-editor-light-pin">GPIO пин света</label>
-            <input type="number" id="unit-editor-light-pin" class="form-input" min="0" max="53" step="1" placeholder="17" required>
+            <input type="text" id="unit-editor-light-pin" class="form-input" placeholder="17 или 17,27,22" required>
           </div>
 
           <div class="form-group">
             <label for="unit-editor-flash-pin">GPIO пин вспышки</label>
-            <input type="number" id="unit-editor-flash-pin" class="form-input" min="0" max="53" step="1" placeholder="27" required>
+            <input type="text" id="unit-editor-flash-pin" class="form-input" placeholder="27 или 12,13,19" required>
           </div>
 
           <div class="form-group">

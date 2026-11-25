@@ -490,13 +490,18 @@ def test_command_result_endpoint(client: TestClient, test_env):
     assert cached_empty == []
 
 
-def test_captures_upload_and_deduplication(client: TestClient, test_env):
+def test_captures_upload_and_deduplication(
+    client: TestClient, test_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """Критерии 1, 2, 3, 6: POST /api/edge/captures:
 
     multipart/form-data, валидация captured_at (422), дедупликация (200),
     404, 409, 422, сохранение файлов в tmp_path и command_id -> capture_id в app_state.
     """
     session_factory, _, test_media_dir = test_env
+    isolated_cwd = tmp_path / "isolated_cwd"
+    isolated_cwd.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(isolated_cwd)
     db = session_factory()
 
     inst = Installation(

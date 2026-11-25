@@ -13,6 +13,162 @@ let onUnitSavedCallback = null;
 let isBusy = false;
 let unitEditorOpenSeq = 0;
 
+let activeColorChannel = null; // 'light' | 'flash' | null
+let colorDebounceTimer = null;
+const colorState = {
+  h: 0,
+  s: 0,
+  v: 100,
+  r: 255,
+  g: 255,
+  b: 255,
+  hex: '#FFFFFF',
+};
+
+export function parseGpioPinsInput(rawValue, label = 'GPIO пин') {
+  const raw = String(rawValue ?? '').trim();
+  if (!raw) {
+    return { error: `${label}: укажите 1 пин (0..53) или 3 уникальных пина через запятую` };
+  }
+  const parts = raw.split(',').map((p) => p.trim());
+  if (parts.some((p) => p === '')) {
+    return { error: `${label}: некорректный формат пинов` };
+  }
+  if (parts.length !== 1 && parts.length !== 3) {
+    return {
+      error: `${label}: укажите 1 пин (белый свет) или ровно 3 уникальных пина через запятую (RGB)`,
+    };
+  }
+  const pins = [];
+  for (const part of parts) {
+    if (!/^-?\d+$/.test(part)) {
+      return { error: `${label}: '${part}' не является целым числом от 0 до 53` };
+    }
+    const num = Number(part);
+    if (!Number.isInteger(num) || num < 0 || num > 53) {
+      return { error: `${label} должен быть целым числом от 0 до 53` };
+    }
+    pins.push(num);
+  }
+  if (pins.length === 3 && new Set(pins).size !== 3) {
+    return { error: `${label}: пины RGB-ленты не должны повторяться` };
+  }
+  return {
+    pins,
+    formatted: pins.length === 1 ? pins[0] : pins.join(','),
+  };
+}
+
+export function normalizeHexColor(raw) {
+  if (typeof raw !== 'string') return null;
+  let cleaned = raw.trim();
+  if (cleaned.startsWith('#')) {
+    cleaned = cleaned.slice(1);
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(cleaned)) {
+    return null;
+  }
+  return `#${cleaned.toUpperCase()}`;
+}
+
+export function hexToRgb(hex) {
+  const norm = normalizeHexColor(hex);
+  if (!norm) return null;
+  return {
+    r: parseInt(norm.slice(1, 3), 16),
+    g: parseInt(norm.slice(3, 5), 16),
+    b: parseInt(norm.slice(5, 7), 16),
+  };
+}
+
+export function rgbToHex(r, g, b) {
+  const clamp = (n) => Math.max(0, Math.min(255, Math.round(Number(n) || 0)));
+  const toHex = (n) => clamp(n).toString(16).padStart(2, '0').toUpperCase();
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+export function rgbToHsv(r, g, b) {
+  const rn = Math.max(0, Math.min(255, Number(r) || 0)) / 255;
+  const gn = Math.max(0, Math.min(255, Number(g) || 0)) / 255;
+  const bn = Math.max(0, Math.min(255, Number(b) || 0)) / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === rn) {
+      h = ((gn - bn) / d) % 6;
+    } else if (max === gn) {
+      h = (bn - rn) / d + 2;
+    } else {
+      h = (rn - gn) / d + 4;
+    }
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  const s = max === 0 ? 0 : (d / max) * 100;
+  const v = max * 100;
+  return {
+    h: Math.round(h),
+    s: Math.round(s),
+    v: Math.round(v),
+  };
+}
+
+export function hsvToRgb(h, s, v) {
+  const hh = ((Number(h) % 360) + 360) % 360;
+  const ss = Math.max(0, Math.min(100, Number(s) || 0)) / 100;
+  const vv = Math.max(0, Math.min(100, Number(v) || 0)) / 100;
+  const c = vv * ss;
+  const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
+  const m = vv - c;
+  let rp = 0;
+  let gp = 0;
+  let bp = 0;
+  if (hh < 60) {
+    rp = c;
+    gp = x;
+  } else if (hh < 120) {
+    rp = x;
+    gp = c;
+  } else if (hh < 180) {
+    gp = c;
+    bp = x;
+  } else if (hh < 240) {
+    gp = x;
+    bp = c;
+  } else if (hh < 300) {
+    rp = x;
+    bp = c;
+  } else {
+    rp = c;
+    bp = x;
+  }
+  return {
+    r: Math.round((rp + m) * 255),
+    g: Math.round((gp + m) * 255),
+    b: Math.round((bp + m) * 255),
+  };
+}
+
+function isChannelRgb(unit, isFlash) {
+  if (!unit) return false;
+  if (isFlash) {
+    if (unit.flash_is_rgb !== undefined) return Boolean(unit.flash_is_rgb);
+    if (Array.isArray(unit.flash_pins)) return unit.flash_pins.length === 3;
+    return String(unit.flash_gpio_pin || '').includes(',');
+  }
+  if (unit.light_is_rgb !== undefined) return Boolean(unit.light_is_rgb);
+  if (Array.isArray(unit.light_pins)) return unit.light_pins.length === 3;
+  return String(unit.light_gpio_pin || '').includes(',');
+}
+
+function getChannelColor(unit, isFlash) {
+  if (!unit) return '#FFFFFF';
+  const raw = isFlash ? unit.flash_color : unit.light_color;
+  return normalizeHexColor(raw) || '#FFFFFF';
+}
+
 export function setUnitEditorRole(role) {
   currentRole = role || 'guest';
   if (currentRole === 'guest') {
@@ -210,6 +366,253 @@ function applyRoleAndStatusConstraints(unit) {
   syncUnitLightControls(unit);
 }
 
+function updateChannelBadge(isFlash, unit) {
+  const prefix = isFlash ? 'unit-editor-flash' : 'unit-editor-light';
+  const card = document.getElementById(`${prefix}-card`);
+  const swatch = document.getElementById(`${prefix}-swatch`);
+  const hexEl = document.getElementById(`${prefix}-hex`);
+  const hintEl = document.getElementById(`${prefix}-rgb-hint`);
+
+  const rgb = isChannelRgb(unit, isFlash);
+  const color = getChannelColor(unit, isFlash);
+
+  if (card) {
+    card.classList.toggle('is-rgb', rgb);
+    card.classList.toggle(
+      'is-expanded',
+      rgb && activeColorChannel === (isFlash ? 'flash' : 'light')
+    );
+  }
+  if (swatch) {
+    swatch.classList.toggle('hidden', !rgb);
+    swatch.style.backgroundColor = color;
+  }
+  if (hexEl) {
+    hexEl.classList.toggle('hidden', !rgb);
+    hexEl.textContent = color;
+  }
+  if (hintEl) {
+    hintEl.classList.toggle('hidden', !rgb);
+  }
+}
+
+function drawColorCanvases() {
+  const svCanvas = document.getElementById('unit-color-sv-canvas');
+  const hueCanvas = document.getElementById('unit-color-hue-canvas');
+  const svCursor = document.getElementById('unit-color-sv-cursor');
+  const hueCursor = document.getElementById('unit-color-hue-cursor');
+
+  if (hueCanvas && hueCanvas.getContext) {
+    const ctx = hueCanvas.getContext('2d');
+    if (ctx) {
+      const w = hueCanvas.width;
+      const h = hueCanvas.height;
+      const grad = ctx.createLinearGradient(0, 0, w, 0);
+      grad.addColorStop(0, '#FF0000');
+      grad.addColorStop(1 / 6, '#FFFF00');
+      grad.addColorStop(2 / 6, '#00FF00');
+      grad.addColorStop(3 / 6, '#00FFFF');
+      grad.addColorStop(4 / 6, '#0000FF');
+      grad.addColorStop(5 / 6, '#FF00FF');
+      grad.addColorStop(1, '#FF0000');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+    }
+  }
+
+  if (svCanvas && svCanvas.getContext) {
+    const ctx = svCanvas.getContext('2d');
+    if (ctx) {
+      const w = svCanvas.width;
+      const h = svCanvas.height;
+      const pure = hsvToRgb(colorState.h, 100, 100);
+      ctx.fillStyle = rgbToHex(pure.r, pure.g, pure.b);
+      ctx.fillRect(0, 0, w, h);
+
+      const whiteGrad = ctx.createLinearGradient(0, 0, w, 0);
+      whiteGrad.addColorStop(0, 'rgba(255,255,255,1)');
+      whiteGrad.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = whiteGrad;
+      ctx.fillRect(0, 0, w, h);
+
+      const blackGrad = ctx.createLinearGradient(0, 0, 0, h);
+      blackGrad.addColorStop(0, 'rgba(0,0,0,0)');
+      blackGrad.addColorStop(1, 'rgba(0,0,0,1)');
+      ctx.fillStyle = blackGrad;
+      ctx.fillRect(0, 0, w, h);
+    }
+  }
+
+  if (svCursor) {
+    svCursor.style.left = `${Math.max(0, Math.min(100, colorState.s))}%`;
+    svCursor.style.top = `${Math.max(0, Math.min(100, 100 - colorState.v))}%`;
+  }
+  if (hueCursor) {
+    hueCursor.style.left = `${(Math.max(0, Math.min(360, colorState.h)) / 360) * 100}%`;
+  }
+}
+
+function syncColorPanelUI({ skipHexInput = false } = {}) {
+  const rEl = document.getElementById('unit-color-r');
+  const gEl = document.getElementById('unit-color-g');
+  const bEl = document.getElementById('unit-color-b');
+  const vEl = document.getElementById('unit-color-v');
+  const sEl = document.getElementById('unit-color-s');
+  const rVal = document.getElementById('unit-color-r-val');
+  const gVal = document.getElementById('unit-color-g-val');
+  const bVal = document.getElementById('unit-color-b-val');
+  const vVal = document.getElementById('unit-color-v-val');
+  const sVal = document.getElementById('unit-color-s-val');
+  const hexInput = document.getElementById('unit-color-hex-input');
+  const preview = document.getElementById('unit-color-preview');
+  const nativePicker = document.getElementById('unit-color-native-picker');
+
+  if (rEl) rEl.value = String(colorState.r);
+  if (gEl) gEl.value = String(colorState.g);
+  if (bEl) bEl.value = String(colorState.b);
+  if (vEl) vEl.value = String(colorState.v);
+  if (sEl) sEl.value = String(colorState.s);
+
+  if (rVal) rVal.textContent = String(colorState.r);
+  if (gVal) gVal.textContent = String(colorState.g);
+  if (bVal) bVal.textContent = String(colorState.b);
+  if (vVal) vVal.textContent = `${colorState.v}%`;
+  if (sVal) sVal.textContent = `${colorState.s}%`;
+
+  if (hexInput && !skipHexInput) {
+    hexInput.value = colorState.hex;
+  }
+  if (preview) {
+    preview.style.backgroundColor = colorState.hex;
+  }
+  if (nativePicker) {
+    nativePicker.value = colorState.hex.toLowerCase();
+  }
+
+  if (editingUnit && activeColorChannel) {
+    if (activeColorChannel === 'flash') {
+      editingUnit.flash_color = colorState.hex;
+    } else {
+      editingUnit.light_color = colorState.hex;
+    }
+    updateChannelBadge(activeColorChannel === 'flash', editingUnit);
+  }
+
+  drawColorCanvases();
+}
+
+function setColorStateFromRgb(r, g, b, options = {}) {
+  const clamp255 = (n) => Math.max(0, Math.min(255, Math.round(Number(n) || 0)));
+  colorState.r = clamp255(r);
+  colorState.g = clamp255(g);
+  colorState.b = clamp255(b);
+  colorState.hex = rgbToHex(colorState.r, colorState.g, colorState.b);
+  const hsv = rgbToHsv(colorState.r, colorState.g, colorState.b);
+  if (hsv.s > 0 && hsv.v > 0) {
+    colorState.h = hsv.h;
+  }
+  colorState.s = hsv.s;
+  colorState.v = hsv.v;
+  syncColorPanelUI(options);
+}
+
+function setColorStateFromHsv(h, s, v) {
+  colorState.h = Math.max(0, Math.min(360, Math.round(Number(h) || 0)));
+  colorState.s = Math.max(0, Math.min(100, Math.round(Number(s) || 0)));
+  colorState.v = Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+  const rgb = hsvToRgb(colorState.h, colorState.s, colorState.v);
+  colorState.r = rgb.r;
+  colorState.g = rgb.g;
+  colorState.b = rgb.b;
+  colorState.hex = rgbToHex(rgb.r, rgb.g, rgb.b);
+  syncColorPanelUI();
+}
+
+function scheduleColorApiSend(channel, hex, { immediate = false } = {}) {
+  if (!editingUnit || currentRole !== 'developer' || editingUnit.is_archived) return;
+  if (colorDebounceTimer) {
+    clearTimeout(colorDebounceTimer);
+    colorDebounceTimer = null;
+  }
+  const targetId = editingUnit.id;
+  const isFlash = channel === 'flash';
+  const sendNow = async () => {
+    if (!editingUnit || Number(editingUnit.id) !== Number(targetId)) return;
+    try {
+      const res = isFlash
+        ? await api.controlLightFlash(targetId, { color: hex })
+        : await api.controlLightMain(targetId, { color: hex });
+      if (res && res.status === 'error') {
+        throw new Error(res.result_message || 'Не удалось применить цвет');
+      }
+      if (editingUnit && Number(editingUnit.id) === Number(targetId)) {
+        if (isFlash) {
+          editingUnit.flash_color = res && res.color ? res.color : hex;
+        } else {
+          editingUnit.light_color = res && res.color ? res.color : hex;
+        }
+        updateChannelBadge(isFlash, editingUnit);
+      }
+    } catch (err) {
+      showEditorError(err.message || 'Не удалось обновить цвет RGB-ленты');
+    }
+  };
+  if (immediate) {
+    sendNow();
+  } else {
+    colorDebounceTimer = setTimeout(sendNow, 160);
+  }
+}
+
+function closeColorPanel() {
+  activeColorChannel = null;
+  if (colorDebounceTimer) {
+    clearTimeout(colorDebounceTimer);
+    colorDebounceTimer = null;
+  }
+  const panel = document.getElementById('unit-editor-color-panel');
+  if (panel) {
+    panel.classList.remove('is-open');
+    panel.classList.add('hidden');
+  }
+  if (editingUnit) {
+    updateChannelBadge(false, editingUnit);
+    updateChannelBadge(true, editingUnit);
+  }
+}
+
+function openColorPanel(channel) {
+  if (!editingUnit || currentRole !== 'developer' || editingUnit.is_archived) return;
+  const isFlash = channel === 'flash';
+  if (!isChannelRgb(editingUnit, isFlash)) return;
+
+  if (activeColorChannel === channel) {
+    closeColorPanel();
+    return;
+  }
+
+  activeColorChannel = channel;
+  const panel = document.getElementById('unit-editor-color-panel');
+  const titleEl = document.getElementById('unit-color-panel-title');
+  if (titleEl) {
+    titleEl.textContent = isFlash
+      ? 'Вспышка — настройка RGB-цвета'
+      : 'Основной свет — настройка RGB-цвета';
+  }
+  const rgb = hexToRgb(getChannelColor(editingUnit, isFlash)) || { r: 255, g: 255, b: 255 };
+  setColorStateFromRgb(rgb.r, rgb.g, rgb.b);
+
+  if (panel) {
+    panel.classList.remove('hidden');
+    requestAnimationFrame(() => {
+      panel.classList.add('is-open');
+      drawColorCanvases();
+    });
+  }
+  updateChannelBadge(false, editingUnit);
+  updateChannelBadge(true, editingUnit);
+}
+
 function syncUnitLightControls(unit) {
   const lightCard = document.getElementById('unit-editor-light-card');
   const flashCard = document.getElementById('unit-editor-flash-card');
@@ -225,6 +628,7 @@ function syncUnitLightControls(unit) {
   if (!visible) {
     if (lightLockedEl) lightLockedEl.classList.add('hidden');
     if (flashLockedEl) flashLockedEl.classList.add('hidden');
+    closeColorPanel();
     return;
   }
 
@@ -259,6 +663,15 @@ function syncUnitLightControls(unit) {
   }
   if (flashLockedEl) {
     flashLockedEl.classList.toggle('hidden', !flashLocked);
+  }
+
+  updateChannelBadge(false, unit);
+  updateChannelBadge(true, unit);
+  if (
+    activeColorChannel &&
+    !isChannelRgb(unit, activeColorChannel === 'flash')
+  ) {
+    closeColorPanel();
   }
 }
 
@@ -475,6 +888,7 @@ export function openUnitEditModal(unit) {
 
 export function closeUnitEditorModal() {
   unitEditorOpenSeq += 1;
+  closeColorPanel();
   const modal = document.getElementById('modal-unit-editor');
   if (modal) {
     modal.classList.add('hidden');
@@ -547,19 +961,28 @@ async function handleSaveSubmit(e) {
     intervalVal = parsed;
   }
 
-  let lightPin = editingUnit ? Number(editingUnit.light_gpio_pin) : 17;
-  let flashPin = editingUnit ? Number(editingUnit.flash_gpio_pin) : 27;
+  let lightPinVal = editingUnit ? editingUnit.light_gpio_pin : 17;
+  let flashPinVal = editingUnit ? editingUnit.flash_gpio_pin : 27;
   if (isDev && (!editingUnit || !editingUnit.is_archived)) {
-    lightPin = Number(rawLightPin);
-    flashPin = Number(rawFlashPin);
-    if (!Number.isInteger(lightPin) || lightPin < 0 || lightPin > 53) {
-      showEditorError('GPIO пин света должен быть целым числом от 0 до 53');
+    const parsedLight = parseGpioPinsInput(rawLightPin, 'GPIO пин света');
+    if (parsedLight.error) {
+      showEditorError(parsedLight.error);
       return;
     }
-    if (!Number.isInteger(flashPin) || flashPin < 0 || flashPin > 53) {
-      showEditorError('GPIO пин вспышки должен быть целым числом от 0 до 53');
+    const parsedFlash = parseGpioPinsInput(rawFlashPin, 'GPIO пин вспышки');
+    if (parsedFlash.error) {
+      showEditorError(parsedFlash.error);
       return;
     }
+    const overlap = parsedLight.pins.filter((p) => parsedFlash.pins.includes(p));
+    if (overlap.length > 0) {
+      showEditorError(
+        `Пины света и вспышки не должны пересекаться (совпадают: ${overlap.join(', ')})`
+      );
+      return;
+    }
+    lightPinVal = parsedLight.formatted;
+    flashPinVal = parsedFlash.formatted;
   }
 
   setButtonsBusy(true);
@@ -574,8 +997,8 @@ async function handleSaveSubmit(e) {
       savedUnit = await api.createInstallation({
         name,
         culture_name: culture,
-        light_gpio_pin: lightPin,
-        flash_gpio_pin: flashPin,
+        light_gpio_pin: lightPinVal,
+        flash_gpio_pin: flashPinVal,
         aruco_size_mm: arucoVal,
         capture_delay_sec: delayVal,
       });
@@ -597,11 +1020,17 @@ async function handleSaveSubmit(e) {
       if (isDev) {
         patchPayload.aruco_size_mm = arucoVal;
         if (!editingUnit.is_archived) {
-          if (lightPin !== Number(editingUnit.light_gpio_pin)) {
-            patchPayload.light_gpio_pin = lightPin;
+          const curLightNorm = parseGpioPinsInput(
+            String(editingUnit.light_gpio_pin ?? '')
+          ).formatted;
+          const curFlashNorm = parseGpioPinsInput(
+            String(editingUnit.flash_gpio_pin ?? '')
+          ).formatted;
+          if (String(lightPinVal) !== String(curLightNorm)) {
+            patchPayload.light_gpio_pin = lightPinVal;
           }
-          if (flashPin !== Number(editingUnit.flash_gpio_pin)) {
-            patchPayload.flash_gpio_pin = flashPin;
+          if (String(flashPinVal) !== String(curFlashNorm)) {
+            patchPayload.flash_gpio_pin = flashPinVal;
           }
         }
       }
@@ -697,6 +1126,136 @@ async function handleDeleteConfirmYes() {
   }
 }
 
+function initColorPickerEvents() {
+  const closeBtn = document.getElementById('unit-color-panel-close');
+  const rEl = document.getElementById('unit-color-r');
+  const gEl = document.getElementById('unit-color-g');
+  const bEl = document.getElementById('unit-color-b');
+  const vEl = document.getElementById('unit-color-v');
+  const sEl = document.getElementById('unit-color-s');
+  const hexInput = document.getElementById('unit-color-hex-input');
+  const nativePicker = document.getElementById('unit-color-native-picker');
+  const svCanvas = document.getElementById('unit-color-sv-canvas');
+  const hueCanvas = document.getElementById('unit-color-hue-canvas');
+
+  if (closeBtn) {
+    closeBtn.addEventListener('click', closeColorPanel);
+  }
+
+  const onRgbSlider = () => {
+    setColorStateFromRgb(
+      rEl ? rEl.value : colorState.r,
+      gEl ? gEl.value : colorState.g,
+      bEl ? bEl.value : colorState.b
+    );
+    if (activeColorChannel) {
+      scheduleColorApiSend(activeColorChannel, colorState.hex);
+    }
+  };
+  [rEl, gEl, bEl].forEach((el) => {
+    if (el) el.addEventListener('input', onRgbSlider);
+  });
+
+  const onHsvSlider = () => {
+    setColorStateFromHsv(
+      colorState.h,
+      sEl ? sEl.value : colorState.s,
+      vEl ? vEl.value : colorState.v
+    );
+    if (activeColorChannel) {
+      scheduleColorApiSend(activeColorChannel, colorState.hex);
+    }
+  };
+  [vEl, sEl].forEach((el) => {
+    if (el) el.addEventListener('input', onHsvSlider);
+  });
+
+  if (hexInput) {
+    const handleHexChange = (immediate) => {
+      const norm = normalizeHexColor(hexInput.value);
+      if (!norm) return;
+      const rgb = hexToRgb(norm);
+      if (!rgb) return;
+      setColorStateFromRgb(rgb.r, rgb.g, rgb.b, { skipHexInput: true });
+      if (immediate) {
+        hexInput.value = norm;
+      }
+      if (activeColorChannel) {
+        scheduleColorApiSend(activeColorChannel, norm, { immediate });
+      }
+    };
+    hexInput.addEventListener('input', () => handleHexChange(false));
+    hexInput.addEventListener('change', () => handleHexChange(true));
+  }
+
+  if (nativePicker) {
+    nativePicker.addEventListener('input', () => {
+      const norm = normalizeHexColor(nativePicker.value);
+      if (!norm) return;
+      const rgb = hexToRgb(norm);
+      if (!rgb) return;
+      setColorStateFromRgb(rgb.r, rgb.g, rgb.b);
+      if (activeColorChannel) {
+        scheduleColorApiSend(activeColorChannel, norm);
+      }
+    });
+  }
+
+  const bindDragCanvas = (canvasEl, handler) => {
+    if (!canvasEl) return;
+    let dragging = false;
+    const handlePointer = (ev) => {
+      const rect = canvasEl.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const x = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+      const y = Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height));
+      handler(x, y);
+      if (activeColorChannel) {
+        scheduleColorApiSend(activeColorChannel, colorState.hex);
+      }
+    };
+    canvasEl.addEventListener('mousedown', (ev) => {
+      dragging = true;
+      handlePointer(ev);
+    });
+    window.addEventListener('mousemove', (ev) => {
+      if (dragging) handlePointer(ev);
+    });
+    window.addEventListener('mouseup', () => {
+      dragging = false;
+    });
+    canvasEl.addEventListener(
+      'touchstart',
+      (ev) => {
+        if (ev.touches && ev.touches[0]) {
+          dragging = true;
+          handlePointer(ev.touches[0]);
+        }
+      },
+      { passive: true }
+    );
+    window.addEventListener(
+      'touchmove',
+      (ev) => {
+        if (dragging && ev.touches && ev.touches[0]) {
+          handlePointer(ev.touches[0]);
+        }
+      },
+      { passive: true }
+    );
+    window.addEventListener('touchend', () => {
+      dragging = false;
+    });
+  };
+
+  bindDragCanvas(svCanvas, (x, y) => {
+    setColorStateFromHsv(colorState.h, x * 100, (1 - y) * 100);
+  });
+  bindDragCanvas(hueCanvas, (x) => {
+    setColorStateFromHsv(x * 360, colorState.s, colorState.v);
+  });
+}
+
 export function initUnitEditor() {
   const modal = document.getElementById('modal-unit-editor');
   const closeBtn = document.getElementById('modal-unit-editor-close');
@@ -709,6 +1268,8 @@ export function initUnitEditor() {
   const deleteNoBtn = document.getElementById('unit-editor-delete-confirm-no');
   const lightToggle = document.getElementById('unit-editor-light-toggle');
   const flashToggle = document.getElementById('unit-editor-flash-toggle');
+  const lightCard = document.getElementById('unit-editor-light-card');
+  const flashCard = document.getElementById('unit-editor-flash-card');
 
   if (closeBtn) closeBtn.addEventListener('click', closeUnitEditorModal);
   if (cancelBtn) cancelBtn.addEventListener('click', closeUnitEditorModal);
@@ -730,6 +1291,22 @@ export function initUnitEditor() {
   if (flashToggle) {
     flashToggle.addEventListener('change', () => handleUnitLightToggle(true));
   }
+
+  [lightCard, flashCard].forEach((card, idx) => {
+    if (!card) return;
+    const toggleWrap = card.querySelector('.toggle-switch');
+    if (toggleWrap) {
+      toggleWrap.addEventListener('click', (e) => e.stopPropagation());
+    }
+    card.addEventListener('click', (e) => {
+      if (e.target && e.target.closest && e.target.closest('.toggle-switch')) {
+        return;
+      }
+      openColorPanel(idx === 1 ? 'flash' : 'light');
+    });
+  });
+
+  initColorPickerEvents();
 
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && modal && !modal.classList.contains('hidden')) {

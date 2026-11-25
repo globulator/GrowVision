@@ -13,6 +13,13 @@ from typing import Any
 import psutil
 
 from shared.logger import get_logger
+from shared.pins import (
+    DEFAULT_COLOR_HEX,
+    hex_to_rgb01,
+    normalize_hex_color,
+    parse_gpio_pins,
+    rainbow_hex_steps,
+)
 from shared.schemas import DetectedCamera, HeartbeatHardware
 
 logger = get_logger("edge_agent.hardware")
@@ -276,9 +283,13 @@ class HardwareManager:
         self.lock = threading.Lock()
         self._light_state_lock = threading.RLock()
         self._gpio_devices: dict[int, Any] = {}
+        self._pwm_devices: dict[int, Any] = {}
         self._mock_pins: dict[int, bool] = {}
+        self._mock_pwm: dict[int, float] = {}
         self._pin_states: dict[int, bool] = {}
         self._desired_pin_states: dict[int, bool] = {}
+        self._desired_channel_colors: dict[tuple[int, ...], str] = {}
+        self._channel_colors: dict[tuple[int, ...], str] = {}
         self._capturing_pins: dict[int, int] = {}
         self._pin_roles: dict[int, str] = {}
         self._pin_active_since: dict[int, float] = {}
@@ -312,6 +323,9 @@ class HardwareManager:
         чтобы не перебить фактическое состояние реле.
         """
         if self.mode == "rpi":
+            pwm_dev = self._pwm_devices.get(pin)
+            if pwm_dev is not None:
+                return float(getattr(pwm_dev, "value", 0.0)) > 0.0
             dev = self._gpio_devices.get(pin)
             if dev is not None:
                 if hasattr(dev, "is_active"):
@@ -320,14 +334,25 @@ class HardwareManager:
             if pin in self._pin_states:
                 return bool(self._pin_states[pin])
             return bool(default)
+        if pin in self._mock_pwm:
+            return float(self._mock_pwm[pin]) > 0.0
         if pin in self._mock_pins:
             return bool(self._mock_pins[pin])
         if pin in self._pin_states:
             return bool(self._pin_states[pin])
         return bool(default)
 
+    def get_mock_pwm(self, pin: int, default: float = 0.0) -> float:
+        """Возвращает текущий коэффициент ШИМ (0.0..1.0) для пина в mock-режиме."""
+        return float(self._mock_pwm.get(pin, default))
+
     def _get_gpio_device(self, pin: int, initial_value: bool = False) -> Any:
         """Получает или создает объект OutputDevice для указанного пина с учетом полярности."""
+        if pin in self._pwm_devices:
+            pwm_dev = self._pwm_devices.pop(pin)
+            with contextlib.suppress(Exception):
+                pwm_dev.off()
+                pwm_dev.close()
         if pin not in self._gpio_devices:
             try:
                 from gpiozero import OutputDevice
@@ -341,6 +366,28 @@ class HardwareManager:
                 logger.error(f"Ошибка инициализации GPIO пина {pin}: {e}")
                 raise
         return self._gpio_devices[pin]
+
+    def _get_pwm_device(self, pin: int, initial_value: float = 0.0) -> Any:
+        """Получает или создает объект PWMOutputDevice для указанного пина RGB-ленты."""
+        if pin in self._gpio_devices:
+            gpio_dev = self._gpio_devices.pop(pin)
+            with contextlib.suppress(Exception):
+                gpio_dev.off()
+                gpio_dev.close()
+        if pin not in self._pwm_devices:
+            try:
+                from gpiozero import PWMOutputDevice
+
+                self._pwm_devices[pin] = PWMOutputDevice(
+                    pin,
+                    active_high=self.relay_active_high,
+                    initial_value=max(0.0, min(1.0, float(initial_value))),
+                    frequency=1000,
+                )
+            except Exception as e:
+                logger.error(f"Ошибка инициализации PWM GPIO пина {pin}: {e}")
+                raise
+        return self._pwm_devices[pin]
 
     def _physical_level_label(self, state: bool) -> str:
         """Возвращает физический уровень сигнала (HIGH/LOW) с учётом полярности реле."""
@@ -397,6 +444,7 @@ class HardwareManager:
                 else:
                     dev.off()
         else:
+            self._mock_pwm.pop(pin, None)
             self._mock_pins[pin] = norm_state
 
         now_m = time.monotonic()
@@ -421,6 +469,111 @@ class HardwareManager:
                 f"[GPIO] BCM {pin} ({effective_role}): {old_label} -> {'ON' if norm_state else 'OFF'} "
                 f"(level={self._physical_level_label(norm_state)}, mode={self.mode}, source={source})"
             )
+
+    def set_pwm(
+        self,
+        pin: int,
+        duty: float,
+        role: str = "gpio",
+        source: str = "manual",
+    ) -> None:
+        """Устанавливает коэффициент ШИМ (0.0..1.0) для одного канала RGB-ленты."""
+        norm_duty = round(max(0.0, min(1.0, float(duty))), 4)
+        norm_state = norm_duty > 0.0
+        if role != "gpio":
+            self._pin_roles[pin] = role
+        else:
+            self._pin_roles.setdefault(pin, "gpio")
+
+        old_state = self._pin_states.get(pin)
+        if self.mode == "rpi":
+            dev = self._get_pwm_device(pin, initial_value=norm_duty)
+            if dev:
+                dev.value = norm_duty
+        else:
+            self._mock_pwm[pin] = norm_duty
+            self._mock_pins[pin] = norm_state
+
+        now_m = time.monotonic()
+        if norm_state:
+            if not old_state:
+                self._pin_active_since[pin] = now_m
+        else:
+            self._pin_active_since.pop(pin, None)
+
+        self._pin_states[pin] = norm_state
+
+    def set_rgb_pins(
+        self,
+        pins: list[int],
+        state: bool,
+        color: str = DEFAULT_COLOR_HEX,
+        role: str = "light",
+        source: str = "manual",
+    ) -> None:
+        """Управляет 3-пиновой RGB-лентой по целевому HEX-цвету (#RRGGBB)."""
+        pin_list = parse_gpio_pins(pins)
+        norm_color = normalize_hex_color(color, default=DEFAULT_COLOR_HEX)
+        norm_state = bool(state)
+        rgb = hex_to_rgb01(norm_color) if norm_state else (0.0, 0.0, 0.0)
+        for p, duty in zip(pin_list, rgb, strict=True):
+            self.set_pwm(p, duty, role=role, source=source)
+        self._channel_colors[tuple(pin_list)] = norm_color
+        log_fn = logger.debug if source == "relay_test_rainbow" else logger.info
+        log_fn(
+            f"[GPIO] RGB BCM {pin_list} ({role}): {'ON' if norm_state else 'OFF'} "
+            f"(pwm=({rgb[0]:.2f},{rgb[1]:.2f},{rgb[2]:.2f}), color={norm_color}, "
+            f"mode={self.mode}, source={source})"
+        )
+
+    def get_desired_channel_color(
+        self, pins: int | list[int], default: str = DEFAULT_COLOR_HEX
+    ) -> str:
+        """Возвращает актуальный целевой HEX-цвет для канала (или DEFAULT_COLOR_HEX)."""
+        pin_tuple = tuple(parse_gpio_pins(pins))
+        with self._light_state_lock:
+            return self._desired_channel_colors.get(pin_tuple, default)
+
+    def set_desired_channel_state(
+        self,
+        pins: int | list[int],
+        state: bool,
+        *,
+        color: str | None = None,
+        role: str = "gpio",
+        apply_if_idle: bool = True,
+        source: str = "manual",
+    ) -> bool:
+        """Обновляет целевое состояние и (для RGB) цвет канала под _light_state_lock."""
+        pin_list = parse_gpio_pins(pins)
+        norm_state = bool(state)
+        with self._light_state_lock:
+            for p in pin_list:
+                if role != "gpio":
+                    self._pin_roles[p] = role
+                self._desired_pin_states[p] = norm_state
+            target_color = DEFAULT_COLOR_HEX
+            if len(pin_list) == 3:
+                key = tuple(pin_list)
+                if color is not None:
+                    self._desired_channel_colors[key] = normalize_hex_color(
+                        color, default=DEFAULT_COLOR_HEX
+                    )
+                target_color = self._desired_channel_colors.get(key, DEFAULT_COLOR_HEX)
+            is_idle = all(self._capturing_pins.get(p, 0) == 0 for p in pin_list)
+            if apply_if_idle and is_idle:
+                if len(pin_list) == 3:
+                    self.set_rgb_pins(
+                        pin_list,
+                        norm_state,
+                        color=target_color,
+                        role=role,
+                        source=source,
+                    )
+                else:
+                    self.set_pin(pin_list[0], norm_state, role=role, source=source)
+                return True
+            return False
 
     def is_pin_capturing(self, pin: int) -> bool:
         """True, если пин сейчас участвует в активном захвате кадра."""
@@ -460,86 +613,200 @@ class HardwareManager:
                 return True
             return False
 
-    def begin_capture_pins(self, light_pin: int, flash_pin: int) -> None:
-        """Фиксирует начало захвата кадра для пинов света и вспышки."""
-        with self._light_state_lock:
-            if light_pin not in self._desired_pin_states:
-                if light_pin in self._pin_states:
-                    self._desired_pin_states[light_pin] = bool(
-                        self._pin_states[light_pin]
-                    )
+    def _init_desired_channel_on_capture(
+        self,
+        pins: list[int],
+        *,
+        role: str,
+        default_state: bool,
+        color: str | None,
+    ) -> None:
+        for p in pins:
+            if p not in self._desired_pin_states:
+                if p in self._pin_states:
+                    self._desired_pin_states[p] = bool(self._pin_states[p])
                 else:
-                    self._desired_pin_states[light_pin] = True
-            self._pin_roles.setdefault(light_pin, "light")
-            self._capturing_pins[light_pin] = self._capturing_pins.get(light_pin, 0) + 1
-
-            if flash_pin != light_pin:
-                if flash_pin not in self._desired_pin_states:
-                    if flash_pin in self._pin_states:
-                        self._desired_pin_states[flash_pin] = bool(
-                            self._pin_states[flash_pin]
-                        )
-                    else:
-                        self._desired_pin_states[flash_pin] = False
-                self._pin_roles.setdefault(flash_pin, "flash")
-                self._capturing_pins[flash_pin] = (
-                    self._capturing_pins.get(flash_pin, 0) + 1
+                    self._desired_pin_states[p] = default_state
+            self._pin_roles.setdefault(p, role)
+        if len(pins) == 3:
+            key = tuple(pins)
+            if color is not None:
+                self._desired_channel_colors.setdefault(
+                    key, normalize_hex_color(color, default=DEFAULT_COLOR_HEX)
+                )
+            elif key not in self._desired_channel_colors:
+                self._desired_channel_colors[key] = self._channel_colors.get(
+                    key, DEFAULT_COLOR_HEX
                 )
 
-    def end_capture_pins(self, light_pin: int, flash_pin: int) -> dict[int, bool]:
-        """Снимает отметку захвата и возвращает пины в актуальное целевое состояние."""
+    def begin_capture_pins(
+        self,
+        light_pin: int | list[int],
+        flash_pin: int | list[int],
+        *,
+        light_color: str | None = None,
+        flash_color: str | None = None,
+    ) -> None:
+        """Фиксирует начало захвата кадра для пинов света и вспышки (1 или 3 RGB пина)."""
+        l_pins = parse_gpio_pins(light_pin)
+        f_pins = parse_gpio_pins(flash_pin)
+        with self._light_state_lock:
+            self._init_desired_channel_on_capture(
+                l_pins, role="light", default_state=True, color=light_color
+            )
+            for p in l_pins:
+                self._capturing_pins[p] = self._capturing_pins.get(p, 0) + 1
+
+            if set(f_pins) != set(l_pins):
+                self._init_desired_channel_on_capture(
+                    f_pins, role="flash", default_state=False, color=flash_color
+                )
+                for p in f_pins:
+                    if p not in l_pins:
+                        self._capturing_pins[p] = self._capturing_pins.get(p, 0) + 1
+
+    def end_capture_pins(
+        self, light_pin: int | list[int], flash_pin: int | list[int]
+    ) -> dict[int, bool]:
+        """Снимает отметку захвата и возвращает пины в актуальное целевое состояние и HEX-цвет."""
+        l_pins = parse_gpio_pins(light_pin)
+        f_pins = parse_gpio_pins(flash_pin)
         applied: dict[int, bool] = {}
         with self._light_state_lock:
-            pins_to_restore: list[tuple[int, str, bool]] = []
+            for p in l_pins:
+                cnt = self._capturing_pins.get(p, 0) - 1
+                if cnt <= 0:
+                    self._capturing_pins.pop(p, None)
+                else:
+                    self._capturing_pins[p] = cnt
 
-            cnt_l = self._capturing_pins.get(light_pin, 0) - 1
-            if cnt_l <= 0:
-                self._capturing_pins.pop(light_pin, None)
-                pins_to_restore.append(
-                    (
-                        light_pin,
-                        self._pin_roles.get(light_pin, "light"),
-                        self._desired_pin_states.get(light_pin, True),
+            if all(self._capturing_pins.get(p, 0) == 0 for p in l_pins):
+                target_l_state = bool(self._desired_pin_states.get(l_pins[0], True))
+                if len(l_pins) == 3:
+                    target_l_color = self._desired_channel_colors.get(
+                        tuple(l_pins), DEFAULT_COLOR_HEX
                     )
-                )
-            else:
-                self._capturing_pins[light_pin] = cnt_l
-
-            if flash_pin != light_pin:
-                cnt_f = self._capturing_pins.get(flash_pin, 0) - 1
-                if cnt_f <= 0:
-                    self._capturing_pins.pop(flash_pin, None)
-                    pins_to_restore.append(
-                        (
-                            flash_pin,
-                            self._pin_roles.get(flash_pin, "flash"),
-                            self._desired_pin_states.get(flash_pin, False),
-                        )
+                    self.set_rgb_pins(
+                        l_pins,
+                        target_l_state,
+                        color=target_l_color,
+                        role="light",
+                        source="capture_restore",
                     )
                 else:
-                    self._capturing_pins[flash_pin] = cnt_f
+                    self.set_pin(
+                        l_pins[0],
+                        target_l_state,
+                        role=self._pin_roles.get(l_pins[0], "light"),
+                        source="capture_restore",
+                    )
+                for p in l_pins:
+                    applied[p] = target_l_state
 
-            for pin, role, target_state in pins_to_restore:
-                self.set_pin(pin, target_state, role=role, source="capture_restore")
-                applied[pin] = target_state
+            if set(f_pins) != set(l_pins):
+                for p in f_pins:
+                    if p in l_pins:
+                        continue
+                    cnt = self._capturing_pins.get(p, 0) - 1
+                    if cnt <= 0:
+                        self._capturing_pins.pop(p, None)
+                    else:
+                        self._capturing_pins[p] = cnt
+
+                if all(self._capturing_pins.get(p, 0) == 0 for p in f_pins):
+                    target_f_state = bool(
+                        self._desired_pin_states.get(f_pins[0], False)
+                    )
+                    if len(f_pins) == 3:
+                        target_f_color = self._desired_channel_colors.get(
+                            tuple(f_pins), DEFAULT_COLOR_HEX
+                        )
+                        self.set_rgb_pins(
+                            f_pins,
+                            target_f_state,
+                            color=target_f_color,
+                            role="flash",
+                            source="capture_restore",
+                        )
+                    else:
+                        self.set_pin(
+                            f_pins[0],
+                            target_f_state,
+                            role=self._pin_roles.get(f_pins[0], "flash"),
+                            source="capture_restore",
+                        )
+                    for p in f_pins:
+                        applied[p] = target_f_state
         return applied
 
-    def set_light(self, pin: int, state: bool, source: str = "manual") -> None:
-        """Управляет основным светом."""
-        if source in ("capture_warmup", "capture_restore", "relay_test"):
-            self.set_pin(pin, state, role="light", source=source)
+    def set_light(
+        self,
+        pin: int | list[int],
+        state: bool,
+        source: str = "manual",
+        color: str | None = None,
+    ) -> None:
+        """Управляет основным светом (1 пин или 3 пина RGB)."""
+        pins = parse_gpio_pins(pin)
+        if source in (
+            "capture_warmup",
+            "capture_restore",
+            "relay_test",
+            "relay_test_rainbow",
+        ):
+            if len(pins) == 3:
+                self.set_rgb_pins(
+                    pins,
+                    state,
+                    color=color or DEFAULT_COLOR_HEX,
+                    role="light",
+                    source=source,
+                )
+            else:
+                self.set_pin(pins[0], state, role="light", source=source)
         else:
-            self.set_desired_pin_state(
-                pin, state, role="light", apply_if_idle=True, source=source
+            self.set_desired_channel_state(
+                pins,
+                state,
+                color=color,
+                role="light",
+                apply_if_idle=True,
+                source=source,
             )
 
-    def set_flash(self, pin: int, state: bool, source: str = "manual") -> None:
-        """Управляет вспышкой."""
-        if source in ("capture_warmup", "capture_restore", "relay_test"):
-            self.set_pin(pin, state, role="flash", source=source)
+    def set_flash(
+        self,
+        pin: int | list[int],
+        state: bool,
+        source: str = "manual",
+        color: str | None = None,
+    ) -> None:
+        """Управляет вспышкой (1 пин или 3 пина RGB)."""
+        pins = parse_gpio_pins(pin)
+        if source in (
+            "capture_warmup",
+            "capture_restore",
+            "relay_test",
+            "relay_test_rainbow",
+        ):
+            if len(pins) == 3:
+                self.set_rgb_pins(
+                    pins,
+                    state,
+                    color=color or DEFAULT_COLOR_HEX,
+                    role="flash",
+                    source=source,
+                )
+            else:
+                self.set_pin(pins[0], state, role="flash", source=source)
         else:
-            self.set_desired_pin_state(
-                pin, state, role="flash", apply_if_idle=True, source=source
+            self.set_desired_channel_state(
+                pins,
+                state,
+                color=color,
+                role="flash",
+                apply_if_idle=True,
+                source=source,
             )
 
     def test_relay(
@@ -547,11 +814,22 @@ class HardwareManager:
         pins: list[int],
         duration: float = 3.0,
         initial_states: dict[int, bool] | None = None,
+        rgb_channels: list[list[int]] | None = None,
+        initial_colors: dict[tuple[int, ...], str] | None = None,
+        rainbow_steps: int = 36,
     ) -> dict[int, bool]:
-        """Кратковременный тест реле на указанных пинах с возвратом в актуальное целевое состояние."""
-        logger.info(f"[RELAY_TEST] Включение пинов {pins} на {duration} с")
+        """Кратковременный тест реле с плавным прогоном спектра радуги для RGB-лент."""
+        norm_rgb_channels = [
+            parse_gpio_pins(ch) for ch in (rgb_channels or []) if len(ch) == 3
+        ]
+        rgb_pin_set = {p for ch in norm_rgb_channels for p in ch}
+        single_pins = [p for p in pins if p not in rgb_pin_set]
+        logger.info(
+            f"[RELAY_TEST] Включение пинов {pins} (RGB={norm_rgb_channels}) на {duration} с"
+        )
         prev_states: dict[int, bool] = {}
         roles_before: dict[int, str] = {}
+        prev_colors: dict[tuple[int, ...], str] = {}
         with self._light_state_lock:
             for pin in pins:
                 roles_before[pin] = self._pin_roles.get(pin, "gpio")
@@ -559,30 +837,90 @@ class HardwareManager:
                     prev_states[pin] = bool(self._desired_pin_states[pin])
                 elif pin in self._pin_states:
                     prev_states[pin] = bool(self._pin_states[pin])
-                elif self.mode == "rpi" and pin in self._gpio_devices:
+                elif (
+                    self.mode == "rpi"
+                    and (pin in self._gpio_devices or pin in self._pwm_devices)
+                    or self.mode == "mock"
+                    and (pin in self._mock_pins or pin in self._mock_pwm)
+                ):
                     prev_states[pin] = self.get_pin_state(pin)
-                elif self.mode == "mock" and pin in self._mock_pins:
-                    prev_states[pin] = bool(self._mock_pins[pin])
                 elif initial_states is not None and pin in initial_states:
                     prev_states[pin] = bool(initial_states[pin])
                 else:
                     prev_states[pin] = False
 
+            for ch in norm_rgb_channels:
+                key = tuple(ch)
+                if key in self._desired_channel_colors:
+                    prev_colors[key] = self._desired_channel_colors[key]
+                elif key in self._channel_colors:
+                    prev_colors[key] = self._channel_colors[key]
+                elif initial_colors and key in initial_colors:
+                    prev_colors[key] = normalize_hex_color(
+                        initial_colors[key], default=DEFAULT_COLOR_HEX
+                    )
+                else:
+                    prev_colors[key] = DEFAULT_COLOR_HEX
+
         restored_states: dict[int, bool] = {}
         try:
-            for pin in pins:
+            for pin in single_pins:
                 self.set_pin(pin, True, role=roles_before[pin], source="relay_test")
-            if duration > 0:
+
+            if norm_rgb_channels:
+                steps_colors = rainbow_hex_steps(rainbow_steps)
+                step_delay = (
+                    float(duration) / len(steps_colors)
+                    if duration > 0 and steps_colors
+                    else 0.0
+                )
+                for hex_color in steps_colors:
+                    for ch in norm_rgb_channels:
+                        ch_role = roles_before.get(ch[0], "light")
+                        self.set_rgb_pins(
+                            ch,
+                            True,
+                            color=hex_color,
+                            role=ch_role,
+                            source="relay_test_rainbow",
+                        )
+                    if step_delay > 0:
+                        time.sleep(step_delay)
+            elif duration > 0:
                 time.sleep(duration)
         finally:
             with self._light_state_lock:
-                for pin, fallback_state in prev_states.items():
-                    target_state = self._desired_pin_states.get(pin, fallback_state)
-                    restored_states[pin] = bool(target_state)
+                for ch in norm_rgb_channels:
+                    key = tuple(ch)
+                    fallback_state = prev_states.get(ch[0], False)
+                    target_state = bool(
+                        self._desired_pin_states.get(ch[0], fallback_state)
+                    )
+                    target_color = self._desired_channel_colors.get(
+                        key, prev_colors.get(key, DEFAULT_COLOR_HEX)
+                    )
+                    for p in ch:
+                        restored_states[p] = target_state
+                    if all(self._capturing_pins.get(p, 0) == 0 for p in ch):
+                        ch_role = roles_before.get(ch[0], "light")
+                        self.set_rgb_pins(
+                            ch,
+                            target_state,
+                            color=target_color,
+                            role=ch_role,
+                            source="relay_test",
+                        )
+
+                for pin in single_pins:
+                    fallback_state = prev_states[pin]
+                    target_state = bool(
+                        self._desired_pin_states.get(pin, fallback_state)
+                    )
+                    restored_states[pin] = target_state
                     if self._capturing_pins.get(pin, 0) == 0:
                         self.set_pin(
                             pin,
-                            bool(target_state),
+                            target_state,
                             role=roles_before[pin],
                             source="relay_test",
                         )
@@ -928,31 +1266,41 @@ class HardwareManager:
     def capture_frame_with_sequence(
         self,
         camera_hardware_id: str,
-        light_pin: int,
-        flash_pin: int,
+        light_pin: int | list[int],
+        flash_pin: int | list[int],
         warmup_frames: int = 5,
         switch_delay_ms: int = 200,
         capture_delay_sec: float = 0.0,
         frame_index: int | None = None,
+        light_color: str | None = None,
+        flash_color: str | None = None,
     ) -> bytes:
         """Последовательность съемки кадра со вспышкой/светом:
 
         - Если light_pin == flash_pin: свет не выключается при съемке.
         - Если пины разные:
           1. Выключение основного света (light=0).
-          2. Включение вспышки (flash=1).
+          2. Включение вспышки в нейтральный белый (#FFFFFF).
           3. Базовая пауза (0.5-1.0 с) плюс capture_delay_sec.
           4. Захват кадра с автоподбором и умным прогревом.
-          5. Гарантированный возврат в исходное состояние (light=1, flash=0) в finally.
+          5. Гарантированный возврат в актуальное целевое состояние и HEX-цвет в finally.
         """
-        same_pins = light_pin == flash_pin
-        self.begin_capture_pins(light_pin, flash_pin)
+        l_pins = parse_gpio_pins(light_pin)
+        f_pins = parse_gpio_pins(flash_pin)
+        same_pins = set(l_pins) == set(f_pins)
+        self.begin_capture_pins(
+            l_pins, f_pins, light_color=light_color, flash_color=flash_color
+        )
         try:
             if not same_pins:
-                self.set_light(light_pin, False, source="capture_warmup")
-                self.set_flash(flash_pin, True, source="capture_warmup")
+                self.set_light(l_pins, False, source="capture_warmup")
+                self.set_flash(
+                    f_pins, True, source="capture_warmup", color=DEFAULT_COLOR_HEX
+                )
             else:
-                self.set_light(light_pin, True, source="capture_warmup")
+                self.set_light(
+                    l_pins, True, source="capture_warmup", color=DEFAULT_COLOR_HEX
+                )
 
             # В mock-режиме исключаем искусственные задержки стабилизации
             if self.mode != "mock":
@@ -970,24 +1318,28 @@ class HardwareManager:
                 frame_index=frame_index,
             )
         finally:
-            self.end_capture_pins(light_pin, flash_pin)
+            self.end_capture_pins(l_pins, f_pins)
 
     def cleanup(self) -> None:
-        """Безопасный сброс и очистка используемых ресурсов GPIO."""
+        """Безопасный сброс и очистка используемых ресурсов GPIO и PWM."""
         all_pins = sorted(
             set(self._pin_states.keys())
             | set(self._gpio_devices.keys())
+            | set(self._pwm_devices.keys())
             | set(self._mock_pins.keys())
+            | set(self._mock_pwm.keys())
         )
         now_m = time.monotonic()
         for pin in all_pins:
-            dev = self._gpio_devices.get(pin)
+            dev = self._pwm_devices.get(pin) or self._gpio_devices.get(pin)
             old_state = self._pin_states.get(pin)
             if old_state is None:
                 if dev is not None:
                     old_state = bool(
                         getattr(dev, "is_active", getattr(dev, "value", False))
                     )
+                elif pin in self._mock_pwm:
+                    old_state = float(self._mock_pwm[pin]) > 0.0
                 else:
                     old_state = bool(self._mock_pins.get(pin, False))
 
@@ -996,6 +1348,8 @@ class HardwareManager:
                     dev.off()
             elif self.mode == "mock":
                 self._mock_pins[pin] = False
+                if pin in self._mock_pwm:
+                    self._mock_pwm[pin] = 0.0
 
             if old_state:
                 active_since = self._pin_active_since.pop(pin, None)
@@ -1017,13 +1371,17 @@ class HardwareManager:
                 duration_sec=duration_sec,
             )
 
-        for dev in self._gpio_devices.values():
+        for dev in list(self._gpio_devices.values()) + list(self._pwm_devices.values()):
             with contextlib.suppress(Exception):
                 dev.close()
         self._gpio_devices.clear()
+        self._pwm_devices.clear()
         self._mock_pins.clear()
+        self._mock_pwm.clear()
         self._pin_states.clear()
         self._desired_pin_states.clear()
+        self._desired_channel_colors.clear()
+        self._channel_colors.clear()
         self._capturing_pins.clear()
         self._pin_roles.clear()
         self._pin_active_since.clear()

@@ -6,6 +6,11 @@ from rich.table import Table
 
 from clients.cli.client import APIClient
 from clients.cli.formatting import console, err_console
+from clients.cli.pins import (
+    format_gpio_pins,
+    parse_gpio_pins,
+    validate_light_flash_disjoint,
+)
 from clients.cli.resolver import resolve_installation_target
 
 unit_app = typer.Typer(
@@ -51,11 +56,23 @@ def _render_unit_card(inst: dict[str, Any]) -> Panel:
                 if inst.get("flash_state")
                 else " [dim]○ OFF[/dim]"
             )
+        light_pin_val = inst.get("light_gpio_pin")
+        flash_pin_val = inst.get("flash_gpio_pin")
+        light_rgb_str = ""
+        if inst.get("light_is_rgb") or "," in str(light_pin_val or ""):
+            light_rgb_str = (
+                f" [cyan](RGB, {inst.get('light_color') or '#FFFFFF'})[/cyan]"
+            )
+        flash_rgb_str = ""
+        if inst.get("flash_is_rgb") or "," in str(flash_pin_val or ""):
+            flash_rgb_str = (
+                f" [cyan](RGB, {inst.get('flash_color') or '#FFFFFF'})[/cyan]"
+            )
         lines.append(
-            f"[bold]GPIO основного света:[/bold] GPIO {inst.get('light_gpio_pin')}{light_st_str}"
+            f"[bold]GPIO основного света:[/bold] GPIO {light_pin_val}{light_rgb_str}{light_st_str}"
         )
         lines.append(
-            f"[bold]GPIO вспышки:[/bold] GPIO {inst.get('flash_gpio_pin')}{flash_st_str}"
+            f"[bold]GPIO вспышки:[/bold] GPIO {flash_pin_val}{flash_rgb_str}{flash_st_str}"
         )
 
     if "cameras" in inst:
@@ -224,11 +241,15 @@ def unit_show(
 def unit_add(
     name: str = typer.Option(None, "--name", help="Уникальное название установки"),
     culture: str = typer.Option(None, "--culture", help="Название культуры"),
-    light_pin: int = typer.Option(
-        None, "--light-pin", help="GPIO-пин основного освещения"
+    light_pin: str = typer.Option(
+        None,
+        "--light-pin",
+        help="GPIO-пин основного освещения (1 пин 0..53 или 3 пина RGB через запятую)",
     ),
-    flash_pin: int = typer.Option(
-        None, "--flash-pin", help="GPIO-пин подсветки для фото"
+    flash_pin: str = typer.Option(
+        None,
+        "--flash-pin",
+        help="GPIO-пин подсветки для фото (1 пин 0..53 или 3 пина RGB через запятую)",
     ),
     aruco_mm: float = typer.Option(
         None, "--aruco-mm", help="Размер стороны маркера ArUco в мм (опционально)"
@@ -246,15 +267,23 @@ def unit_add(
     if not culture:
         culture = typer.prompt("Культура").strip()
     if light_pin is None:
-        light_pin = int(typer.prompt("GPIO пин основного света"))
+        light_pin = typer.prompt("GPIO пин основного света (или 3 пина через запятую)")
     if flash_pin is None:
-        flash_pin = int(typer.prompt("GPIO пин вспышки"))
+        flash_pin = typer.prompt("GPIO пин вспышки (или 3 пина через запятую)")
+
+    try:
+        parsed_light = parse_gpio_pins(light_pin, field_label="GPIO пин света")
+        parsed_flash = parse_gpio_pins(flash_pin, field_label="GPIO пин вспышки")
+        validate_light_flash_disjoint(parsed_light, parsed_flash)
+    except ValueError as exc:
+        err_console.print(f"Ошибка (unit add): {exc}\n", style="bold red")
+        raise typer.Exit(code=1) from exc
 
     payload: dict[str, Any] = {
         "name": name,
         "culture_name": culture,
-        "light_gpio_pin": light_pin,
-        "flash_gpio_pin": flash_pin,
+        "light_gpio_pin": format_gpio_pins(parsed_light),
+        "flash_gpio_pin": format_gpio_pins(parsed_flash),
     }
     if aruco_mm is not None:
         payload["aruco_size_mm"] = aruco_mm
@@ -288,10 +317,16 @@ def unit_edit(
     target: str = typer.Argument(..., help="ID или название установки"),
     name: str = typer.Option(None, "--name", help="Новое название установки"),
     culture: str = typer.Option(None, "--culture", help="Новое название культуры"),
-    light_pin: int = typer.Option(
-        None, "--light-pin", help="Новый GPIO-пин основного света"
+    light_pin: str = typer.Option(
+        None,
+        "--light-pin",
+        help="Новый GPIO-пин основного света (1 пин или 3 пина RGB через запятую)",
     ),
-    flash_pin: int = typer.Option(None, "--flash-pin", help="Новый GPIO-пин вспышки"),
+    flash_pin: str = typer.Option(
+        None,
+        "--flash-pin",
+        help="Новый GPIO-пин вспышки (1 пин или 3 пина RGB через запятую)",
+    ),
     aruco_mm: float = typer.Option(
         None, "--aruco-mm", help="Новый размер стороны маркера ArUco в мм"
     ),
@@ -326,10 +361,22 @@ def unit_edit(
         payload["name"] = name
     if culture is not None:
         payload["culture_name"] = culture
-    if light_pin is not None:
-        payload["light_gpio_pin"] = light_pin
-    if flash_pin is not None:
-        payload["flash_gpio_pin"] = flash_pin
+    parsed_light_edit: list[int] | None = None
+    parsed_flash_edit: list[int] | None = None
+    try:
+        if light_pin is not None:
+            parsed_light_edit = parse_gpio_pins(light_pin, field_label="GPIO пин света")
+            payload["light_gpio_pin"] = format_gpio_pins(parsed_light_edit)
+        if flash_pin is not None:
+            parsed_flash_edit = parse_gpio_pins(
+                flash_pin, field_label="GPIO пин вспышки"
+            )
+            payload["flash_gpio_pin"] = format_gpio_pins(parsed_flash_edit)
+        if parsed_light_edit is not None and parsed_flash_edit is not None:
+            validate_light_flash_disjoint(parsed_light_edit, parsed_flash_edit)
+    except ValueError as exc:
+        err_console.print(f"Ошибка (unit edit): {exc}\n", style="bold red")
+        raise typer.Exit(code=1) from exc
     if clear_aruco:
         payload["aruco_size_mm"] = None
     elif aruco_mm is not None:

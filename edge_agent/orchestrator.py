@@ -1,4 +1,5 @@
 import base64
+import inspect
 import logging
 import os
 import platform
@@ -13,6 +14,7 @@ from edge_agent.hardware import HardwareManager, get_hardware_telemetry
 from edge_agent.live_stream import LiveStreamManager
 from edge_agent.offline_queue import flush_queue, get_queue_count, save_to_queue
 from edge_agent.vision import VisionPipeline, apply_rgb_to_jpeg_bytes
+from shared.pins import DEFAULT_COLOR_HEX, normalize_hex_color, parse_gpio_pins
 from shared.schemas import (
     CaptureMeta,
     CommandItem,
@@ -72,7 +74,7 @@ class EdgeOrchestrator:
         self.debug_mode = config.debug_mode
         self.global_capture_delay_sec: float = 1.5
         self.active_installations: list[HeartbeatActiveInstallation] = []
-        self._initialized_installations: set[tuple[int, int, int]] = set()
+        self._initialized_installations: set[tuple[int, int | str, int | str]] = set()
         self._frame_indices: dict[tuple[int, str], int] = {}
 
         self._heartbeat_thread: threading.Thread | None = None
@@ -85,7 +87,7 @@ class EdgeOrchestrator:
         self._last_server_rgb: dict[str, tuple[float, float, float]] = {}
         self._camera_segmentation_modes: dict[str, str] = {}
         self._last_server_segmentation_modes: dict[str, str] = {}
-        self._last_server_light_states: dict[int, tuple[bool, bool]] = {}
+        self._last_server_light_states: dict[int, tuple[bool, bool, str, str]] = {}
         self._last_server_global_light_modes: tuple[str, str] | None = None
 
     def start(self) -> None:
@@ -139,6 +141,33 @@ class EdgeOrchestrator:
         self.hardware.cleanup()
         logger.info("Edge-агент остановлен")
 
+    @staticmethod
+    def _extract_channel_pins(inst: Any, *, is_flash: bool) -> list[int]:
+        if inst is None:
+            return [4]
+        pins = getattr(inst, "flash_pins" if is_flash else "light_pins", None)
+        if isinstance(pins, list) and pins:
+            return [int(p) for p in pins]
+        raw_pin = getattr(inst, "flash_gpio_pin" if is_flash else "light_gpio_pin", 4)
+        return parse_gpio_pins(raw_pin)
+
+    @staticmethod
+    def _extract_channel_color(inst: Any, *, is_flash: bool) -> str:
+        if inst is None:
+            return DEFAULT_COLOR_HEX
+        raw_color = getattr(inst, "flash_color" if is_flash else "light_color", None)
+        return normalize_hex_color(raw_color, default=DEFAULT_COLOR_HEX)
+
+    @staticmethod
+    def _supports_kwarg(fn: Any, kwarg: str) -> bool:
+        try:
+            sig = inspect.signature(fn)
+            return kwarg in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+        except (TypeError, ValueError):
+            return False
+
     def init_installations_light(self) -> None:
         """Инициализирует целевые состояния света и вспышки новых установок под аппаратным мьютексом."""
         new_insts = [
@@ -158,14 +187,36 @@ class EdgeOrchestrator:
 
         try:
             for inst in new_insts:
+                l_pins = self._extract_channel_pins(inst, is_flash=False)
+                f_pins = self._extract_channel_pins(inst, is_flash=True)
+                l_color = self._extract_channel_color(inst, is_flash=False)
+                f_color = self._extract_channel_color(inst, is_flash=True)
                 srv_light = bool(getattr(inst, "light_state", True))
                 srv_flash = bool(getattr(inst, "flash_state", False))
-                self.hardware.set_light(inst.light_gpio_pin, srv_light, source="init")
-                if inst.flash_gpio_pin != inst.light_gpio_pin:
-                    self.hardware.set_flash(
-                        inst.flash_gpio_pin, srv_flash, source="init"
+
+                l_arg: int | list[int] = l_pins[0] if len(l_pins) == 1 else l_pins
+                if self._supports_kwarg(self.hardware.set_light, "color"):
+                    self.hardware.set_light(
+                        l_arg, srv_light, source="init", color=l_color
                     )
-                self._last_server_light_states[inst.id] = (srv_light, srv_flash)
+                else:
+                    self.hardware.set_light(l_arg, srv_light, source="init")
+
+                if set(f_pins) != set(l_pins):
+                    f_arg: int | list[int] = f_pins[0] if len(f_pins) == 1 else f_pins
+                    if self._supports_kwarg(self.hardware.set_flash, "color"):
+                        self.hardware.set_flash(
+                            f_arg, srv_flash, source="init", color=f_color
+                        )
+                    else:
+                        self.hardware.set_flash(f_arg, srv_flash, source="init")
+
+                self._last_server_light_states[inst.id] = (
+                    srv_light,
+                    srv_flash,
+                    l_color,
+                    f_color,
+                )
                 self._initialized_installations.add(
                     (inst.id, inst.light_gpio_pin, inst.flash_gpio_pin)
                 )
@@ -191,42 +242,67 @@ class EdgeOrchestrator:
         )
         self._last_server_global_light_modes = current_global_modes
 
-        setter = getattr(self.hardware, "set_desired_pin_state", None)
+        ch_setter = getattr(self.hardware, "set_desired_channel_state", None)
+        pin_setter = getattr(self.hardware, "set_desired_pin_state", None)
         for inst in self.active_installations:
+            l_pins = self._extract_channel_pins(inst, is_flash=False)
+            f_pins = self._extract_channel_pins(inst, is_flash=True)
+            l_color = self._extract_channel_color(inst, is_flash=False)
+            f_color = self._extract_channel_color(inst, is_flash=True)
             key = (inst.id, inst.light_gpio_pin, inst.flash_gpio_pin)
             if key not in self._initialized_installations:
                 continue
             srv_light = bool(getattr(inst, "light_state", True))
             srv_flash = bool(getattr(inst, "flash_state", False))
-            if not global_modes_changed and self._last_server_light_states.get(
-                inst.id
-            ) == (srv_light, srv_flash):
+            next_tuple = (srv_light, srv_flash, l_color, f_color)
+            if (
+                not global_modes_changed
+                and self._last_server_light_states.get(inst.id) == next_tuple
+            ):
                 continue
-            self._last_server_light_states[inst.id] = (srv_light, srv_flash)
-            if callable(setter):
-                setter(
-                    inst.light_gpio_pin,
+            self._last_server_light_states[inst.id] = next_tuple
+            if callable(ch_setter):
+                ch_setter(
+                    l_pins,
                     srv_light,
+                    color=l_color,
                     role="light",
                     apply_if_idle=True,
                     source="heartbeat_sync",
                 )
-                if inst.flash_gpio_pin != inst.light_gpio_pin:
-                    setter(
-                        inst.flash_gpio_pin,
+                if set(f_pins) != set(l_pins):
+                    ch_setter(
+                        f_pins,
                         srv_flash,
+                        color=f_color,
                         role="flash",
                         apply_if_idle=True,
                         source="heartbeat_sync",
                     )
-            else:
-                self.hardware.set_light(
-                    inst.light_gpio_pin, srv_light, source="heartbeat_sync"
-                )
-                if inst.flash_gpio_pin != inst.light_gpio_pin:
-                    self.hardware.set_flash(
-                        inst.flash_gpio_pin, srv_flash, source="heartbeat_sync"
+            elif callable(pin_setter):
+                for p in l_pins:
+                    pin_setter(
+                        p,
+                        srv_light,
+                        role="light",
+                        apply_if_idle=True,
+                        source="heartbeat_sync",
                     )
+                if set(f_pins) != set(l_pins):
+                    for p in f_pins:
+                        pin_setter(
+                            p,
+                            srv_flash,
+                            role="flash",
+                            apply_if_idle=True,
+                            source="heartbeat_sync",
+                        )
+            else:
+                l_arg: int | list[int] = l_pins[0] if len(l_pins) == 1 else l_pins
+                self.hardware.set_light(l_arg, srv_light, source="heartbeat_sync")
+                if set(f_pins) != set(l_pins):
+                    f_arg: int | list[int] = f_pins[0] if len(f_pins) == 1 else f_pins
+                    self.hardware.set_flash(f_arg, srv_flash, source="heartbeat_sync")
 
     def trigger_async_flush(self) -> None:
         """Запускает выгрузку офлайн-очереди в отдельном потоке под замком (до 10 пакетов)."""
@@ -449,23 +525,39 @@ class EdgeOrchestrator:
             )
             return
 
+        ch_setter = getattr(self.hardware, "set_desired_channel_state", None)
         desired_setter = getattr(self.hardware, "set_desired_pin_state", None)
         applied_values: list[bool] = []
         pin_results: dict[str, bool] = {}
         deferred_pins: list[int] = []
+        payload_pins = (
+            payload.get("pins") if isinstance(payload.get("pins"), list) else None
+        )
+        payload_color = payload.get("color")
 
         for inst in targets:
-            pin = inst.flash_gpio_pin if is_flash else inst.light_gpio_pin
+            inst_pins = (
+                [int(p) for p in payload_pins]
+                if payload_pins and not cmd.is_global
+                else self._extract_channel_pins(inst, is_flash=is_flash)
+            )
+            l_pins = self._extract_channel_pins(inst, is_flash=False)
+            f_pins = self._extract_channel_pins(inst, is_flash=True)
             if (
                 is_flash
-                and inst.flash_gpio_pin == inst.light_gpio_pin
+                and set(f_pins) == set(l_pins)
                 and raw_pin_states is not None
-                and str(pin) not in raw_pin_states
+                and not any(str(p) in raw_pin_states for p in inst_pins)
             ):
                 continue
 
-            if raw_pin_states is not None and str(pin) in raw_pin_states:
-                target_state = bool(raw_pin_states[str(pin)])
+            if raw_pin_states is not None and any(
+                str(p) in raw_pin_states for p in inst_pins
+            ):
+                first_present = next(
+                    str(p) for p in inst_pins if str(p) in raw_pin_states
+                )
+                target_state = bool(raw_pin_states[first_present])
             elif raw_inst_states is not None and str(inst.id) in raw_inst_states:
                 inst_entry = raw_inst_states[str(inst.id)]
                 key = "flash_state" if is_flash else "light_state"
@@ -476,20 +568,56 @@ class EdgeOrchestrator:
             else:
                 target_state = fallback_state
 
+            target_color: str | None = None
+            if payload_color is not None and not cmd.is_global:
+                target_color = normalize_hex_color(
+                    payload_color, default=DEFAULT_COLOR_HEX
+                )
+            elif raw_inst_states is not None and str(inst.id) in raw_inst_states:
+                inst_entry = raw_inst_states[str(inst.id)]
+                c_key = "flash_color" if is_flash else "light_color"
+                if isinstance(inst_entry, dict) and inst_entry.get(c_key):
+                    target_color = normalize_hex_color(
+                        inst_entry[c_key], default=DEFAULT_COLOR_HEX
+                    )
+            if target_color is None:
+                target_color = self._extract_channel_color(inst, is_flash=is_flash)
+
             role = "flash" if is_flash else "light"
-            if callable(desired_setter):
-                applied_now = desired_setter(
-                    pin, target_state, role=role, apply_if_idle=True, source="manual"
+            if callable(ch_setter):
+                applied_now = ch_setter(
+                    inst_pins,
+                    target_state,
+                    color=target_color,
+                    role=role,
+                    apply_if_idle=True,
+                    source="manual",
                 )
                 if not applied_now:
-                    deferred_pins.append(pin)
+                    deferred_pins.extend(inst_pins)
+            elif callable(desired_setter):
+                for pin in inst_pins:
+                    applied_now = desired_setter(
+                        pin,
+                        target_state,
+                        role=role,
+                        apply_if_idle=True,
+                        source="manual",
+                    )
+                    if not applied_now:
+                        deferred_pins.append(pin)
             elif is_flash:
-                self.hardware.set_flash(pin, target_state, source="manual")
+                arg: int | list[int] = (
+                    inst_pins[0] if len(inst_pins) == 1 else inst_pins
+                )
+                self.hardware.set_flash(arg, target_state, source="manual")
             else:
-                self.hardware.set_light(pin, target_state, source="manual")
+                arg = inst_pins[0] if len(inst_pins) == 1 else inst_pins
+                self.hardware.set_light(arg, target_state, source="manual")
 
             applied_values.append(target_state)
-            pin_results[str(pin)] = target_state
+            for pin in inst_pins:
+                pin_results[str(pin)] = target_state
 
         if applied_values and all(v is True for v in applied_values):
             msg = f"{target_name.capitalize()} успешно включен на {len(targets)} установках"
@@ -512,7 +640,7 @@ class EdgeOrchestrator:
         )
 
     def _handle_relay_test(self, cmd: CommandItem, duration: float = 3.0) -> None:
-        """Обработка команды RELAY_TEST (длительность параметризована)."""
+        """Обработка команды RELAY_TEST (с плавной радугой для RGB-лент, длительность параметризована)."""
         targets = []
         if cmd.is_global and cmd.installations:
             targets = cmd.installations
@@ -520,6 +648,7 @@ class EdgeOrchestrator:
             targets = [cmd.installation]
 
         payload_initial: dict[int, bool] = {}
+        payload_channels: list[dict[str, Any]] = []
         if cmd.payload and isinstance(cmd.payload, dict):
             raw_initial = cmd.payload.get("initial_states")
             if isinstance(raw_initial, dict):
@@ -528,34 +657,75 @@ class EdgeOrchestrator:
                         payload_initial[int(raw_pin)] = bool(raw_val)
                     except (TypeError, ValueError):
                         continue
+            if isinstance(cmd.payload.get("channels"), list):
+                payload_channels = cmd.payload["channels"]
 
         pins: list[int] = []
         initial_states: dict[int, bool] = {}
+        rgb_channels: list[list[int]] = []
+        initial_colors: dict[tuple[int, ...], str] = {}
         pin_roles = getattr(self.hardware, "_pin_roles", None)
+
+        for ch in payload_channels:
+            if not isinstance(ch, dict):
+                continue
+            ch_pins = ch.get("pins")
+            if not isinstance(ch_pins, list) or not ch_pins:
+                continue
+            norm_pins = [int(p) for p in ch_pins]
+            pins.extend(norm_pins)
+            ch_role = str(ch.get("role") or "gpio")
+            ch_state = ch.get("state")
+            for p in norm_pins:
+                if isinstance(pin_roles, dict) and p not in pin_roles:
+                    pin_roles[p] = ch_role
+                if ch_state is not None:
+                    initial_states[p] = bool(ch_state)
+            if len(norm_pins) == 3:
+                if norm_pins not in rgb_channels:
+                    rgb_channels.append(norm_pins)
+                initial_colors[tuple(norm_pins)] = normalize_hex_color(
+                    ch.get("color"), default=DEFAULT_COLOR_HEX
+                )
+
         for inst in targets:
-            light_pin = inst.light_gpio_pin
-            flash_pin = inst.flash_gpio_pin
-            pins.extend([light_pin, flash_pin])
+            l_pins = self._extract_channel_pins(inst, is_flash=False)
+            f_pins = self._extract_channel_pins(inst, is_flash=True)
+            pins.extend(l_pins + f_pins)
 
-            if isinstance(pin_roles, dict) and light_pin not in pin_roles:
-                pin_roles[light_pin] = "light"
-            if (
-                isinstance(pin_roles, dict)
-                and flash_pin != light_pin
-                and flash_pin not in pin_roles
-            ):
-                pin_roles[flash_pin] = "flash"
-
-            if light_pin in payload_initial:
-                initial_states[light_pin] = payload_initial[light_pin]
-            else:
-                initial_states.setdefault(light_pin, True)
-
-            if flash_pin != light_pin:
-                if flash_pin in payload_initial:
-                    initial_states[flash_pin] = payload_initial[flash_pin]
+            for p in l_pins:
+                if isinstance(pin_roles, dict) and p not in pin_roles:
+                    pin_roles[p] = "light"
+                if p in payload_initial:
+                    initial_states[p] = payload_initial[p]
                 else:
-                    initial_states.setdefault(flash_pin, False)
+                    initial_states.setdefault(
+                        p, bool(getattr(inst, "light_state", True))
+                    )
+
+            if set(f_pins) != set(l_pins):
+                for p in f_pins:
+                    if isinstance(pin_roles, dict) and p not in pin_roles:
+                        pin_roles[p] = "flash"
+                    if p in payload_initial:
+                        initial_states[p] = payload_initial[p]
+                    else:
+                        initial_states.setdefault(
+                            p, bool(getattr(inst, "flash_state", False))
+                        )
+
+            if len(l_pins) == 3 and l_pins not in rgb_channels:
+                rgb_channels.append(l_pins)
+                initial_colors.setdefault(
+                    tuple(l_pins),
+                    self._extract_channel_color(inst, is_flash=False),
+                )
+            if len(f_pins) == 3 and f_pins not in rgb_channels:
+                rgb_channels.append(f_pins)
+                initial_colors.setdefault(
+                    tuple(f_pins),
+                    self._extract_channel_color(inst, is_flash=True),
+                )
 
         pins = list(dict.fromkeys(pins))
 
@@ -569,7 +739,23 @@ class EdgeOrchestrator:
             )
             return
 
+        ch_setter = getattr(self.hardware, "set_desired_channel_state", None)
         desired_setter = getattr(self.hardware, "set_desired_pin_state", None)
+        if callable(ch_setter):
+            for ch in rgb_channels:
+                ch_role = (
+                    pin_roles.get(ch[0], "light")
+                    if isinstance(pin_roles, dict)
+                    else "light"
+                )
+                ch_setter(
+                    ch,
+                    initial_states.get(ch[0], False),
+                    color=initial_colors.get(tuple(ch), DEFAULT_COLOR_HEX),
+                    role=ch_role,
+                    apply_if_idle=False,
+                    source="sync",
+                )
         if callable(desired_setter):
             for pin in pins:
                 if pin in payload_initial:
@@ -586,9 +772,20 @@ class EdgeOrchestrator:
                         source="sync",
                     )
 
-        restored = self.hardware.test_relay(
-            pins, duration=duration, initial_states=initial_states
-        )
+        test_kwargs: dict[str, Any] = {
+            "duration": duration,
+            "initial_states": initial_states,
+        }
+        if rgb_channels and self._supports_kwarg(
+            self.hardware.test_relay, "rgb_channels"
+        ):
+            test_kwargs["rgb_channels"] = rgb_channels
+        if initial_colors and self._supports_kwarg(
+            self.hardware.test_relay, "initial_colors"
+        ):
+            test_kwargs["initial_colors"] = initial_colors
+
+        restored = self.hardware.test_relay(pins, **test_kwargs)
         if not isinstance(restored, dict):
             restored = {pin: self.hardware.get_pin_state(pin) for pin in pins}
         self.client.send_command_result(
@@ -757,19 +954,47 @@ class EdgeOrchestrator:
         if getattr(self.live_stream, "process", None) is None:
             return None
 
-        light_pin = inst.light_gpio_pin
-        flash_pin = inst.flash_gpio_pin
-        same_pins = light_pin == flash_pin
+        l_pins = self._extract_channel_pins(inst, is_flash=False)
+        f_pins = self._extract_channel_pins(inst, is_flash=True)
+        l_color = self._extract_channel_color(inst, is_flash=False)
+        f_color = self._extract_channel_color(inst, is_flash=True)
+        light_arg: int | list[int] = l_pins[0] if len(l_pins) == 1 else l_pins
+        flash_arg: int | list[int] = f_pins[0] if len(f_pins) == 1 else f_pins
+        same_pins = set(l_pins) == set(f_pins)
         begin_fn = getattr(self.hardware, "begin_capture_pins", None)
         end_fn = getattr(self.hardware, "end_capture_pins", None)
         if callable(begin_fn):
-            begin_fn(light_pin, flash_pin)
+            if self._supports_kwarg(begin_fn, "light_color"):
+                begin_fn(
+                    light_arg,
+                    flash_arg,
+                    light_color=l_color,
+                    flash_color=f_color,
+                )
+            else:
+                begin_fn(light_arg, flash_arg)
         try:
             if not same_pins:
-                self.hardware.set_light(light_pin, False, source="capture_warmup")
-                self.hardware.set_flash(flash_pin, True, source="capture_warmup")
+                self.hardware.set_light(light_arg, False, source="capture_warmup")
+                if self._supports_kwarg(self.hardware.set_flash, "color"):
+                    self.hardware.set_flash(
+                        flash_arg,
+                        True,
+                        source="capture_warmup",
+                        color=DEFAULT_COLOR_HEX,
+                    )
+                else:
+                    self.hardware.set_flash(flash_arg, True, source="capture_warmup")
             else:
-                self.hardware.set_light(light_pin, True, source="capture_warmup")
+                if self._supports_kwarg(self.hardware.set_light, "color"):
+                    self.hardware.set_light(
+                        light_arg,
+                        True,
+                        source="capture_warmup",
+                        color=DEFAULT_COLOR_HEX,
+                    )
+                else:
+                    self.hardware.set_light(light_arg, True, source="capture_warmup")
 
             if self.config.hardware_mode != "mock":
                 switch_pause = (
@@ -787,11 +1012,43 @@ class EdgeOrchestrator:
             return None
         finally:
             if callable(end_fn):
-                end_fn(light_pin, flash_pin)
+                end_fn(light_arg, flash_arg)
             else:
                 if not same_pins:
-                    self.hardware.set_flash(flash_pin, False, source="capture_warmup")
-                self.hardware.set_light(light_pin, True, source="capture_warmup")
+                    self.hardware.set_flash(flash_arg, False, source="capture_warmup")
+                self.hardware.set_light(light_arg, True, source="capture_warmup")
+
+    def _call_capture_sequence(
+        self,
+        *,
+        inst: Any,
+        cam_hw_id: str,
+        warmup_frames: int,
+        switch_delay_ms: int,
+        capture_delay_sec: float,
+        frame_index: int,
+    ) -> bytes:
+        l_pins = self._extract_channel_pins(inst, is_flash=False)
+        f_pins = self._extract_channel_pins(inst, is_flash=True)
+        l_color = self._extract_channel_color(inst, is_flash=False)
+        f_color = self._extract_channel_color(inst, is_flash=True)
+        light_arg: int | list[int] = l_pins[0] if len(l_pins) == 1 else l_pins
+        flash_arg: int | list[int] = f_pins[0] if len(f_pins) == 1 else f_pins
+        kwargs: dict[str, Any] = {
+            "camera_hardware_id": cam_hw_id,
+            "light_pin": light_arg,
+            "flash_pin": flash_arg,
+            "warmup_frames": warmup_frames,
+            "switch_delay_ms": switch_delay_ms,
+            "capture_delay_sec": capture_delay_sec,
+            "frame_index": frame_index,
+        }
+        if self._supports_kwarg(
+            self.hardware.capture_frame_with_sequence, "light_color"
+        ):
+            kwargs["light_color"] = l_color
+            kwargs["flash_color"] = f_color
+        return self.hardware.capture_frame_with_sequence(**kwargs)
 
     def _capture_frame_for_camera(
         self, inst: Any, cam_hw_id: str, inst_delay: float, frame_idx: int
@@ -811,10 +1068,9 @@ class EdgeOrchestrator:
 
             self.live_stream.set_paused(True)
             try:
-                return self.hardware.capture_frame_with_sequence(
-                    camera_hardware_id=cam_hw_id,
-                    light_pin=inst.light_gpio_pin,
-                    flash_pin=inst.flash_gpio_pin,
+                return self._call_capture_sequence(
+                    inst=inst,
+                    cam_hw_id=cam_hw_id,
                     warmup_frames=self.config.camera_warmup_frames,
                     switch_delay_ms=self.config.relay_switch_delay_ms,
                     capture_delay_sec=inst_delay,
@@ -823,10 +1079,9 @@ class EdgeOrchestrator:
             finally:
                 self.live_stream.set_paused(False)
 
-        return self.hardware.capture_frame_with_sequence(
-            camera_hardware_id=cam_hw_id,
-            light_pin=inst.light_gpio_pin,
-            flash_pin=inst.flash_gpio_pin,
+        return self._call_capture_sequence(
+            inst=inst,
+            cam_hw_id=cam_hw_id,
             warmup_frames=self.config.camera_warmup_frames,
             switch_delay_ms=self.config.relay_switch_delay_ms,
             capture_delay_sec=inst_delay,
@@ -1168,15 +1423,12 @@ class EdgeOrchestrator:
                 and getattr(self.live_stream, "active_camera_id", None) == hw_id
             )
             inst = cmd.installation
-            light_pin = inst.light_gpio_pin if inst else 4
-            flash_pin = inst.flash_gpio_pin if inst else 4
             if is_live_for_cam:
                 self.live_stream.set_paused(True)
             try:
-                raw_frame = self.hardware.capture_frame_with_sequence(
-                    camera_hardware_id=hw_id,
-                    light_pin=light_pin,
-                    flash_pin=flash_pin,
+                raw_frame = self._call_capture_sequence(
+                    inst=inst,
+                    cam_hw_id=hw_id,
                     warmup_frames=1,
                     switch_delay_ms=0,
                     capture_delay_sec=0.0,
