@@ -3282,3 +3282,165 @@ button {
     flex-wrap: wrap;
   }
 }
+
+.light-control-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.light-day-night-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.light-day-night-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.day-night-time-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.day-night-time-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.day-night-time-input {
+  width: 112px;
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 0.85rem;
+}
+
+.day-night-time-input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.day-night-phase-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: rgba(16, 185, 129, 0.16);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.day-night-phase-badge.is-night {
+  background: rgba(99, 102, 241, 0.16);
+  color: #a5b4fc;
+  border-color: rgba(99, 102, 241, 0.35);
+}
+
+.day-night-phase-badge.is-off {
+  background: rgba(148, 163, 184, 0.14);
+  color: var(--text-muted);
+  border-color: rgba(148, 163, 184, 0.25);
+}
+
+.unit-day-night-card {
+  grid-column: 1 / -1;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid var(--panel-border);
+  overflow: hidden;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.unit-day-night-card.is-open {
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+.unit-day-night-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.unit-day-night-title-wrap {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.unit-day-night-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.unit-day-night-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.unit-day-night-status {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.unit-day-night-chevron {
+  color: var(--text-muted);
+  transition: transform 0.22s ease;
+}
+
+.unit-day-night-card.is-open .unit-day-night-chevron {
+  transform: rotate(180deg);
+}
+
+.unit-day-night-panel {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 0.25s ease, opacity 0.2s ease;
+}
+
+.unit-day-night-card.is-open .unit-day-night-panel {
+  max-height: 220px;
+  opacity: 1;
+}
+
+.unit-day-night-panel-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 12px 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  padding-top: 10px;
+}
+
+.unit-day-night-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.unit-day-night-label {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}

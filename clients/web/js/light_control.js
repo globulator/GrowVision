@@ -8,6 +8,9 @@ let currentRole = 'guest';
 let activeInstallationsCount = 0;
 let lastMainMode = 'default';
 let lastFlashMode = 'default';
+let lastDayNightEnabled = false;
+let lastDayStart = '08:00';
+let lastDayEnd = '22:00';
 let onLightChangedCallback = null;
 
 export function setLightChangedHandler(fn) {
@@ -75,7 +78,13 @@ function formatGlobalModeSub(mode, isFlash) {
 function renderRelaysState(relaysData) {
   const summaryEl = document.getElementById('light-control-summary');
   const mainLabel = document.getElementById('light-main-state-label');
+  const mainLockReason = document.getElementById('light-main-lock-reason');
   const flashLabel = document.getElementById('light-flash-state-label');
+  const dnToggle = document.getElementById('light-day-night-toggle');
+  const dnStartInput = document.getElementById('light-day-night-start');
+  const dnEndInput = document.getElementById('light-day-night-end');
+  const dnPhaseEl = document.getElementById('light-day-night-phase');
+  const dnSubEl = document.getElementById('light-day-night-sub');
   const delayInput = document.getElementById('light-capture-delay-input');
   const testBtn = document.getElementById('btn-light-relay-test');
   const listEl = document.getElementById('light-control-installations');
@@ -87,19 +96,64 @@ function renderRelaysState(relaysData) {
 
   const mainMode = normalizeLightMode(relaysData && relaysData.global_light_mode);
   const flashMode = normalizeLightMode(relaysData && relaysData.global_flash_mode);
+  const globalDnEnabled = Boolean(relaysData && relaysData.global_day_night_enabled);
+  const globalDnStart = (relaysData && relaysData.global_day_start) || '08:00';
+  const globalDnEnd = (relaysData && relaysData.global_day_end) || '22:00';
+  const globalDnPhase =
+    relaysData && relaysData.global_day_night_phase === 'night' ? 'night' : 'day';
+  const mainLocked =
+    Boolean(relaysData && relaysData.global_light_locked) || globalDnEnabled;
 
   lastMainMode = mainMode;
   lastFlashMode = flashMode;
+  lastDayNightEnabled = globalDnEnabled;
+  lastDayStart = globalDnStart;
+  lastDayEnd = globalDnEnd;
 
-  setSegmentedControlState('light-mode-main', mainMode, activeInstallationsCount === 0);
+  setSegmentedControlState(
+    'light-mode-main',
+    mainMode,
+    activeInstallationsCount === 0 || mainLocked
+  );
   setSegmentedControlState('light-mode-flash', flashMode, activeInstallationsCount === 0);
+
+  if (mainLockReason) {
+    mainLockReason.textContent =
+      (relaysData && relaysData.global_light_lock_reason) || 'Цикл дня/ночи';
+    mainLockReason.classList.toggle('hidden', !mainLocked);
+  }
+
+  if (dnToggle) {
+    dnToggle.checked = globalDnEnabled;
+    dnToggle.disabled = false;
+  }
+  if (dnStartInput) {
+    dnStartInput.value = globalDnStart;
+    dnStartInput.disabled = !globalDnEnabled;
+  }
+  if (dnEndInput) {
+    dnEndInput.value = globalDnEnd;
+    dnEndInput.disabled = !globalDnEnabled;
+  }
+  if (dnPhaseEl) {
+    dnPhaseEl.textContent = globalDnPhase === 'day' ? 'День' : 'Ночь';
+    dnPhaseEl.classList.toggle('is-night', globalDnPhase === 'night');
+    dnPhaseEl.classList.toggle('is-off', !globalDnEnabled);
+  }
+  if (dnSubEl) {
+    dnSubEl.textContent = globalDnEnabled
+      ? `Активен: ${globalDnStart}–${globalDnEnd}`
+      : `Выключен (${globalDnStart}–${globalDnEnd})`;
+  }
 
   if (testBtn) {
     testBtn.disabled = activeInstallationsCount === 0;
   }
 
   if (mainLabel) {
-    mainLabel.textContent = formatGlobalModeSub(mainMode, false);
+    mainLabel.textContent = mainLocked
+      ? `Цикл дня/ночи (${globalDnPhase === 'day' ? 'День' : 'Ночь'})`
+      : formatGlobalModeSub(mainMode, false);
   }
   if (flashLabel) {
     flashLabel.textContent = formatGlobalModeSub(flashMode, true);
@@ -217,7 +271,70 @@ async function handleGlobalModeSelect(modeRaw, isFlash) {
     );
   } finally {
     const finalMode = isFlash ? lastFlashMode : lastMainMode;
-    setSegmentedControlState(containerId, finalMode, activeInstallationsCount === 0);
+    const isLocked = !isFlash && lastDayNightEnabled;
+    setSegmentedControlState(
+      containerId,
+      finalMode,
+      activeInstallationsCount === 0 || isLocked
+    );
+  }
+}
+
+async function handleGlobalDayNightChange({ toggleChanged = false } = {}) {
+  const dnToggle = document.getElementById('light-day-night-toggle');
+  const dnStartInput = document.getElementById('light-day-night-start');
+  const dnEndInput = document.getElementById('light-day-night-end');
+  if (!dnToggle || !dnStartInput || !dnEndInput) return;
+
+  const nextEnabled = Boolean(dnToggle.checked);
+  const nextStart = String(dnStartInput.value || lastDayStart).trim();
+  const nextEnd = String(dnEndInput.value || lastDayEnd).trim();
+
+  if (!/^\d{2}:\d{2}$/.test(nextStart) || !/^\d{2}:\d{2}$/.test(nextEnd)) {
+    showLightError('Укажите корректное время начала и окончания (ЧЧ:ММ)');
+    dnStartInput.value = lastDayStart;
+    dnEndInput.value = lastDayEnd;
+    if (toggleChanged) dnToggle.checked = lastDayNightEnabled;
+    return;
+  }
+  if (nextStart === nextEnd) {
+    showLightError('Время начала и окончания светового дня не могут совпадать');
+    dnStartInput.value = lastDayStart;
+    dnEndInput.value = lastDayEnd;
+    if (toggleChanged) dnToggle.checked = lastDayNightEnabled;
+    return;
+  }
+
+  showLightError('');
+  dnToggle.disabled = true;
+  dnStartInput.disabled = true;
+  dnEndInput.disabled = true;
+
+  try {
+    await api.controlDayNight({
+      target: 'all',
+      enabled: nextEnabled,
+      day_start: nextStart,
+      day_end: nextEnd,
+    });
+    showToast(
+      nextEnabled
+        ? `Световой день (все установки): включён (${nextStart}–${nextEnd})`
+        : 'Световой день (все установки): выключен'
+    );
+    await refreshRelaysState();
+    if (typeof onLightChangedCallback === 'function') {
+      await onLightChangedCallback();
+    }
+  } catch (err) {
+    dnToggle.checked = lastDayNightEnabled;
+    dnStartInput.value = lastDayStart;
+    dnEndInput.value = lastDayEnd;
+    showLightError(err.message || 'Не удалось обновить цикл дня и ночи');
+  } finally {
+    dnToggle.disabled = false;
+    dnStartInput.disabled = !Boolean(dnToggle.checked);
+    dnEndInput.disabled = !Boolean(dnToggle.checked);
   }
 }
 
@@ -273,6 +390,9 @@ export function initLightControl() {
   const flashControl = document.getElementById('light-mode-flash');
   const testBtn = document.getElementById('btn-light-relay-test');
   const delayInput = document.getElementById('light-capture-delay-input');
+  const dnToggle = document.getElementById('light-day-night-toggle');
+  const dnStartInput = document.getElementById('light-day-night-start');
+  const dnEndInput = document.getElementById('light-day-night-end');
 
   if (btnOpen) btnOpen.addEventListener('click', openLightControlModal);
   if (closeBtn) closeBtn.addEventListener('click', closeLightControlModal);
@@ -301,6 +421,16 @@ export function initLightControl() {
   }
 
   if (testBtn) testBtn.addEventListener('click', handleRelayTestClick);
+  if (dnToggle) {
+    dnToggle.addEventListener('change', () =>
+      handleGlobalDayNightChange({ toggleChanged: true })
+    );
+  }
+  [dnStartInput, dnEndInput].forEach((inputEl) => {
+    if (inputEl) {
+      inputEl.addEventListener('change', () => handleGlobalDayNightChange());
+    }
+  });
   if (delayInput) {
     delayInput.addEventListener('change', (e) => applyDelayChange(e.target.value));
   }

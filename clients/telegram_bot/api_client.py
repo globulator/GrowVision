@@ -478,6 +478,32 @@ class GrowVisionApiClient:
             timeout=15.0,
         )
 
+    async def control_day_night(
+        self,
+        user_id: int,
+        target: int | str = "all",
+        *,
+        enabled: bool | None = None,
+        day_start: str | None = None,
+        day_end: str | None = None,
+    ) -> dict[str, Any]:
+        """Настройка глобального или индивидуального цикла дня и ночи (Developer)."""
+        resolved_target = self._resolve_target(target)
+        payload: dict[str, Any] = {"target": resolved_target}
+        if enabled is not None:
+            payload["enabled"] = bool(enabled)
+        if day_start is not None:
+            payload["day_start"] = day_start
+        if day_end is not None:
+            payload["day_end"] = day_end
+        return await self._request(
+            "POST",
+            "/api/control/day-night",
+            user_id=user_id,
+            json=payload,
+            timeout=15.0,
+        )
+
     async def take_snap(
         self,
         user_id: int,

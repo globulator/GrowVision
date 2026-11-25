@@ -187,6 +187,8 @@ def get_control_panel_keyboard(
             callback_data=f"ctrl:flash:{flash_next}:{target}",
         )
 
+    day_night_text = "☀️ Световой день (все)" if target == "all" else "☀️ Световой день"
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [light_btn, flash_btn],
@@ -200,7 +202,44 @@ def get_control_panel_keyboard(
                     callback_data=f"ctrl:delay:{target}",
                 ),
             ],
+            [
+                InlineKeyboardButton(
+                    text=day_night_text,
+                    callback_data=f"ctrl:dn:menu:{target}",
+                )
+            ],
             [InlineKeyboardButton(text="⬅️ К выбору цели", callback_data="ctrl:menu")],
+        ]
+    )
+
+
+def get_day_night_menu_keyboard(
+    target: str,
+    enabled: bool,
+) -> InlineKeyboardMarkup:
+    """Подменю настройки цикла дня и ночи для всех или конкретной установки."""
+    next_val = 0 if enabled else 1
+    toggle_text = "⚪️ Выключить" if enabled else "🟢 Включить"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=toggle_text,
+                    callback_data=f"ctrl:dn:toggle:{next_val}:{target}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🕒 Задать интервал",
+                    callback_data=f"ctrl:dn:interval:{target}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад к управлению",
+                    callback_data=f"ctrl:target:{target}",
+                )
+            ],
         ]
     )
 

@@ -78,3 +78,9 @@ class ControlColorStates(StatesGroup):
     """FSM-состояния задания HEX-цвета для RGB-лампы."""
 
     waiting_hex = State()
+
+
+class ControlDayNightStates(StatesGroup):
+    """FSM-состояния задания интервала светового дня (HH:MM-HH:MM)."""
+
+    waiting_interval = State()
