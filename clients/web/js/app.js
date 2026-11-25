@@ -33,6 +33,7 @@ import { initRpiSetup, updateRpiRole } from './rpi_setup.js';
 import {
   closeLightControlModal,
   initLightControl,
+  setLightChangedHandler,
   updateLightRole,
 } from './light_control.js';
 import {
@@ -283,6 +284,9 @@ async function bootstrap() {
   initTestSnap();
   initRpiSetup();
   initLightControl();
+  setLightChangedHandler(async () => {
+    await loadAndRenderUnits({ bustCache: true });
+  });
   initCameras();
   setUnitSavedHandler(async () => {
     await loadAndRenderUnits({ bustCache: true });

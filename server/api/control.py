@@ -4,12 +4,23 @@ import time
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from server.api import edge as edge_api
 from server.api.deps import format_utc_z, get_current_user, get_db, require_role
 from server.core.area import calculate_area_display
+from server.core.light_state import (
+    LightMode,
+    compute_active_pin_states,
+    compute_effective_state,
+    get_global_light_mode,
+    get_individual_light_state,
+    get_installation_light_snapshot,
+    set_global_light_mode,
+    set_individual_light_state,
+    sync_app_state_pins,
+)
 from server.core.rgb import resolve_capture_display_rel_path
 from server.core.state import EphemeralSnapshot, app_state
 from server.core.system_status import (
@@ -41,12 +52,26 @@ class LightRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     target: int | Literal["all"]
-    state: bool = Field(..., strict=True)
+    state: bool | None = Field(default=None, strict=True)
+    mode: LightMode | None = None
 
     @field_validator("target", mode="before")
     @classmethod
     def validate_target(cls, v: Any) -> int | Literal["all"]:
         return validate_target_value(v)
+
+    @model_validator(mode="after")
+    def validate_state_or_mode(self) -> "LightRequest":
+        if self.state is None and self.mode is None:
+            raise ValueError("Необходимо указать state или mode")
+        if self.target != "all" and self.state is None:
+            if self.mode in ("on", "off"):
+                self.state = self.mode == "on"
+            else:
+                raise ValueError(
+                    "Для конкретной установки необходимо указать state (true/false)"
+                )
+        return self
 
 
 class RelayTestRequest(BaseModel):
@@ -366,6 +391,156 @@ def get_capture_info(
     }
 
 
+async def _execute_light_control(
+    body: LightRequest,
+    current_user: User,
+    db: Session,
+    *,
+    is_flash: bool,
+) -> dict[str, Any]:
+    """Общий обработчик управления основным светом и вспышкой с учётом иерархии режимов."""
+    inst_id, is_global, _ = validate_target_and_resolve(body.target, db)
+    check_rpi_online(db)
+
+    command_type = "LIGHT_FLASH" if is_flash else "LIGHT_MAIN"
+
+    if is_global:
+        next_mode: LightMode = (
+            body.mode
+            if body.mode is not None
+            else ("on" if bool(body.state) else "off")
+        )
+        active_insts = (
+            db.query(Installation)
+            .filter(Installation.is_archived.is_(False))
+            .order_by(Installation.id.asc())
+            .all()
+        )
+        other_mode = get_global_light_mode(db, is_flash=not is_flash)
+        g_light = other_mode if is_flash else next_mode
+        g_flash = next_mode if is_flash else other_mode
+
+        target_pin_states: dict[int, bool] = {}
+        inst_states_map: dict[str, dict[str, Any]] = {}
+        for item in active_insts:
+            ind_light = get_individual_light_state(db, item.id, is_flash=False)
+            ind_flash = get_individual_light_state(db, item.id, is_flash=True)
+            eff_light = compute_effective_state(g_light, ind_light)
+            eff_flash = compute_effective_state(g_flash, ind_flash)
+            inst_states_map[str(item.id)] = {
+                "light_gpio_pin": item.light_gpio_pin,
+                "flash_gpio_pin": item.flash_gpio_pin,
+                "light_state": eff_light,
+                "flash_state": eff_flash,
+            }
+            if not is_flash:
+                target_pin_states[item.light_gpio_pin] = eff_light
+            elif item.flash_gpio_pin != item.light_gpio_pin:
+                target_pin_states[item.flash_gpio_pin] = eff_flash
+
+        cmd_payload: dict[str, Any] = {
+            "mode": next_mode,
+            "state": (next_mode == "on") if next_mode != "default" else None,
+            "pin_states": {str(p): v for p, v in target_pin_states.items()},
+            "installation_states": inst_states_map,
+        }
+        cmd = EdgeCommand(
+            command_type=command_type,
+            installation_id=None,
+            is_global=True,
+            payload=json.dumps(cmd_payload),
+            status="pending",
+        )
+        db.add(cmd)
+        db.commit()
+        db.refresh(cmd)
+
+        finished_cmd = await wait_command_result(cmd.id, 10.0, db)
+        if finished_cmd.status == "done":
+            set_global_light_mode(db, next_mode, is_flash=is_flash)
+            db.commit()
+            sync_app_state_pins(target_pin_states)
+
+        resp: dict[str, Any] = {
+            "command_id": finished_cmd.id,
+            "status": finished_cmd.status,
+            "result_message": finished_cmd.result_message or "OK",
+            "mode": next_mode,
+            "global_light_mode": get_global_light_mode(db, is_flash=False),
+            "global_flash_mode": get_global_light_mode(db, is_flash=True),
+            "pin_states": {
+                str(k): v for k, v in app_state.get_all_pin_states().items()
+            },
+        }
+    else:
+        inst = db.query(Installation).filter(Installation.id == inst_id).first()
+        if not inst:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Установка не найдена",
+            )
+        next_state = bool(body.state)
+        global_mode = get_global_light_mode(db, is_flash=is_flash)
+        eff_state = compute_effective_state(global_mode, next_state)
+        target_pin = inst.flash_gpio_pin if is_flash else inst.light_gpio_pin
+        target_pin_states = {target_pin: eff_state}
+
+        cmd_payload = {
+            "state": eff_state,
+            "individual_state": next_state,
+            "mode": global_mode,
+            "pin_states": {str(target_pin): eff_state},
+        }
+        cmd = EdgeCommand(
+            command_type=command_type,
+            installation_id=inst_id,
+            is_global=False,
+            payload=json.dumps(cmd_payload),
+            status="pending",
+        )
+        db.add(cmd)
+        db.commit()
+        db.refresh(cmd)
+
+        finished_cmd = await wait_command_result(cmd.id, 10.0, db)
+        if finished_cmd.status == "done":
+            set_individual_light_state(db, inst.id, next_state, is_flash=is_flash)
+            # Синхронизируем установки, разделяющие тот же физический GPIO-пин
+            shared_query = db.query(Installation).filter(
+                Installation.is_archived.is_(False),
+                Installation.id != inst.id,
+            )
+            if is_flash:
+                shared_query = shared_query.filter(
+                    Installation.flash_gpio_pin == target_pin
+                )
+            else:
+                shared_query = shared_query.filter(
+                    Installation.light_gpio_pin == target_pin
+                )
+            for other in shared_query.all():
+                set_individual_light_state(db, other.id, next_state, is_flash=is_flash)
+            db.commit()
+            sync_app_state_pins(target_pin_states)
+
+        resp = {
+            "command_id": finished_cmd.id,
+            "status": finished_cmd.status,
+            "result_message": finished_cmd.result_message or "OK",
+            "individual_state": next_state,
+            "effective_state": eff_state,
+            "locked": global_mode != "default",
+            "pin_states": {
+                str(k): v for k, v in app_state.get_all_pin_states().items()
+            },
+        }
+
+    debug_info = build_debug_info(finished_cmd, current_user, db)
+    if debug_info:
+        resp["debug_info"] = debug_info
+    return resp
+
+
 @router.post("/light/main", response_model=dict[str, Any])
 async def control_light_main(
     body: LightRequest,
@@ -373,47 +548,7 @@ async def control_light_main(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
     """4.4. POST /api/control/light/main (Developer)."""
-    # 1. Проверка target
-    inst_id, is_global, _ = validate_target_and_resolve(body.target, db)
-
-    # 2. Проверка онлайна RPi
-    check_rpi_online(db)
-
-    cmd = EdgeCommand(
-        command_type="LIGHT_MAIN",
-        installation_id=inst_id,
-        is_global=is_global,
-        payload=json.dumps({"state": body.state}),
-        status="pending",
-    )
-    db.add(cmd)
-    db.commit()
-    db.refresh(cmd)
-
-    finished_cmd = await wait_command_result(cmd.id, 10.0, db)
-
-    if finished_cmd.status == "done":
-        if is_global:
-            all_insts = (
-                db.query(Installation).filter(Installation.is_archived.is_(False)).all()
-            )
-            for item in all_insts:
-                app_state.set_pin_state(item.light_gpio_pin, body.state)
-        elif inst_id:
-            inst = db.query(Installation).filter(Installation.id == inst_id).first()
-            if inst:
-                app_state.set_pin_state(inst.light_gpio_pin, body.state)
-
-    resp: dict[str, Any] = {
-        "command_id": finished_cmd.id,
-        "status": finished_cmd.status,
-        "result_message": finished_cmd.result_message or "OK",
-        "pin_states": {str(k): v for k, v in app_state.get_all_pin_states().items()},
-    }
-    debug_info = build_debug_info(finished_cmd, current_user, db)
-    if debug_info:
-        resp["debug_info"] = debug_info
-    return resp
+    return await _execute_light_control(body, current_user, db, is_flash=False)
 
 
 @router.post("/light/flash", response_model=dict[str, Any])
@@ -423,47 +558,7 @@ async def control_light_flash(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
     """4.4. POST /api/control/light/flash (Developer)."""
-    # 1. Проверка target
-    inst_id, is_global, _ = validate_target_and_resolve(body.target, db)
-
-    # 2. Проверка онлайна RPi
-    check_rpi_online(db)
-
-    cmd = EdgeCommand(
-        command_type="LIGHT_FLASH",
-        installation_id=inst_id,
-        is_global=is_global,
-        payload=json.dumps({"state": body.state}),
-        status="pending",
-    )
-    db.add(cmd)
-    db.commit()
-    db.refresh(cmd)
-
-    finished_cmd = await wait_command_result(cmd.id, 10.0, db)
-
-    if finished_cmd.status == "done":
-        if is_global:
-            all_insts = (
-                db.query(Installation).filter(Installation.is_archived.is_(False)).all()
-            )
-            for item in all_insts:
-                app_state.set_pin_state(item.flash_gpio_pin, body.state)
-        elif inst_id:
-            inst = db.query(Installation).filter(Installation.id == inst_id).first()
-            if inst:
-                app_state.set_pin_state(inst.flash_gpio_pin, body.state)
-
-    resp: dict[str, Any] = {
-        "command_id": finished_cmd.id,
-        "status": finished_cmd.status,
-        "result_message": finished_cmd.result_message or "OK",
-        "pin_states": {str(k): v for k, v in app_state.get_all_pin_states().items()},
-    }
-    debug_info = build_debug_info(finished_cmd, current_user, db)
-    if debug_info:
-        resp["debug_info"] = debug_info
-    return resp
+    return await _execute_light_control(body, current_user, db, is_flash=True)
 
 
 @router.post("/relay-test", response_model=dict[str, Any])
@@ -479,20 +574,16 @@ async def control_relay_test(
     # 2. Проверка онлайна RPi
     check_rpi_online(db)
 
-    # Фиксируем исходные программные состояния пинов (свет=True, вспышка=False по умолчанию)
+    # Вычисляем актуальные целевые состояния пинов с учётом иерархии global_*_mode + индивидуальные
     target_insts = (
         db.query(Installation).filter(Installation.is_archived.is_(False)).all()
         if is_global
         else db.query(Installation).filter(Installation.id == inst_id).all()
     )
-    initial_states: dict[str, bool] = {}
-    for item in target_insts:
-        light_st = app_state.get_pin_state(item.light_gpio_pin, default=True)
-        initial_states[str(item.light_gpio_pin)] = light_st
-        if item.flash_gpio_pin != item.light_gpio_pin:
-            initial_states[str(item.flash_gpio_pin)] = app_state.get_pin_state(
-                item.flash_gpio_pin, default=False
-            )
+    computed_pins = compute_active_pin_states(db, target_insts)
+    initial_states: dict[str, bool] = {
+        str(pin): val for pin, val in computed_pins.items()
+    }
 
     cmd = EdgeCommand(
         command_type="RELAY_TEST",
@@ -521,12 +612,7 @@ async def control_relay_test(
                     app_state.set_pin_state(int(raw_pin), bool(raw_val))
                 except (TypeError, ValueError):
                     continue
-        else:
-            existing_pins = app_state.get_all_pin_states()
-            for raw_pin, val in initial_states.items():
-                pin_num = int(raw_pin)
-                if pin_num not in existing_pins:
-                    app_state.set_pin_state(pin_num, val)
+        sync_app_state_pins(computed_pins)
 
     resp: dict[str, Any] = {
         "command_id": finished_cmd.id,
@@ -545,8 +631,11 @@ def get_relays_status(
     current_user: Annotated[User, Depends(require_role("developer"))],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
-    """Возвращает текущие программные состояния GPIO-пинов, активных установок и capture_delay_sec."""
+    """Возвращает текущие состояния GPIO-пинов, режимы света/вспышки, активные установки и capture_delay_sec."""
     pins = {str(k): v for k, v in app_state.get_all_pin_states().items()}
+    global_light_mode = get_global_light_mode(db, is_flash=False)
+    global_flash_mode = get_global_light_mode(db, is_flash=True)
+
     active_insts = (
         db.query(Installation)
         .filter(Installation.is_archived.is_(False))
@@ -555,22 +644,30 @@ def get_relays_status(
     )
     installations_relays: list[dict[str, Any]] = []
     for inst in active_insts:
-        light_st = app_state.get_pin_state(inst.light_gpio_pin, default=True)
-        flash_st = (
-            light_st
-            if inst.flash_gpio_pin == inst.light_gpio_pin
-            else app_state.get_pin_state(inst.flash_gpio_pin, default=False)
+        snap = get_installation_light_snapshot(
+            db,
+            inst,
+            global_light_mode=global_light_mode,
+            global_flash_mode=global_flash_mode,
         )
-        pins.setdefault(str(inst.light_gpio_pin), light_st)
-        pins.setdefault(str(inst.flash_gpio_pin), flash_st)
+        pins[str(inst.light_gpio_pin)] = snap["light_state"]
+        app_state.set_pin_state(inst.light_gpio_pin, snap["light_state"])
+        if inst.flash_gpio_pin != inst.light_gpio_pin:
+            pins[str(inst.flash_gpio_pin)] = snap["flash_state"]
+            app_state.set_pin_state(inst.flash_gpio_pin, snap["flash_state"])
+
         installations_relays.append(
             {
                 "installation_id": inst.id,
                 "name": inst.name,
                 "light_gpio_pin": inst.light_gpio_pin,
-                "light_state": light_st,
                 "flash_gpio_pin": inst.flash_gpio_pin,
-                "flash_state": flash_st,
+                "individual_light_state": snap["individual_light_state"],
+                "individual_flash_state": snap["individual_flash_state"],
+                "light_state": snap["light_state"],
+                "flash_state": snap["flash_state"],
+                "light_locked": snap["light_locked"],
+                "flash_locked": snap["flash_locked"],
             }
         )
 
@@ -583,7 +680,7 @@ def get_relays_status(
     light_state = (
         any(item["light_state"] for item in installations_relays)
         if installations_relays
-        else True
+        else (global_light_mode != "off")
     )
     flash_pins_items = [
         item
@@ -595,6 +692,8 @@ def get_relays_status(
     return {
         "pins": pins,
         "installations": installations_relays,
+        "global_light_mode": global_light_mode,
+        "global_flash_mode": global_flash_mode,
         "light_state": light_state,
         "flash_state": flash_state,
         "capture_delay_sec": capture_delay_sec,
@@ -607,17 +706,17 @@ def get_installation_relays(
     current_user: Annotated[User, Depends(require_role("developer"))],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
-    """Возвращает программные состояния реле конкретной установки."""
+    """Возвращает состояния реле конкретной установки с учётом иерархии."""
     inst = db.query(Installation).filter(Installation.id == installation_id).first()
     if not inst:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Установка не найдена",
         )
+    snap = get_installation_light_snapshot(db, inst)
     return {
         "installation_id": inst.id,
         "light_gpio_pin": inst.light_gpio_pin,
-        "light_state": app_state.get_pin_state(inst.light_gpio_pin),
         "flash_gpio_pin": inst.flash_gpio_pin,
-        "flash_state": app_state.get_pin_state(inst.flash_gpio_pin),
+        **snap,
     }

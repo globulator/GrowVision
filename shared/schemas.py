@@ -72,6 +72,8 @@ class HeartbeatActiveInstallation(BaseModel):
     aruco_size_mm: float | None = None
     camera_rgb: dict[str, dict[str, float]] = Field(default_factory=dict)
     camera_segmentation_modes: dict[str, SegmentationMode] = Field(default_factory=dict)
+    light_state: bool = True
+    flash_state: bool = False
 
 
 class HeartbeatResponse(BaseModel):
@@ -85,6 +87,8 @@ class HeartbeatResponse(BaseModel):
         default_factory=list
     )
     capture_delay_sec: float = 1.5
+    global_light_mode: Literal["on", "default", "off"] = "default"
+    global_flash_mode: Literal["on", "default", "off"] = "default"
 
 
 class CommandInstallation(BaseModel):
@@ -102,6 +106,8 @@ class CommandInstallation(BaseModel):
     aruco_size_mm: float | None = None
     camera_rgb: dict[str, dict[str, float]] = Field(default_factory=dict)
     camera_segmentation_modes: dict[str, SegmentationMode] = Field(default_factory=dict)
+    light_state: bool = True
+    flash_state: bool = False
 
 
 class CommandItem(BaseModel):

@@ -85,6 +85,8 @@ class EdgeOrchestrator:
         self._last_server_rgb: dict[str, tuple[float, float, float]] = {}
         self._camera_segmentation_modes: dict[str, str] = {}
         self._last_server_segmentation_modes: dict[str, str] = {}
+        self._last_server_light_states: dict[int, tuple[bool, bool]] = {}
+        self._last_server_global_light_modes: tuple[str, str] | None = None
 
     def start(self) -> None:
         """Запускает фоновые потоки оркестратора."""
@@ -138,7 +140,7 @@ class EdgeOrchestrator:
         logger.info("Edge-агент остановлен")
 
     def init_installations_light(self) -> None:
-        """Включает основной свет и выключает вспышку для новых установок под аппаратным мьютексом."""
+        """Инициализирует целевые состояния света и вспышки новых установок под аппаратным мьютексом."""
         new_insts = [
             inst
             for inst in self.active_installations
@@ -156,9 +158,14 @@ class EdgeOrchestrator:
 
         try:
             for inst in new_insts:
-                self.hardware.set_light(inst.light_gpio_pin, True, source="init")
+                srv_light = bool(getattr(inst, "light_state", True))
+                srv_flash = bool(getattr(inst, "flash_state", False))
+                self.hardware.set_light(inst.light_gpio_pin, srv_light, source="init")
                 if inst.flash_gpio_pin != inst.light_gpio_pin:
-                    self.hardware.set_flash(inst.flash_gpio_pin, False, source="init")
+                    self.hardware.set_flash(
+                        inst.flash_gpio_pin, srv_flash, source="init"
+                    )
+                self._last_server_light_states[inst.id] = (srv_light, srv_flash)
                 self._initialized_installations.add(
                     (inst.id, inst.light_gpio_pin, inst.flash_gpio_pin)
                 )
@@ -167,6 +174,59 @@ class EdgeOrchestrator:
             )
         finally:
             self.hardware.release_lock()
+
+    def sync_installations_light_from_heartbeat(
+        self,
+        global_light_mode: str = "default",
+        global_flash_mode: str = "default",
+    ) -> None:
+        """Синхронизирует изменившиеся целевые состояния уже инициализированных установок.
+
+        Не блокируется на аппаратном мьютексе и не трогает пины, занятые захватом кадра.
+        """
+        current_global_modes = (str(global_light_mode), str(global_flash_mode))
+        global_modes_changed = (
+            self._last_server_global_light_modes is not None
+            and self._last_server_global_light_modes != current_global_modes
+        )
+        self._last_server_global_light_modes = current_global_modes
+
+        setter = getattr(self.hardware, "set_desired_pin_state", None)
+        for inst in self.active_installations:
+            key = (inst.id, inst.light_gpio_pin, inst.flash_gpio_pin)
+            if key not in self._initialized_installations:
+                continue
+            srv_light = bool(getattr(inst, "light_state", True))
+            srv_flash = bool(getattr(inst, "flash_state", False))
+            if not global_modes_changed and self._last_server_light_states.get(
+                inst.id
+            ) == (srv_light, srv_flash):
+                continue
+            self._last_server_light_states[inst.id] = (srv_light, srv_flash)
+            if callable(setter):
+                setter(
+                    inst.light_gpio_pin,
+                    srv_light,
+                    role="light",
+                    apply_if_idle=True,
+                    source="heartbeat_sync",
+                )
+                if inst.flash_gpio_pin != inst.light_gpio_pin:
+                    setter(
+                        inst.flash_gpio_pin,
+                        srv_flash,
+                        role="flash",
+                        apply_if_idle=True,
+                        source="heartbeat_sync",
+                    )
+            else:
+                self.hardware.set_light(
+                    inst.light_gpio_pin, srv_light, source="heartbeat_sync"
+                )
+                if inst.flash_gpio_pin != inst.light_gpio_pin:
+                    self.hardware.set_flash(
+                        inst.flash_gpio_pin, srv_flash, source="heartbeat_sync"
+                    )
 
     def trigger_async_flush(self) -> None:
         """Запускает выгрузку офлайн-очереди в отдельном потоке под замком (до 10 пакетов)."""
@@ -227,8 +287,12 @@ class EdgeOrchestrator:
                 f"задержка_съёмки={self.global_capture_delay_sec}с"
             )
 
-            # Переводим реле активных установок в нормальное состояние (свет ВКЛ)
+            # Переводим реле активных установок в актуальное целевое состояние
             self.init_installations_light()
+            self.sync_installations_light_from_heartbeat(
+                global_light_mode=getattr(resp, "global_light_mode", "default"),
+                global_flash_mode=getattr(resp, "global_flash_mode", "default"),
+            )
             self._sync_rgb_from_installations(self.active_installations)
             self._sync_segmentation_modes_from_installations(self.active_installations)
 
@@ -278,6 +342,23 @@ class EdgeOrchestrator:
     def handle_command(self, cmd: CommandItem) -> None:
         """Обрабатывает одну полученную команду."""
         logger.info(f"Получена команда #{cmd.id}: {cmd.command_type}")
+        cmd_type = cmd.command_type.upper()
+
+        # Команды управления светом/вспышкой не ждут аппаратного мьютекса съёмки:
+        # они обновляют целевые состояния под _light_state_lock и пропускают снимаемые пины.
+        if cmd_type in ("LIGHT_MAIN", "LIGHT_FLASH"):
+            try:
+                self._handle_light(cmd, is_flash=(cmd_type == "LIGHT_FLASH"))
+            except Exception as exc:  # noqa: BLE001
+                logger.error(f"Ошибка при выполнении команды #{cmd.id}: {exc}")
+                self.client.send_command_result(
+                    cmd.id,
+                    CommandResult(
+                        status="error",
+                        result_message=f"Внутренняя ошибка выполнения: {exc}",
+                    ),
+                )
+            return
 
         # Захват аппаратного мьютекса (с ожиданием до 10.0 с на случай плановой съёмки)
         acquired = self.hardware.acquire_lock(blocking=True, timeout=10.0)
@@ -293,12 +374,7 @@ class EdgeOrchestrator:
             return
 
         try:
-            cmd_type = cmd.command_type.upper()
-            if cmd_type == "LIGHT_MAIN":
-                self._handle_light(cmd, is_flash=False)
-            elif cmd_type == "LIGHT_FLASH":
-                self._handle_light(cmd, is_flash=True)
-            elif cmd_type == "RELAY_TEST":
+            if cmd_type == "RELAY_TEST":
                 self._handle_relay_test(cmd)
             elif cmd_type == "SCAN_CAMERAS":
                 self._handle_scan_cameras(cmd)
@@ -337,12 +413,24 @@ class EdgeOrchestrator:
             self.hardware.release_lock()
 
     def _handle_light(self, cmd: CommandItem, is_flash: bool) -> None:
-        """Обработка команд LIGHT_MAIN и LIGHT_FLASH."""
-        state = True
-        if cmd.payload and isinstance(cmd.payload, dict):
-            raw_state = cmd.payload.get("state")
-            if raw_state is not None:
-                state = bool(raw_state)
+        """Обработка команд LIGHT_MAIN и LIGHT_FLASH без блокировки на захвате кадра."""
+        payload = cmd.payload if isinstance(cmd.payload, dict) else {}
+        fallback_state = True
+        if payload.get("state") is not None:
+            fallback_state = bool(payload.get("state"))
+        elif payload.get("mode") in ("on", "off"):
+            fallback_state = payload.get("mode") == "on"
+
+        raw_pin_states = (
+            payload.get("pin_states")
+            if isinstance(payload.get("pin_states"), dict)
+            else None
+        )
+        raw_inst_states = (
+            payload.get("installation_states")
+            if isinstance(payload.get("installation_states"), dict)
+            else None
+        )
 
         targets = []
         if cmd.is_global and cmd.installations:
@@ -361,21 +449,65 @@ class EdgeOrchestrator:
             )
             return
 
+        desired_setter = getattr(self.hardware, "set_desired_pin_state", None)
+        applied_values: list[bool] = []
+        pin_results: dict[str, bool] = {}
+        deferred_pins: list[int] = []
+
         for inst in targets:
             pin = inst.flash_gpio_pin if is_flash else inst.light_gpio_pin
-            if is_flash:
-                self.hardware.set_flash(pin, state, source="manual")
-            else:
-                self.hardware.set_light(pin, state, source="manual")
+            if (
+                is_flash
+                and inst.flash_gpio_pin == inst.light_gpio_pin
+                and raw_pin_states is not None
+                and str(pin) not in raw_pin_states
+            ):
+                continue
 
-        state_str = "включен" if state else "выключен"
-        msg = f"{target_name.capitalize()} успешно {state_str} на {len(targets)} установках"
+            if raw_pin_states is not None and str(pin) in raw_pin_states:
+                target_state = bool(raw_pin_states[str(pin)])
+            elif raw_inst_states is not None and str(inst.id) in raw_inst_states:
+                inst_entry = raw_inst_states[str(inst.id)]
+                key = "flash_state" if is_flash else "light_state"
+                if isinstance(inst_entry, dict) and key in inst_entry:
+                    target_state = bool(inst_entry[key])
+                else:
+                    target_state = fallback_state
+            else:
+                target_state = fallback_state
+
+            role = "flash" if is_flash else "light"
+            if callable(desired_setter):
+                applied_now = desired_setter(
+                    pin, target_state, role=role, apply_if_idle=True, source="manual"
+                )
+                if not applied_now:
+                    deferred_pins.append(pin)
+            elif is_flash:
+                self.hardware.set_flash(pin, target_state, source="manual")
+            else:
+                self.hardware.set_light(pin, target_state, source="manual")
+
+            applied_values.append(target_state)
+            pin_results[str(pin)] = target_state
+
+        if applied_values and all(v is True for v in applied_values):
+            msg = f"{target_name.capitalize()} успешно включен на {len(targets)} установках"
+        elif applied_values and all(v is False for v in applied_values):
+            msg = f"{target_name.capitalize()} успешно выключен на {len(targets)} установках"
+        else:
+            msg = f"{target_name.capitalize()} переведен в режим «По умолчанию» на {len(targets)} установках"
+
+        deferred_note = f", deferred={deferred_pins}" if deferred_pins else ""
         self.client.send_command_result(
             cmd.id,
             CommandResult(
                 status="done",
                 result_message=msg,
-                debug_log_line=f"[GPIO] {target_name} -> {state} for {[t.id for t in targets]}",
+                data={"pin_states": pin_results},
+                debug_log_line=(
+                    f"[GPIO] {target_name} -> {pin_results} for {[t.id for t in targets]}{deferred_note}"
+                ),
             ),
         )
 
@@ -436,6 +568,23 @@ class EdgeOrchestrator:
                 ),
             )
             return
+
+        desired_setter = getattr(self.hardware, "set_desired_pin_state", None)
+        if callable(desired_setter):
+            for pin in pins:
+                if pin in payload_initial:
+                    role = (
+                        pin_roles.get(pin, "gpio")
+                        if isinstance(pin_roles, dict)
+                        else "gpio"
+                    )
+                    desired_setter(
+                        pin,
+                        payload_initial[pin],
+                        role=role,
+                        apply_if_idle=False,
+                        source="sync",
+                    )
 
         restored = self.hardware.test_relay(
             pins, duration=duration, initial_states=initial_states
@@ -611,6 +760,10 @@ class EdgeOrchestrator:
         light_pin = inst.light_gpio_pin
         flash_pin = inst.flash_gpio_pin
         same_pins = light_pin == flash_pin
+        begin_fn = getattr(self.hardware, "begin_capture_pins", None)
+        end_fn = getattr(self.hardware, "end_capture_pins", None)
+        if callable(begin_fn):
+            begin_fn(light_pin, flash_pin)
         try:
             if not same_pins:
                 self.hardware.set_light(light_pin, False, source="capture_warmup")
@@ -633,9 +786,12 @@ class EdgeOrchestrator:
                 return bytes(snap)
             return None
         finally:
-            if not same_pins:
-                self.hardware.set_flash(flash_pin, False, source="capture_warmup")
-            self.hardware.set_light(light_pin, True, source="capture_warmup")
+            if callable(end_fn):
+                end_fn(light_pin, flash_pin)
+            else:
+                if not same_pins:
+                    self.hardware.set_flash(flash_pin, False, source="capture_warmup")
+                self.hardware.set_light(light_pin, True, source="capture_warmup")
 
     def _capture_frame_for_camera(
         self, inst: Any, cam_hw_id: str, inst_delay: float, frame_idx: int

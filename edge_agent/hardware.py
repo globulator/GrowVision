@@ -274,9 +274,12 @@ class HardwareManager:
         self.mock_cameras = bool(mock_cameras)
 
         self.lock = threading.Lock()
+        self._light_state_lock = threading.RLock()
         self._gpio_devices: dict[int, Any] = {}
         self._mock_pins: dict[int, bool] = {}
         self._pin_states: dict[int, bool] = {}
+        self._desired_pin_states: dict[int, bool] = {}
+        self._capturing_pins: dict[int, int] = {}
         self._pin_roles: dict[int, str] = {}
         self._pin_active_since: dict[int, float] = {}
         self._mock_frame_counter: int = 0
@@ -419,13 +422,125 @@ class HardwareManager:
                 f"(level={self._physical_level_label(norm_state)}, mode={self.mode}, source={source})"
             )
 
+    def is_pin_capturing(self, pin: int) -> bool:
+        """True, если пин сейчас участвует в активном захвате кадра."""
+        with self._light_state_lock:
+            return self._capturing_pins.get(pin, 0) > 0
+
+    def get_desired_pin_state(self, pin: int, default: bool = False) -> bool:
+        """Возвращает актуальное целевое состояние GPIO-пина."""
+        with self._light_state_lock:
+            return self._desired_pin_states.get(pin, default)
+
+    def get_all_desired_pin_states(self) -> dict[int, bool]:
+        """Возвращает снимок целевых состояний всех известных пинов."""
+        with self._light_state_lock:
+            return dict(self._desired_pin_states)
+
+    def set_desired_pin_state(
+        self,
+        pin: int,
+        state: bool,
+        role: str = "gpio",
+        apply_if_idle: bool = True,
+        source: str = "manual",
+    ) -> bool:
+        """Обновляет целевое состояние пина под _light_state_lock.
+
+        Если пин сейчас не занят захватом кадра и apply_if_idle=True,
+        сразу применяет физический GPIO и возвращает True.
+        """
+        norm_state = bool(state)
+        with self._light_state_lock:
+            if role != "gpio":
+                self._pin_roles[pin] = role
+            self._desired_pin_states[pin] = norm_state
+            if apply_if_idle and self._capturing_pins.get(pin, 0) == 0:
+                self.set_pin(pin, norm_state, role=role, source=source)
+                return True
+            return False
+
+    def begin_capture_pins(self, light_pin: int, flash_pin: int) -> None:
+        """Фиксирует начало захвата кадра для пинов света и вспышки."""
+        with self._light_state_lock:
+            if light_pin not in self._desired_pin_states:
+                if light_pin in self._pin_states:
+                    self._desired_pin_states[light_pin] = bool(
+                        self._pin_states[light_pin]
+                    )
+                else:
+                    self._desired_pin_states[light_pin] = True
+            self._pin_roles.setdefault(light_pin, "light")
+            self._capturing_pins[light_pin] = self._capturing_pins.get(light_pin, 0) + 1
+
+            if flash_pin != light_pin:
+                if flash_pin not in self._desired_pin_states:
+                    if flash_pin in self._pin_states:
+                        self._desired_pin_states[flash_pin] = bool(
+                            self._pin_states[flash_pin]
+                        )
+                    else:
+                        self._desired_pin_states[flash_pin] = False
+                self._pin_roles.setdefault(flash_pin, "flash")
+                self._capturing_pins[flash_pin] = (
+                    self._capturing_pins.get(flash_pin, 0) + 1
+                )
+
+    def end_capture_pins(self, light_pin: int, flash_pin: int) -> dict[int, bool]:
+        """Снимает отметку захвата и возвращает пины в актуальное целевое состояние."""
+        applied: dict[int, bool] = {}
+        with self._light_state_lock:
+            pins_to_restore: list[tuple[int, str, bool]] = []
+
+            cnt_l = self._capturing_pins.get(light_pin, 0) - 1
+            if cnt_l <= 0:
+                self._capturing_pins.pop(light_pin, None)
+                pins_to_restore.append(
+                    (
+                        light_pin,
+                        self._pin_roles.get(light_pin, "light"),
+                        self._desired_pin_states.get(light_pin, True),
+                    )
+                )
+            else:
+                self._capturing_pins[light_pin] = cnt_l
+
+            if flash_pin != light_pin:
+                cnt_f = self._capturing_pins.get(flash_pin, 0) - 1
+                if cnt_f <= 0:
+                    self._capturing_pins.pop(flash_pin, None)
+                    pins_to_restore.append(
+                        (
+                            flash_pin,
+                            self._pin_roles.get(flash_pin, "flash"),
+                            self._desired_pin_states.get(flash_pin, False),
+                        )
+                    )
+                else:
+                    self._capturing_pins[flash_pin] = cnt_f
+
+            for pin, role, target_state in pins_to_restore:
+                self.set_pin(pin, target_state, role=role, source="capture_restore")
+                applied[pin] = target_state
+        return applied
+
     def set_light(self, pin: int, state: bool, source: str = "manual") -> None:
         """Управляет основным светом."""
-        self.set_pin(pin, state, role="light", source=source)
+        if source in ("capture_warmup", "capture_restore", "relay_test"):
+            self.set_pin(pin, state, role="light", source=source)
+        else:
+            self.set_desired_pin_state(
+                pin, state, role="light", apply_if_idle=True, source=source
+            )
 
     def set_flash(self, pin: int, state: bool, source: str = "manual") -> None:
         """Управляет вспышкой."""
-        self.set_pin(pin, state, role="flash", source=source)
+        if source in ("capture_warmup", "capture_restore", "relay_test"):
+            self.set_pin(pin, state, role="flash", source=source)
+        else:
+            self.set_desired_pin_state(
+                pin, state, role="flash", apply_if_idle=True, source=source
+            )
 
     def test_relay(
         self,
@@ -433,35 +548,48 @@ class HardwareManager:
         duration: float = 3.0,
         initial_states: dict[int, bool] | None = None,
     ) -> dict[int, bool]:
-        """Кратковременный тест реле на указанных пинах с возвратом исходного состояния."""
+        """Кратковременный тест реле на указанных пинах с возвратом в актуальное целевое состояние."""
         logger.info(f"[RELAY_TEST] Включение пинов {pins} на {duration} с")
         prev_states: dict[int, bool] = {}
         roles_before: dict[int, str] = {}
-        for pin in pins:
-            roles_before[pin] = self._pin_roles.get(pin, "gpio")
-            if pin in self._pin_states:
-                prev_states[pin] = bool(self._pin_states[pin])
-            elif self.mode == "rpi" and pin in self._gpio_devices:
-                prev_states[pin] = self.get_pin_state(pin)
-            elif self.mode == "mock" and pin in self._mock_pins:
-                prev_states[pin] = bool(self._mock_pins[pin])
-            elif initial_states is not None and pin in initial_states:
-                prev_states[pin] = bool(initial_states[pin])
-            else:
-                prev_states[pin] = False
+        with self._light_state_lock:
+            for pin in pins:
+                roles_before[pin] = self._pin_roles.get(pin, "gpio")
+                if pin in self._desired_pin_states:
+                    prev_states[pin] = bool(self._desired_pin_states[pin])
+                elif pin in self._pin_states:
+                    prev_states[pin] = bool(self._pin_states[pin])
+                elif self.mode == "rpi" and pin in self._gpio_devices:
+                    prev_states[pin] = self.get_pin_state(pin)
+                elif self.mode == "mock" and pin in self._mock_pins:
+                    prev_states[pin] = bool(self._mock_pins[pin])
+                elif initial_states is not None and pin in initial_states:
+                    prev_states[pin] = bool(initial_states[pin])
+                else:
+                    prev_states[pin] = False
 
+        restored_states: dict[int, bool] = {}
         try:
             for pin in pins:
-                self.set_pin(pin, True, role=roles_before[pin], source="manual")
+                self.set_pin(pin, True, role=roles_before[pin], source="relay_test")
             if duration > 0:
                 time.sleep(duration)
         finally:
-            for pin, state in prev_states.items():
-                self.set_pin(pin, state, role=roles_before[pin], source="manual")
+            with self._light_state_lock:
+                for pin, fallback_state in prev_states.items():
+                    target_state = self._desired_pin_states.get(pin, fallback_state)
+                    restored_states[pin] = bool(target_state)
+                    if self._capturing_pins.get(pin, 0) == 0:
+                        self.set_pin(
+                            pin,
+                            bool(target_state),
+                            role=roles_before[pin],
+                            source="relay_test",
+                        )
             logger.info(
-                f"[RELAY_TEST] Пины {pins} возвращены в исходное состояние: {prev_states}"
+                f"[RELAY_TEST] Пины {pins} возвращены в целевое состояние: {restored_states}"
             )
-        return dict(prev_states)
+        return restored_states
 
     @property
     def use_mock_cameras(self) -> bool:
@@ -818,6 +946,7 @@ class HardwareManager:
           5. Гарантированный возврат в исходное состояние (light=1, flash=0) в finally.
         """
         same_pins = light_pin == flash_pin
+        self.begin_capture_pins(light_pin, flash_pin)
         try:
             if not same_pins:
                 self.set_light(light_pin, False, source="capture_warmup")
@@ -841,9 +970,7 @@ class HardwareManager:
                 frame_index=frame_index,
             )
         finally:
-            if not same_pins:
-                self.set_flash(flash_pin, False, source="capture_warmup")
-            self.set_light(light_pin, True, source="capture_warmup")
+            self.end_capture_pins(light_pin, flash_pin)
 
     def cleanup(self) -> None:
         """Безопасный сброс и очистка используемых ресурсов GPIO."""
@@ -896,6 +1023,8 @@ class HardwareManager:
         self._gpio_devices.clear()
         self._mock_pins.clear()
         self._pin_states.clear()
+        self._desired_pin_states.clear()
+        self._capturing_pins.clear()
         self._pin_roles.clear()
         self._pin_active_since.clear()
 

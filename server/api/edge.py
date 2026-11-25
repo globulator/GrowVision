@@ -21,6 +21,10 @@ from sqlalchemy.orm import Session
 
 from server.api.deps import format_utc_z, get_db, verify_edge_key
 from server.core.area import calculate_area_display
+from server.core.light_state import (
+    get_global_light_mode,
+    get_installation_light_snapshot,
+)
 from server.core.live_manager import live_manager
 from server.core.rgb import (
     apply_rgb_to_jpeg_bytes,
@@ -154,13 +158,22 @@ def edge_heartbeat(
         float(delay_setting.value) if delay_setting and delay_setting.value else 1.5
     )
 
-    # 4. Формирование списка активных установок
+    # 4. Формирование списка активных установок и целевых состояний света/вспышки
+    global_light_mode = get_global_light_mode(db, is_flash=False)
+    global_flash_mode = get_global_light_mode(db, is_flash=True)
+
     active_installations = (
         db.query(Installation).filter(Installation.is_archived.is_(False)).all()
     )
     active_inst_data: list[HeartbeatActiveInstallation] = []
     for inst in active_installations:
         cam_ids = [c.hardware_id for c in inst.cameras]
+        light_snap = get_installation_light_snapshot(
+            db,
+            inst,
+            global_light_mode=global_light_mode,
+            global_flash_mode=global_flash_mode,
+        )
         active_inst_data.append(
             HeartbeatActiveInstallation(
                 id=inst.id,
@@ -175,6 +188,8 @@ def edge_heartbeat(
                 camera_segmentation_modes=_load_installation_camera_seg_modes(
                     db, cam_ids
                 ),
+                light_state=light_snap["light_state"],
+                flash_state=light_snap["flash_state"],
             )
         )
 
@@ -185,6 +200,8 @@ def edge_heartbeat(
         debug_mode=debug_mode,
         active_installations=active_inst_data,
         capture_delay_sec=capture_delay_sec,
+        global_light_mode=global_light_mode,
+        global_flash_mode=global_flash_mode,
     )
 
 
@@ -227,29 +244,41 @@ def edge_claim_command(
     # 5. Формирование структуры команды
     payload = json.loads(oldest_pending.payload) if oldest_pending.payload else None
 
+    global_light_mode = get_global_light_mode(db, is_flash=False)
+    global_flash_mode = get_global_light_mode(db, is_flash=True)
+
+    def _serialize_cmd_inst(item: Installation) -> dict[str, Any]:
+        cam_ids = [c.hardware_id for c in item.cameras]
+        light_snap = get_installation_light_snapshot(
+            db,
+            item,
+            global_light_mode=global_light_mode,
+            global_flash_mode=global_flash_mode,
+        )
+        return {
+            "id": item.id,
+            "light_gpio_pin": item.light_gpio_pin,
+            "flash_gpio_pin": item.flash_gpio_pin,
+            "camera_hardware_ids": cam_ids,
+            "capture_delay_sec": item.capture_delay_sec,
+            "name": item.name,
+            "culture_name": item.culture_name,
+            "aruco_size_mm": item.aruco_size_mm,
+            "camera_rgb": _load_installation_camera_rgb(db, cam_ids),
+            "camera_segmentation_modes": _load_installation_camera_seg_modes(
+                db, cam_ids
+            ),
+            "light_state": light_snap["light_state"],
+            "flash_state": light_snap["flash_state"],
+        }
+
     if oldest_pending.is_global:
         active_installations = (
             db.query(Installation).filter(Installation.is_archived.is_(False)).all()
         )
-        installations_list = []
-        for inst in active_installations:
-            cam_ids = [c.hardware_id for c in inst.cameras]
-            installations_list.append(
-                {
-                    "id": inst.id,
-                    "light_gpio_pin": inst.light_gpio_pin,
-                    "flash_gpio_pin": inst.flash_gpio_pin,
-                    "camera_hardware_ids": cam_ids,
-                    "capture_delay_sec": inst.capture_delay_sec,
-                    "name": inst.name,
-                    "culture_name": inst.culture_name,
-                    "aruco_size_mm": inst.aruco_size_mm,
-                    "camera_rgb": _load_installation_camera_rgb(db, cam_ids),
-                    "camera_segmentation_modes": _load_installation_camera_seg_modes(
-                        db, cam_ids
-                    ),
-                }
-            )
+        installations_list = [
+            _serialize_cmd_inst(inst) for inst in active_installations
+        ]
         cmd_data = {
             "id": oldest_pending.id,
             "command_type": oldest_pending.command_type,
@@ -260,24 +289,7 @@ def edge_claim_command(
         }
     else:
         inst = oldest_pending.installation
-        if inst:
-            cam_ids = [c.hardware_id for c in inst.cameras]
-            inst_data = {
-                "id": inst.id,
-                "light_gpio_pin": inst.light_gpio_pin,
-                "flash_gpio_pin": inst.flash_gpio_pin,
-                "camera_hardware_ids": cam_ids,
-                "capture_delay_sec": inst.capture_delay_sec,
-                "name": inst.name,
-                "culture_name": inst.culture_name,
-                "aruco_size_mm": inst.aruco_size_mm,
-                "camera_rgb": _load_installation_camera_rgb(db, cam_ids),
-                "camera_segmentation_modes": _load_installation_camera_seg_modes(
-                    db, cam_ids
-                ),
-            }
-        else:
-            inst_data = None
+        inst_data = _serialize_cmd_inst(inst) if inst else None
         cmd_data = {
             "id": oldest_pending.id,
             "command_type": oldest_pending.command_type,
