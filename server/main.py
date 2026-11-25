@@ -1,7 +1,10 @@
 import asyncio
+import signal
+import threading
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -17,6 +20,7 @@ from server.api.edge_setup import router as edge_setup_router
 from server.api.installations import router as installations_router
 from server.api.system import router as system_router
 from server.api.timelapse import router as timelapse_router
+from server.core.live_manager import live_manager
 from server.core.timeouts import expire_stale_commands
 from server.db.database import SessionLocal, init_db
 from shared.logger import get_logger
@@ -43,8 +47,25 @@ async def cleanup_timeouts_task() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Жизненный цикл приложения: инициализация БД, пинов и фоновая очистка таймаутов."""
+    """Жизненный цикл приложения: инициализация БД, пинов, сигналов и фоновых задач."""
     init_db()
+    live_manager.reset_shutdown()
+    live_manager.bind_loop(asyncio.get_running_loop())
+
+    # Перехватываем SIGINT/SIGTERM (поверх uvicorn.capture_signals), чтобы мгновенно
+    # завершать открытые MJPEG-стримы до ожидания закрытия HTTP-соединений в uvicorn.
+    orig_handlers: dict[int, Any] = {}
+
+    def _shutdown_signal_handler(signum: int, frame: object) -> None:
+        live_manager.request_shutdown()
+        orig = orig_handlers.get(signum)
+        if callable(orig):
+            orig(signum, frame)
+
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            orig_handlers[sig] = signal.getsignal(sig)
+            signal.signal(sig, _shutdown_signal_handler)
 
     # Инициализация состояния пинов активных установок: свет ON, вспышка OFF
     db = SessionLocal()
@@ -68,6 +89,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
+        live_manager.request_shutdown()
+        if threading.current_thread() is threading.main_thread():
+            for sig, handler in orig_handlers.items():
+                if signal.getsignal(sig) is _shutdown_signal_handler:
+                    signal.signal(sig, handler)
         task.cancel()
         try:
             await task
