@@ -380,9 +380,8 @@
               <span id="gallery-chart-unit-badge" class="gallery-chart-unit-badge">px</span>
             </div>
             <div id="gallery-chart-mode-control" class="segmented-control gallery-chart-modes">
-              <button type="button" class="seg-btn active" data-chart-mode="auto">Авто</button>
-              <button type="button" class="seg-btn" data-chart-mode="cm2">Только калиброванные (см²)</button>
-              <button type="button" class="seg-btn" data-chart-mode="px">Все кадры (px)</button>
+              <button type="button" class="seg-btn active" data-chart-mode="cm2">В см²</button>
+              <button type="button" class="seg-btn" data-chart-mode="px">В px</button>
             </div>
           </div>
           <div class="gallery-chart-legend">
@@ -719,6 +718,21 @@
         <!-- Верхняя полупрозрачная панель настроек поверх видео -->
         <div id="live-settings-drawer" class="live-settings-overlay">
           <div id="live-settings-content" class="live-settings-content"></div>
+        </div>
+
+        <!-- Компактная плашка предпросмотра автоцветокоррекции снизу Live-окна -->
+        <div id="live-auto-color-preview" class="live-auto-color-preview hidden">
+          <div class="live-auto-color-roi-wrap">
+            <img id="live-auto-color-roi-img" class="live-auto-color-roi-img hidden" alt="Цветовой маркер">
+          </div>
+          <div class="live-auto-color-info">
+            <span class="live-auto-color-title">Предпросмотр автоцветокоррекции</span>
+            <div id="live-auto-color-rgb-values" class="live-auto-color-rgb-values">R: 1.00 · G: 1.00 · B: 1.00</div>
+          </div>
+          <div class="live-auto-color-actions">
+            <button type="button" id="btn-live-auto-color-apply" class="btn btn-primary btn-compact">Применить</button>
+            <button type="button" id="btn-live-auto-color-cancel" class="btn btn-secondary btn-compact">Отмена</button>
+          </div>
         </div>
       </div>
 

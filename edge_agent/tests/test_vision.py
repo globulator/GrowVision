@@ -192,3 +192,34 @@ def test_onnx_branch_zero_plants_draws_metadata(tmp_path: Path):
         & (bottom_right[:, :, 1] > 150)
         & (bottom_right[:, :, 0] < 80)
     )
+
+
+def test_hsv_segmentation_filters_dark_noisy_background(mock_vision: VisionPipeline):
+    """Тёмный зашумлённый и слабонасыщенный фон отфильтровывается, а реальный лист сегментируется."""
+    import cv2
+    import numpy as np
+
+    rng = np.random.default_rng(42)
+    h, w = 480, 640
+    # Тёмный фон с матричным цветовым шумом (средний V ~ 35, разброс +-28)
+    noisy_dark = np.full((h, w, 3), (28, 36, 26), dtype=np.int16)
+    noise = rng.integers(-28, 29, size=(h, w, 3), dtype=np.int16)
+    noisy_dark = np.clip(noisy_dark + noise, 0, 255).astype(np.uint8)
+    # Добавляем слабонасыщенную зеленовато-серую область (S < 80, V ~ 90)
+    cv2.rectangle(noisy_dark, (40, 40), (220, 220), (75, 92, 74), -1)
+
+    ok, enc_bg = cv2.imencode(".jpg", noisy_dark)
+    assert ok
+    _, meas_bg = mock_vision.segment_plants(enc_bg.tobytes())
+    assert meas_bg == [], (
+        "Шумный тёмный и слабонасыщенный фон не должен давать контуров"
+    )
+
+    # На том же шумном фоне добавляем яркий зелёный лист -> должен найтись ровно 1 куст
+    with_leaf = noisy_dark.copy()
+    cv2.circle(with_leaf, (420, 260), 45, (30, 185, 38), -1)
+    ok, enc_leaf = cv2.imencode(".jpg", with_leaf)
+    assert ok
+    _, meas_leaf = mock_vision.segment_plants(enc_leaf.tobytes())
+    assert len(meas_leaf) == 1
+    assert meas_leaf[0].area_px > 2000.0

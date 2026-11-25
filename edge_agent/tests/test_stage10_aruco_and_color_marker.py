@@ -1,3 +1,4 @@
+import base64
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -295,4 +296,120 @@ def test_live_stream_color_marker_flag_and_auto_color_command(tmp_path: Path):
     err_call = mock_client.send_command_result.call_args[0][1]
     assert err_call.status == "error"
     assert "не обнаружен" in err_call.result_message.lower()
+    orch.stop()
+
+
+def test_color_marker_perspective_5_6_vertices_and_tinted_glare():
+    """Распознавание цветового маркера под перспективой (5–6 вершин), со сдвинутым оттенком и бликами."""
+    color_svg = generate_color_marker_svg(size_mm=50.0)
+    marker_patch = _render_svg_rects_to_bgr(color_svg, px_per_mm=5.0)
+    mh, mw = marker_patch.shape[:2]
+
+    # Имитируем экран с бликом и смещённый оттенок красного (R=175, G=132, B=115: R > G*1.12, но < 1.35)
+    scene = np.full((650, 950, 3), 210, dtype=np.uint8)
+    # Смещаем цвета плашки маркера: добавляем тёпло-серое рассеянное освещение (блик экрана)
+    blended_marker = np.clip(
+        marker_patch.astype(np.float32) * 0.55 + np.array([105.0, 118.0, 102.0]),
+        0,
+        255,
+    ).astype(np.uint8)
+    # Подрезаем два угла внешней чёрной рамки фоном, чтобы approxPolyDP давал 5–6 вершин
+    cv2.fillPoly(
+        blended_marker,
+        [np.array([[0, 0], [18, 0], [0, 18]], dtype=np.int32)],
+        (210, 210, 210),
+    )
+    cv2.fillPoly(
+        blended_marker,
+        [
+            np.array(
+                [[mw - 1, mh - 1], [mw - 18, mh - 1], [mw - 1, mh - 18]], dtype=np.int32
+            )
+        ],
+        (210, 210, 210),
+    )
+
+    # Перспективный наклон (сильное сжатие по вертикали и перекос трапецией)
+    src_pts = np.array([[0, 0], [mw, 0], [mw, mh], [0, mh]], dtype=np.float32)
+    dst_pts = np.array(
+        [[180, 180], [720, 150], [790, 330], [130, 310]], dtype=np.float32
+    )
+    H = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    warped_scene = cv2.warpPerspective(
+        blended_marker,
+        H,
+        (950, 650),
+        dst=scene.copy(),
+        borderMode=cv2.BORDER_TRANSPARENT,
+    )
+
+    vp = VisionPipeline(mock_mode=True)
+    corners, gains, roi_bytes = vp.detect_color_marker_with_roi(
+        _encode_png(warped_scene)
+    )
+    assert corners is not None
+    assert gains is not None
+    assert roi_bytes is not None and len(roi_bytes) > 100
+    roi_img = cv2.imdecode(np.frombuffer(roi_bytes, np.uint8), cv2.IMREAD_COLOR)
+    assert roi_img is not None and roi_img.shape[0] > 20 and roi_img.shape[1] > 40
+
+
+def test_auto_color_calibrate_preview_returns_roi_without_applying(tmp_path: Path):
+    """В режиме preview=True AUTO_COLOR_CALIBRATE возвращает ROI-кроп и recommended_rgb, не применяя RGB."""
+    color_svg = generate_color_marker_svg(size_mm=50.0)
+    marker_patch = _render_svg_rects_to_bgr(color_svg, px_per_mm=4.0)
+    scene = np.full((500, 800, 3), 50, dtype=np.uint8)
+    mh, mw = marker_patch.shape[:2]
+    scene[60 : 60 + mh, 80 : 80 + mw] = marker_patch
+    tinted = scene.astype(np.float32)
+    tinted[:, :, 0] *= 0.75
+    tinted[:, :, 1] *= 0.60
+    tinted[:, :, 2] *= 1.00
+    raw_marker_jpeg = _encode_png(np.clip(tinted, 0, 255).astype(np.uint8))
+
+    cfg = EdgeConfig(
+        edge_api_key="k",
+        hardware_mode="mock",
+        mock_cameras=True,
+        offline_queue_dir=tmp_path / "queue",
+    )
+    mock_client = MagicMock()
+    orch = EdgeOrchestrator(config=cfg, client=mock_client)
+    orch.live_stream.is_running = True
+    orch.live_stream.active_camera_id = "cam-color-prev"
+    orch.live_stream.set_rgb_gains(0.25, 0.35, 0.45)
+    orch.live_stream.get_raw_frame_for_calibration = lambda hw_id: raw_marker_jpeg  # type: ignore[method-assign]
+
+    orch.handle_command(
+        CommandItem(
+            id=88,
+            command_type="AUTO_COLOR_CALIBRATE",
+            payload={"camera_hardware_id": "cam-color-prev", "preview": True},
+        )
+    )
+    res_call = mock_client.send_command_result.call_args[0][1]
+    assert res_call.status == "done"
+    assert res_call.data is not None
+    assert res_call.data["preview"] is True
+    assert "recommended_rgb" in res_call.data
+    assert "roi_image_base64" in res_call.data
+    decoded_roi = base64.b64decode(res_call.data["roi_image_base64"])
+    roi_img = cv2.imdecode(np.frombuffer(decoded_roi, np.uint8), cv2.IMREAD_COLOR)
+    assert roi_img is not None and roi_img.size > 0
+
+    # Коэффициенты камеры и live_stream НЕ должны измениться на этапе предпросмотра
+    assert orch.live_stream.rgb_gains == (0.25, 0.35, 0.45)
+    assert "cam-color-prev" not in orch._camera_rgb
+
+    # После подтверждения (SET_CAMERA_CONTROLS) коэффициенты применяются
+    rec = res_call.data["recommended_rgb"]
+    orch.handle_command(
+        CommandItem(
+            id=89,
+            command_type="SET_CAMERA_CONTROLS",
+            payload={"camera_hardware_id": "cam-color-prev", "rgb": rec},
+        )
+    )
+    assert orch.live_stream.rgb_gains == (rec["r"], rec["g"], rec["b"])
+    assert orch._camera_rgb["cam-color-prev"] == (rec["r"], rec["g"], rec["b"])
     orch.stop()

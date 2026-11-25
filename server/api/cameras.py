@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
@@ -1337,11 +1337,19 @@ def save_camera_controls(
     return resp
 
 
+class AutoColorCalibrateRequest(BaseModel):
+    """Параметры запроса автоцветокоррекции (предпросмотр без применения к профилю)."""
+
+    preview: bool = False
+
+
 @router.post("/{camera_id}/auto-color-calibrate", response_model=dict[str, Any])
 async def auto_color_calibrate_camera(
     camera_id: int,
     current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
     db: Annotated[Session, Depends(get_db)],
+    preview: bool = Query(default=False),
+    body: Annotated[AutoColorCalibrateRequest | None, Body()] = None,
 ) -> dict[str, Any]:
     """Запуск автоцветокоррекции по эталонному цветовому маркеру в кадре."""
     check_rpi_online(db)
@@ -1353,11 +1361,14 @@ async def auto_color_calibrate_camera(
             detail="Камера не найдена",
         )
 
+    is_preview = bool(preview or (body.preview if body is not None else False))
     cmd = EdgeCommand(
         command_type="AUTO_COLOR_CALIBRATE",
         installation_id=cam.installation_id,
         is_global=cam.installation_id is None,
-        payload=json.dumps({"camera_hardware_id": cam.hardware_id}),
+        payload=json.dumps(
+            {"camera_hardware_id": cam.hardware_id, "preview": is_preview}
+        ),
         status="pending",
     )
     db.add(cmd)
@@ -1404,11 +1415,8 @@ async def auto_color_calibrate_camera(
         )
 
     cmd_data = app_state.pop_command_data(finished_cmd.id) or {}
-    rgb = (
-        clamp_rgb_dict(cmd_data["rgb"])
-        if isinstance(cmd_data.get("rgb"), dict)
-        else None
-    )
+    recommended_raw = cmd_data.get("recommended_rgb") or cmd_data.get("rgb")
+    rgb = clamp_rgb_dict(recommended_raw) if isinstance(recommended_raw, dict) else None
     if rgb is None:
         rgb_setting = (
             db.query(SystemSetting)
@@ -1420,10 +1428,16 @@ async def auto_color_calibrate_camera(
             with contextlib.suppress(Exception):
                 rgb = clamp_rgb_dict(json.loads(rgb_setting.value))
 
-    return {
+    resp: dict[str, Any] = {
         "status": "done",
         "camera_id": cam.id,
         "hardware_id": cam.hardware_id,
+        "preview": is_preview,
         "rgb": rgb,
+        "recommended_rgb": rgb,
         "result_message": finished_cmd.result_message or "Автоцветокоррекция выполнена",
     }
+    roi_b64 = cmd_data.get("roi_image_base64")
+    if isinstance(roi_b64, str) and roi_b64:
+        resp["roi_image_base64"] = roi_b64
+    return resp

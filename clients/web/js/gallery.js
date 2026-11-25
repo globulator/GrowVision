@@ -16,7 +16,7 @@ let availableCameras = [];
 let selectedCameraIndex = 0; // индекс в availableCameras
 let currentLayer = 'raw'; // 'raw' или 'ann'
 let isChartOpen = false;
-let chartMode = 'auto'; // 'auto' | 'cm2' | 'px'
+let chartMode = 'cm2'; // 'cm2' | 'px'
 
 // Кеш загруженных изображений для текущей выборки
 let loadedImages = []; // Array of Image objects
@@ -46,7 +46,7 @@ export async function openGalleryModal(unit) {
   currentLayer = 'raw';
   isPlaying = false;
   isChartOpen = false;
-  chartMode = 'auto';
+  chartMode = 'cm2';
   galleryCacheBuster = Date.now();
   clearInterval(playTimer);
   updateChartPanelUi();
@@ -131,7 +131,7 @@ export function closeGalleryModal() {
   allRawFrames = [];
   currentCameraFrames = [];
   isChartOpen = false;
-  chartMode = 'auto';
+  chartMode = 'cm2';
   updateChartPanelUi();
   currentUnit = null;
 }
@@ -213,6 +213,7 @@ async function loadCameraFrames() {
   }
   currentCameraFrames = filtered;
   if (isChartOpen) {
+    chartMode = resolveDefaultGrowthChartMode(currentCameraFrames);
     renderGrowthChart();
   }
 
@@ -767,30 +768,34 @@ function setupGestures() {
   );
 }
 
+// Выбор режима графика по умолчанию: 'cm2', если есть хотя бы 1 калиброванный кадр, иначе 'px'
+export function resolveDefaultGrowthChartMode(frames) {
+  const list = Array.isArray(frames) ? frames : [];
+  const hasAnyCalibrated = list.some(
+    (f) => f && f.total_area_cm2 !== null && f.total_area_cm2 !== undefined
+  );
+  return hasAnyCalibrated ? 'cm2' : 'px';
+}
+
 // Подготовка единого ряда данных графика без скачков единиц измерения (см² vs px)
-export function prepareGrowthChartSeries(frames, mode = 'auto') {
+export function prepareGrowthChartSeries(frames, mode = null) {
   const list = Array.isArray(frames) ? frames : [];
   if (list.length === 0) {
     return { unit: 'px', unitLabel: 'px', points: [] };
   }
 
-  const allCalibrated = list.every(
-    (f) => f && f.total_area_cm2 !== null && f.total_area_cm2 !== undefined
-  );
-  let targetUnit = 'px';
+  const resolvedMode =
+    mode === 'cm2' || mode === 'px' ? mode : resolveDefaultGrowthChartMode(list);
+  let targetUnit = resolvedMode;
   let sourceFrames = list;
 
-  if (mode === 'cm2') {
+  if (resolvedMode === 'cm2') {
     targetUnit = 'cm2';
     sourceFrames = list.filter(
       (f) => f && f.total_area_cm2 !== null && f.total_area_cm2 !== undefined
     );
-  } else if (mode === 'px') {
-    targetUnit = 'px';
-    sourceFrames = list;
   } else {
-    // Режим «Авто»: см² только если у ВСЕХ кадров есть калибровка ArUco, иначе весь график в px
-    targetUnit = allCalibrated ? 'cm2' : 'px';
+    targetUnit = 'px';
     sourceFrames = list;
   }
 
@@ -1083,7 +1088,7 @@ export function initGallery() {
     chartBtn.addEventListener('click', () => {
       isChartOpen = !isChartOpen;
       if (isChartOpen) {
-        chartMode = 'auto';
+        chartMode = resolveDefaultGrowthChartMode(currentCameraFrames);
         renderGrowthChart();
       } else {
         updateChartPanelUi();

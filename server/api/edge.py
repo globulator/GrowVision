@@ -371,8 +371,11 @@ def edge_command_result(
                 if body.data.get("resolution"):
                     session.resolution = str(body.data["resolution"])
                 session.is_active = True
-            if cmd.command_type == "AUTO_COLOR_CALIBRATE" and isinstance(
-                body.data.get("rgb"), dict
+            is_preview = bool(cmd_payload.get("preview") or body.data.get("preview"))
+            if (
+                cmd.command_type == "AUTO_COLOR_CALIBRATE"
+                and not is_preview
+                and isinstance(body.data.get("rgb"), dict)
             ):
                 clamped_rgb = clamp_rgb_dict(body.data["rgb"])
                 _upsert_setting(db, f"camera_rgb_{hw_id}", json.dumps(clamped_rgb), now)
