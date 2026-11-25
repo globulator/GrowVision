@@ -385,8 +385,10 @@ def start_camera_live(
     session = live_manager.get_or_create(cam.hardware_id, camera_id=cam.id)
     session.is_active = True
     session.is_paused = False
+    session.stream_url = None
     session.latest_frame = None
     session.last_frame_at = 0.0
+    session.last_proxied_at = 0.0
     session.fps = 0.0
     session.latency_ms = 0
     session._frame_times.clear()
@@ -568,8 +570,8 @@ async def _proxy_ustreamer_frames(session: Any):
             if not session.is_active:
                 break
             if session.is_paused:
-                await asyncio.sleep(0.1)
-                continue
+                buf.clear()
+                return
             buf.extend(chunk)
             # Защита от разрастания буфера на некорректном потоке
             if len(buf) > 4 * 1024 * 1024:

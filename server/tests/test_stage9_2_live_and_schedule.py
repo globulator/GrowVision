@@ -489,3 +489,65 @@ def test_rpi_controls_state_sync_and_no_fake_controls(client: TestClient, test_e
     assert resp_cams.status_code == 200
     cam_item = next(c for c in resp_cams.json() if c["id"] == cam_id)
     assert cam_item["auto_name"] == "UVC Camera (046d:0825)"
+
+
+def test_live_session_proxied_frame_prevents_push_fps_doubling():
+    """При активном проксировании push_frame не удваивает fps и не затирает latest_frame/latency_ms."""
+    import time
+
+    from server.core.live_manager import LiveCameraSession
+
+    session = LiveCameraSession("cam_proxy_guard", camera_id=7)
+    session.latest_frame = b"proxied_jpeg_1"
+    session.record_proxied_frame(latency_ms=12)
+    time.sleep(0.08)
+    session.latest_frame = b"proxied_jpeg_2"
+    session.record_proxied_frame(latency_ms=14)
+
+    count_before = len(session._frame_times)
+    fps_before = session.fps
+    assert count_before == 2
+    assert fps_before > 0.0
+
+    # Параллельный push от агента (во время активного проксирования < 1.5 с)
+    session.push_frame(
+        b"pushed_jpeg",
+        is_paused=True,
+        resolution="1280x960",
+        latency_ms=99,
+        stream_url="http://100.64.0.2:8080",
+    )
+
+    assert len(session._frame_times) == count_before
+    assert session.fps == fps_before
+    assert session.latest_frame == b"proxied_jpeg_2"
+    assert session.latency_ms == 14
+    assert session.is_paused is True
+    assert session.resolution == "1280x960"
+    assert session.stream_url == "http://100.64.0.2:8080"
+
+    # Остановка сбрасывает stream_url и last_proxied_at
+    live_manager._sessions["cam_proxy_guard"] = session
+    live_manager.stop("cam_proxy_guard")
+    assert session.stream_url is None
+    assert session.last_proxied_at == 0.0
+
+
+def test_edge_command_result_normalizes_loopback_stream_url():
+    """_normalize_stream_url заменяет 127.0.0.1 на IP клиента из request.client.host."""
+    from types import SimpleNamespace
+
+    from server.api.edge import _normalize_stream_url
+
+    req_remote = SimpleNamespace(client=SimpleNamespace(host="100.64.0.15"))
+    assert (
+        _normalize_stream_url("http://127.0.0.1:8080", req_remote)
+        == "http://100.64.0.15:8080"
+    )
+
+    req_local = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
+    assert (
+        _normalize_stream_url("http://127.0.0.1:8080", req_local)
+        == "http://127.0.0.1:8080"
+    )
+    assert _normalize_stream_url(None, req_remote) is None

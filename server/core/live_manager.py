@@ -13,6 +13,7 @@ class LiveCameraSession:
         self.latest_frame: bytes | None = None
         self.frame_timestamp: float = time.time()
         self.last_frame_at: float = 0.0
+        self.last_proxied_at: float = 0.0
         self.stream_url: str | None = None
         self.resolution: str = "1280x720"
         self.fps: float = 0.0
@@ -46,17 +47,22 @@ class LiveCameraSession:
     ) -> None:
         """Принимает свежий кадр от агента, отбрасывая старые."""
         now = time.time()
-        self.latest_frame = frame_bytes
-        self.last_frame_at = now
         self.is_paused = is_paused
         self.is_active = True
         self.last_heartbeat = now
-        self.frame_counter += 1
 
         if resolution:
             self.resolution = resolution
         if stream_url:
             self.stream_url = stream_url
+
+        # При активном прямом проксировании не дублируем кадры в _frame_times и не затираем latency/frame
+        if (now - self.last_proxied_at) < 1.5:
+            return
+
+        self.latest_frame = frame_bytes
+        self.last_frame_at = now
+        self.frame_counter += 1
 
         measured_lat = (
             int(latency_ms) if latency_ms is not None and latency_ms > 0 else 0
@@ -79,6 +85,7 @@ class LiveCameraSession:
         """Фиксирует кадр, полученный сервером напрямую через проксирование ustreamer."""
         now = time.time()
         self.last_frame_at = now
+        self.last_proxied_at = now
         self.last_heartbeat = now
         self.is_active = True
         self.frame_counter += 1
@@ -140,6 +147,7 @@ class LiveSessionManager:
             session.is_active = False
             session.stream_url = None
             session.latest_frame = None
+            session.last_proxied_at = 0.0
             session.fps = 0.0
             session.latency_ms = 0
             session._frame_times.clear()

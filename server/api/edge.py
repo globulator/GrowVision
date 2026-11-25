@@ -265,6 +265,17 @@ def edge_claim_command(
     return [cmd_data]
 
 
+def _normalize_stream_url(raw_url: str | None, request: Request) -> str | None:
+    """Подставляет IP клиента вместо loopback, если агент прислал 127.0.0.1."""
+    if not raw_url:
+        return None
+    if "127.0.0.1" in raw_url and request.client and request.client.host:
+        client_host = request.client.host
+        if client_host not in ("127.0.0.1", "::1", "testclient"):
+            return raw_url.replace("127.0.0.1", client_host, 1)
+    return raw_url
+
+
 @router.post(
     "/commands/{command_id}/result",
     response_model=dict[str, bool],
@@ -273,6 +284,7 @@ def edge_claim_command(
 def edge_command_result(
     command_id: int,
     body: CommandResult,
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, bool]:
     """3.3. POST /api/edge/commands/{command_id}/result.
@@ -336,7 +348,9 @@ def edge_command_result(
         if hw_id:
             if cmd.command_type == "START_LIVE" and body.data.get("stream_url"):
                 session = live_manager.get_or_create(hw_id)
-                session.stream_url = str(body.data["stream_url"])
+                session.stream_url = _normalize_stream_url(
+                    str(body.data["stream_url"]), request
+                )
                 session.is_active = True
             if "formats" in body.data or "controls" in body.data:
                 _save_camera_controls_state(
@@ -555,16 +569,7 @@ async def receive_live_frame(
     is_paused = x_paused in ("1", "true", "True")
     res = x_resolution or "1280x720"
 
-    stream_url = x_stream_url
-    if (
-        stream_url
-        and "127.0.0.1" in stream_url
-        and request.client
-        and request.client.host
-    ):
-        client_host = request.client.host
-        if client_host not in ("127.0.0.1", "::1", "testclient"):
-            stream_url = stream_url.replace("127.0.0.1", client_host, 1)
+    stream_url = _normalize_stream_url(x_stream_url, request)
 
     session = live_manager.get_or_create(hardware_id)
     session.push_frame(
