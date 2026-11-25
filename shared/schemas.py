@@ -130,12 +130,17 @@ class CommandResult(BaseModel):
 
 
 class PlantMeasurementMeta(BaseModel):
-    """Замер площади одного растения на кадре."""
+    """Замер площади и габаритов одного растения на кадре."""
 
     model_config = ConfigDict(extra="ignore")
 
     plant_index: int = 0
     area_px: float = Field(..., ge=0)
+    width_px: float | None = Field(default=None, ge=0)
+    height_px: float | None = Field(default=None, ge=0)
+    width_mm: float | None = Field(default=None, ge=0)
+    height_mm: float | None = Field(default=None, ge=0)
+    area_cm2: float | None = Field(default=None, ge=0)
 
 
 class CaptureMeta(BaseModel):

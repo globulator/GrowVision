@@ -196,6 +196,7 @@ class EdgeAPIClient:
         stream_url: str | None = None,
         device_online: bool = True,
         frame_mode: str = "raw",
+        color_marker_detected: bool | None = None,
     ) -> dict[str, Any] | None:
         """Отправляет свежий кадр Live-стрима: POST /api/edge/cameras/{hardware_id}/live-frame."""
         url = f"/api/edge/cameras/{hardware_id}/live-frame"
@@ -207,6 +208,8 @@ class EdgeAPIClient:
             "X-Device-Online": "1" if device_online else "0",
             "X-Frame-Mode": frame_mode,
         }
+        if color_marker_detected is not None:
+            headers["X-Color-Marker-Detected"] = "1" if color_marker_detected else "0"
         if latency_ms is not None:
             headers["X-Latency-Ms"] = str(max(0, int(latency_ms)))
         if stream_url:
