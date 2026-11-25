@@ -4,11 +4,11 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 9.1
-- Название этапа: Исправление кириллицы на CV-разметке, фильтрация шума/серого фона в HSV-сегментации и 50 Гц для V4L2-камер
-- Режим: FAST
+- Текущий этап: 9.2
+- Название этапа: Live-стрим (ustreamer), реальные V4L2-контролы, фиксы по итогам теста на реальной RPi 5 (Logitech C270) и новый Live UI
+- Режим: FAST (coordinator2 + builder2)
 - Статус: DONE
-- Итерация QA (кругов FAIL): 0 из 3
+- Итераций ревью: 1 из 3
 - Ждём от пользователя: задачи следующего этапа
 
 ## Активные агенты
@@ -18,18 +18,15 @@
 | — | — | — | — | — |
 
 ## Коммиты текущего этапа
-- Ветка stage-9/fix-vision-cyrillic-and-50hz создана от main (2adc3e0)
-- 59b6547 feat(edge): fix vision cyrillic annotations, improve hsv segmentation, and set 50hz frequency
-- 0410996 docs(repo): prepare QA task card and update state for stage 9.1
-- 0a53a60 docs(qa): update qa_log with stage 9.1 verification
-- 1b71f6b chore(repo): merge stage-9/fix-vision-cyrillic-and-50hz into main
-- e5e1bad chore(repo): bump version to 0.7.0 (tag v0.7.0)
-- 9bdb38b docs(repo): document stage 9.1 fix vision cyrillic and 50hz
+- d206095 feat(live): implement ustreamer live stream, camera controls, low-latency proxy, and aligned schedule
+- 3f363bc fix(live): fix RPi ustreamer proxy, real V4L2 controls, camera card and live UI
+- f0a5654 fix(live): guard proxied fps from push doubling, close stream on pause, normalize START_LIVE url
+- 054d66f docs(repo): add coordinator2 and builder2 role guides
+- Слияние stage-9/live-stream-camera-settings-and-schedule в main, версия 0.7.1 (тег v0.7.1)
 
-## Последний вердикт QA
-- Вердикт: PASS (по этапу 9.1)
-- Открытые дефекты (ID): —
-- Отложенные (DEFERRED, ID): —
+## Последний вердикт ревью
+- Вердикт: PASS (по этапу 9.2, итераций ревью: 1/3)
+- Открытые дефекты: —
 
 ## Закрытые этапы
 - Этап 0: подготовка проекта (PROJECT.md согласован, план принят)
@@ -57,20 +54,14 @@
 - Этап 8.9: Исправление отображения кадров в Web-галерее, расчёт FPS в боте и ускорение SNAP в Edge-агенте (принят QA, слит в main, версия 0.6.4, отчёт docs/stage_reports/stage-8.9.md)
 - Этап 8.10: Стабилизация съёмки RPi (автоподбор качества, умный прогрев, HSV-сегментация без ONNX, автокалибровка камеры в боте) и инфо-панель RPi в Web (принят QA, слит в main, версия 0.6.5, отчёт docs/stage_reports/stage-8.10.md)
 - Этап 9.1: Исправление кириллицы на CV-разметке, фильтрация шума/серого фона в HSV-сегментации и 50 Гц для V4L2-камер (принят QA, слит в main, версия 0.7.0, отчёт docs/stage_reports/stage-9.1.md)
+- Этап 9.2: Live-стрим, реальные V4L2-контролы, фиксы по тесту на реальной RPi 5 (Logitech C270) и новый Live UI (принят после ревью, слит в main, версия 0.7.1)
 
-## История (последние 15 событий)
-- 2026-11-24: QA проверил этап 8.10, вердикт PASS (285 тестов, 0 дефектов)
-- 2026-11-24: Ветка stage-8/rpi-camera-vision-and-ui слита в main
-- 2026-11-24: Поднята версия 0.6.5 (тег v0.6.5)
-- 2026-11-24: Scribe оформил docs/stage_reports/stage-8.10.md, обновил stage-8.md и README.md (коммит 6ba33d5)
-- 2026-11-24: Этап 8.10 закрыт (DONE)
-- 2026-11-24: Запущен этап 9.1 (кириллица в CV через Pillow, HSV фильтрация шума/фона, 50 Гц для V4L2-камер, режим FAST)
-- 2026-11-24: Создана ветка stage-9/fix-vision-cyrillic-and-50hz от main
-- 2026-11-24: Подготовлена карточка docs/tasks/stage-9-1-fix-vision-cyrillic-and-50hz-builder.md, статус BUILDING
-- 2026-11-24: Builder реализовал этап 9.1 (коммит 59b6547), статус READY_FOR_QA
-- 2026-11-24: Подготовлена карточка docs/tasks/stage-9-1-fix-vision-cyrillic-and-50hz-qa.md, статус TESTING, задача передана QA
-- 2026-11-24: QA проверил этап 9.1, вердикт PASS (293 теста, 0 дефектов)
-- 2026-11-24: Ветка stage-9/fix-vision-cyrillic-and-50hz слита в main
-- 2026-11-24: Поднята версия 0.7.0 (тег v0.7.0)
-- 2026-11-24: Scribe оформил docs/stage_reports/stage-9.1.md и обновил README.md (коммит 9bdb38b)
-- 2026-11-24: Этап 9.1 закрыт (DONE)
+## История (последние 10 событий)
+- 2026-11-24: Поднята версия 0.7.0 (тег v0.7.0), этап 9.1 закрыт (DONE)
+- 2026-11-24: В ветке stage-9/live-stream-camera-settings-and-schedule реализована базовая часть этапа 9.2 (d206095)
+- 2026-11-25: Запущены исправления этапа 9.2 по итогам ручного теста на RPi 5 (Logitech C270) в режиме coordinator2 + builder2
+- 2026-11-25: Builder v2 реализовал правки по карточке камеры, ustreamer, V4L2-контролам, FPS/задержке, заглушкам и новой панели настроек (3f363bc)
+- 2026-11-25: По итогам ревью (1/3) исправлены двойной подсчёт FPS, буфер паузы прокси и нормализация START_LIVE URL (f0a5654)
+- 2026-11-25: Пройдены проверки pytest (edge_agent 78, server 86, bot 72, cli 51, целевые e2e 15) и ruff
+- 2026-11-25: Ветка stage-9/live-stream-camera-settings-and-schedule слита в main
+- 2026-11-25: Поднята версия 0.7.1, поставлен тег v0.7.1, этап 9.2 закрыт (DONE)
