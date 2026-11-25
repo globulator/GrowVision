@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import time
 from collections import deque
 from typing import Any
@@ -27,6 +28,7 @@ class LiveCameraSession:
         self.stream_error: str | None = None
         self._last_state_probe_at: float = 0.0
         self.last_heartbeat: float = time.time()
+        self.started_at: float = time.time()
         self.active_subscribers: int = 0
         self.frame_counter: int = 0
         self._frame_times: deque[float] = deque(maxlen=30)
@@ -175,6 +177,64 @@ class LiveSessionManager:
     def __init__(self):
         self._sessions: dict[str, LiveCameraSession] = {}
         self._lock = asyncio.Lock()
+        self.shutdown_event: asyncio.Event = asyncio.Event()
+        self._is_shutting_down: bool = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def is_shutting_down(self) -> bool:
+        """True, если сервер начал остановку."""
+        return self._is_shutting_down or self.shutdown_event.is_set()
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        """Привязывает event loop сервера для безопасного пробуждения при shutdown."""
+        if loop is None:
+            with contextlib.suppress(RuntimeError):
+                loop = asyncio.get_running_loop()
+        if loop is not None:
+            self._loop = loop
+
+    def reset_shutdown(self) -> None:
+        """Сбрасывает состояние завершения при запуске приложения или очистке тестов."""
+        self._is_shutting_down = False
+        self.shutdown_event = asyncio.Event()
+
+    def _notify_session_async(self, session: LiveCameraSession) -> None:
+        """Будит подписчиков сессии внутри активного event loop."""
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+
+            async def _notify() -> None:
+                async with session.condition:
+                    session.condition.notify_all()
+
+            loop.create_task(_notify())
+
+    def _apply_shutdown_in_loop(self) -> None:
+        """Устанавливает shutdown_event и будит все ожидающие live-стримы в event loop."""
+        self.shutdown_event.set()
+        for session in list(self._sessions.values()):
+            session.is_active = False
+            self._notify_session_async(session)
+
+    def request_shutdown(self) -> None:
+        """Сигнализирует о мгновенном завершении всех активных Live-стримов."""
+        self._is_shutting_down = True
+        for hw_id in list(self._sessions.keys()):
+            self.stop(hw_id)
+
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            with contextlib.suppress(RuntimeError):
+                running = asyncio.get_running_loop()
+                if running is loop:
+                    self._apply_shutdown_in_loop()
+                    return
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(self._apply_shutdown_in_loop)
+                return
+
+        self.shutdown_event.set()
 
     def get_or_create(
         self, hardware_id: str, camera_id: int | None = None
@@ -206,9 +266,16 @@ class LiveSessionManager:
             session.fps = 0.0
             session.latency_ms = 0
             session._frame_times.clear()
+            self._notify_session_async(session)
+
+    def stop_all(self) -> None:
+        """Останавливает все активные Live-сессии."""
+        for hw_id in list(self._sessions.keys()):
+            self.stop(hw_id)
 
     def clear(self) -> None:
         self._sessions.clear()
+        self.reset_shutdown()
 
 
 # Глобальный инстанс

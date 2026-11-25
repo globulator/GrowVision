@@ -276,6 +276,9 @@ class HardwareManager:
         self.lock = threading.Lock()
         self._gpio_devices: dict[int, Any] = {}
         self._mock_pins: dict[int, bool] = {}
+        self._pin_states: dict[int, bool] = {}
+        self._pin_roles: dict[int, str] = {}
+        self._pin_active_since: dict[int, float] = {}
         self._mock_frame_counter: int = 0
         self._camera_profiles: dict[str, CameraProfile] = {}
 
@@ -326,41 +329,110 @@ class HardwareManager:
                 raise
         return self._gpio_devices[pin]
 
-    def set_pin(self, pin: int, state: bool) -> None:
+    def _physical_level_label(self, state: bool) -> str:
+        """Возвращает физический уровень сигнала (HIGH/LOW) с учётом полярности реле."""
+        phys_high = bool(state) if self.relay_active_high else not bool(state)
+        return "HIGH" if phys_high else "LOW"
+
+    def _log_gpio_transition(
+        self,
+        pin: int,
+        role: str,
+        old_label: str,
+        new_state: bool,
+        source: str,
+        duration_sec: float | None = None,
+    ) -> None:
+        """Логирует состояние GPIO-пина на уровне INFO в стандартизированном формате."""
+        new_label = "ON" if new_state else "OFF"
+        level_label = self._physical_level_label(new_state)
+        if source == "shutdown" and duration_sec is not None:
+            logger.info(
+                f"[GPIO] BCM {pin} ({role}): {old_label} -> {new_label} "
+                f"(level={level_label}, mode={self.mode}, source={source}, duration={duration_sec:.2f}s)"
+            )
+        else:
+            logger.info(
+                f"[GPIO] BCM {pin} ({role}): {old_label} -> {new_label} "
+                f"(level={level_label}, mode={self.mode}, source={source})"
+            )
+
+    def set_pin(
+        self,
+        pin: int,
+        state: bool,
+        role: str = "gpio",
+        source: str = "manual",
+    ) -> None:
         """Устанавливает логическое состояние пина (True = ВКЛ, False = ВЫКЛ)."""
-        logger.debug(
-            f"[GPIO] Pin {pin} -> {'ON' if state else 'OFF'} (active_high={self.relay_active_high}, mode={self.mode})"
-        )
+        norm_state = bool(state)
+        if role != "gpio":
+            self._pin_roles[pin] = role
+            effective_role = role
+        else:
+            effective_role = self._pin_roles.setdefault(pin, "gpio")
+
+        was_initialized = pin in self._pin_states
+        old_state = self._pin_states.get(pin)
+        old_label = ("ON" if old_state else "OFF") if was_initialized else "UNINIT"
+
         if self.mode == "rpi":
             dev = self._get_gpio_device(pin)
             if dev:
-                if state:
+                if norm_state:
                     dev.on()
                 else:
                     dev.off()
         else:
-            self._mock_pins[pin] = state
+            self._mock_pins[pin] = norm_state
 
-    def set_light(self, pin: int, state: bool) -> None:
+        now_m = time.monotonic()
+        if norm_state:
+            if not old_state:
+                self._pin_active_since[pin] = now_m
+        else:
+            self._pin_active_since.pop(pin, None)
+
+        self._pin_states[pin] = norm_state
+
+        if not was_initialized or source == "init" or old_state != norm_state:
+            self._log_gpio_transition(
+                pin=pin,
+                role=effective_role,
+                old_label=old_label,
+                new_state=norm_state,
+                source=source,
+            )
+        else:
+            logger.debug(
+                f"[GPIO] BCM {pin} ({effective_role}): {old_label} -> {'ON' if norm_state else 'OFF'} "
+                f"(level={self._physical_level_label(norm_state)}, mode={self.mode}, source={source})"
+            )
+
+    def set_light(self, pin: int, state: bool, source: str = "manual") -> None:
         """Управляет основным светом."""
-        self.set_pin(pin, state)
+        self.set_pin(pin, state, role="light", source=source)
 
-    def set_flash(self, pin: int, state: bool) -> None:
+    def set_flash(self, pin: int, state: bool, source: str = "manual") -> None:
         """Управляет вспышкой."""
-        self.set_pin(pin, state)
+        self.set_pin(pin, state, role="flash", source=source)
 
     def test_relay(self, pins: list[int], duration: float = 3.0) -> None:
         """Кратковременный тест реле на указанных пинах с возвратом исходного состояния."""
         logger.info(f"[RELAY_TEST] Включение пинов {pins} на {duration} с")
         prev_states = {pin: self.get_pin_state(pin) for pin in pins}
         for pin in pins:
-            self.set_pin(pin, True)
+            self.set_pin(
+                pin, True, role=self._pin_roles.get(pin, "gpio"), source="manual"
+            )
         try:
             if duration > 0:
                 time.sleep(duration)
         finally:
             for pin, state in prev_states.items():
-                self.set_pin(pin, state)
+                self.set_pin(
+                    pin, state, role=self._pin_roles.get(pin, "gpio"), source="manual"
+                )
             logger.info(
                 f"[RELAY_TEST] Пины {pins} возвращены в исходное состояние: {prev_states}"
             )
@@ -722,10 +794,10 @@ class HardwareManager:
         same_pins = light_pin == flash_pin
         try:
             if not same_pins:
-                self.set_light(light_pin, False)
-                self.set_flash(flash_pin, True)
+                self.set_light(light_pin, False, source="capture_warmup")
+                self.set_flash(flash_pin, True, source="capture_warmup")
             else:
-                self.set_light(light_pin, True)
+                self.set_light(light_pin, True, source="capture_warmup")
 
             # В mock-режиме исключаем искусственные задержки стабилизации
             if self.mode != "mock":
@@ -744,16 +816,62 @@ class HardwareManager:
             )
         finally:
             if not same_pins:
-                self.set_flash(flash_pin, False)
-            self.set_light(light_pin, True)
+                self.set_flash(flash_pin, False, source="capture_warmup")
+            self.set_light(light_pin, True, source="capture_warmup")
 
     def cleanup(self) -> None:
-        """Очистка используемых ресурсов GPIO."""
+        """Безопасный сброс и очистка используемых ресурсов GPIO."""
+        all_pins = sorted(
+            set(self._pin_states.keys())
+            | set(self._gpio_devices.keys())
+            | set(self._mock_pins.keys())
+        )
+        now_m = time.monotonic()
+        for pin in all_pins:
+            dev = self._gpio_devices.get(pin)
+            old_state = self._pin_states.get(pin)
+            if old_state is None:
+                if dev is not None:
+                    old_state = bool(
+                        getattr(dev, "is_active", getattr(dev, "value", False))
+                    )
+                else:
+                    old_state = bool(self._mock_pins.get(pin, False))
+
+            if self.mode == "rpi" and dev is not None:
+                with contextlib.suppress(Exception):
+                    dev.off()
+            elif self.mode == "mock":
+                self._mock_pins[pin] = False
+
+            if old_state:
+                active_since = self._pin_active_since.pop(pin, None)
+                duration_sec = (
+                    max(0.0, now_m - active_since) if active_since is not None else 0.0
+                )
+            else:
+                self._pin_active_since.pop(pin, None)
+                duration_sec = 0.0
+
+            role = self._pin_roles.get(pin, "gpio")
+            old_label = "ON" if old_state else "OFF"
+            self._log_gpio_transition(
+                pin=pin,
+                role=role,
+                old_label=old_label,
+                new_state=False,
+                source="shutdown",
+                duration_sec=duration_sec,
+            )
+
         for dev in self._gpio_devices.values():
             with contextlib.suppress(Exception):
                 dev.close()
         self._gpio_devices.clear()
         self._mock_pins.clear()
+        self._pin_states.clear()
+        self._pin_roles.clear()
+        self._pin_active_since.clear()
 
 
 def get_hardware_telemetry(

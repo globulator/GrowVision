@@ -587,6 +587,12 @@ button {
   display: block;
 }
 
+.gallery-main-img.gallery-buffer-hidden {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .gallery-skeleton-placeholder {
   display: flex;
   flex-direction: column;
