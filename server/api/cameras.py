@@ -4,7 +4,7 @@ import json
 import re
 import time
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -17,8 +17,14 @@ from edge_agent.camera_controls import (
     get_default_mock_controls,
     get_default_mock_formats,
 )
+from server.api import edge as edge_api
 from server.api.deps import format_utc_z, get_db, require_role
 from server.core.live_manager import live_manager
+from server.core.rgb import (
+    apply_rgb_to_camera_captures,
+    apply_rgb_to_jpeg_bytes,
+    clamp_rgb_dict,
+)
 from server.core.state import app_state
 from server.core.system_status import check_rpi_online, is_debug_mode, is_rpi_online
 from server.db.models import Camera, EdgeCommand, Installation, SystemSetting, User
@@ -463,6 +469,26 @@ class CameraControlsPatch(BaseModel):
     rgb: dict[str, float] | None = None
 
 
+class CameraControlsSaveRequest(BaseModel):
+    """Тело запроса POST /api/cameras/{camera_id}/controls/save."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    scope: Literal["next_frame", "all_gallery"]
+    controls: dict[str, Any] | None = None
+    format: str | None = None
+    resolution: str | None = None
+    rgb: dict[str, float] | None = None
+
+
+class LiveModeRequest(BaseModel):
+    """Тело запроса POST /api/cameras/{camera_id}/live/mode."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    mode: Literal["raw", "annotated"]
+
+
 @router.post("/{camera_id}/live/start", response_model=dict[str, Any])
 def start_camera_live(
     camera_id: int,
@@ -481,10 +507,16 @@ def start_camera_live(
     session = live_manager.get_or_create(cam.hardware_id, camera_id=cam.id)
     session.is_active = True
     session.is_paused = False
+    session.mode = "raw"
+    session.device_online = True
+    session.stream_error = None
     session.stream_url = None
     session.latest_frame = None
+    session.latest_raw_frame = None
+    session.latest_annotated_frame = None
     session.last_frame_at = 0.0
     session.last_proxied_at = 0.0
+    session._last_state_probe_at = 0.0
     session.fps = 0.0
     session.latency_ms = 0
     session._frame_times.clear()
@@ -556,13 +588,67 @@ def stop_camera_live(
     }
 
 
+@router.post("/{camera_id}/live/mode", response_model=dict[str, Any])
+async def set_camera_live_mode(
+    camera_id: int,
+    body: LiveModeRequest,
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Переключение режима Live-стрима ('raw' / 'annotated')."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Камера не найдена",
+        )
+    session = live_manager.get_or_create(cam.hardware_id, camera_id=cam.id)
+    session.set_mode(body.mode)
+    async with session.condition:
+        session.condition.notify_all()
+    return {
+        "status": "ok",
+        "camera_id": cam.id,
+        "hardware_id": cam.hardware_id,
+        "mode": session.mode,
+    }
+
+
+async def _probe_ustreamer_online_state(session: Any) -> None:
+    """Проверяет /state у ustreamer при прямом проксировании для выявления отключения камеры."""
+    if not session.stream_url or not session.is_active or session.is_paused:
+        return
+    now_m = time.monotonic()
+    if (now_m - session._last_state_probe_at) < 0.8:
+        return
+    session._last_state_probe_at = now_m
+    state_url = f"{session.stream_url.rstrip('/')}/state"
+    with contextlib.suppress(Exception):
+        async with httpx.AsyncClient(timeout=0.6, trust_env=False) as http_client:
+            resp = await http_client.get(state_url)
+            if resp.status_code == 200:
+                data = resp.json()
+                res = (
+                    data.get("result") if isinstance(data.get("result"), dict) else data
+                )
+                src = (
+                    res.get("source")
+                    if isinstance(res, dict) and isinstance(res.get("source"), dict)
+                    else None
+                )
+                if src is not None and "online" in src:
+                    is_on = bool(src["online"])
+                    session.device_online = is_on
+                    session.stream_error = None if is_on else "Камера отключена"
+
+
 @router.get("/{camera_id}/live/status", response_model=dict[str, Any])
-def get_camera_live_status(
+async def get_camera_live_status(
     camera_id: int,
     current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
-    """Статус Live-сессии (FPS, задержка мс, пауза, разрешение)."""
+    """Статус Live-сессии (FPS, задержка мс, пауза, разрешение, режим, online)."""
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
     if not cam:
         raise HTTPException(
@@ -577,11 +663,15 @@ def get_camera_live_status(
             "camera_id": cam.id,
             "is_active": False,
             "is_paused": False,
+            "mode": "raw",
+            "device_online": True,
+            "stream_error": None,
             "fps": 0.0,
             "latency_ms": 0,
             "resolution": cur_res,
             "active_subscribers": 0,
         }
+    await _probe_ustreamer_online_state(session)
     return session.to_status_dict()
 
 
@@ -590,8 +680,11 @@ async def get_camera_live_snapshot(
     camera_id: int,
     current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
     db: Annotated[Session, Depends(get_db)],
+    r: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
+    g: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
+    b: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
 ) -> Response:
-    """Скачивание тестового JPEG-снимка напрямую без записи в БД и таймлапс."""
+    """Скачивание тестового JPEG-снимка напрямую без записи в БД и таймлапс (с RGB-фильтром)."""
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
     if not cam:
         raise HTTPException(
@@ -628,6 +721,14 @@ async def get_camera_live_snapshot(
             detail="Live-стрим недоступен или кадр ещё не получен",
         )
 
+    if r is not None or g is not None or b is not None:
+        frame = apply_rgb_to_jpeg_bytes(
+            frame,
+            r=r if r is not None else 1.0,
+            g=g if g is not None else 1.0,
+            b=b if b is not None else 1.0,
+        )
+
     return Response(
         content=frame,
         media_type="image/jpeg",
@@ -640,7 +741,7 @@ async def get_camera_live_snapshot(
 
 async def _proxy_ustreamer_frames(session: Any):
     """Читает MJPEG-поток напрямую из ustreamer и выдаёт отдельные JPEG-кадры."""
-    if not session.stream_url:
+    if not session.stream_url or session.mode != "raw" or not session.device_online:
         return
     stream_url = f"{session.stream_url.rstrip('/')}/stream"
     timeout = httpx.Timeout(connect=2.0, read=6.0, write=5.0, pool=2.0)
@@ -654,7 +755,11 @@ async def _proxy_ustreamer_frames(session: Any):
         if resp.status_code != 200:
             return
         async for chunk in resp.aiter_bytes(chunk_size=32768):
-            if not session.is_active:
+            if (
+                not session.is_active
+                or session.mode != "raw"
+                or not session.device_online
+            ):
                 break
             if session.is_paused:
                 buf.clear()
@@ -680,6 +785,7 @@ async def _proxy_ustreamer_frames(session: Any):
                 now_t = time.perf_counter()
                 lat_ms = max(1, min(500, int((now_t - last_frame_t) * 1000)))
                 last_frame_t = now_t
+                session.latest_raw_frame = frame
                 session.latest_frame = frame
                 session.record_proxied_frame(latency_ms=lat_ms)
                 yield frame
@@ -696,10 +802,12 @@ async def _mjpeg_generator(hardware_id: str):
 
     try:
         while session.is_active:
-            # 1. Пробуем прямое проксирование от ustreamer, с бэкоффом при временной неготовности
+            # 1. В режиме 'raw' пробуем прямое проксирование от ustreamer
             now_m = time.monotonic()
             if (
-                session.stream_url
+                session.mode == "raw"
+                and session.device_online
+                and session.stream_url
                 and not session.is_paused
                 and now_m >= next_proxy_retry_at
             ):
@@ -714,22 +822,33 @@ async def _mjpeg_generator(hardware_id: str):
                             + frame
                             + b"\r\n"
                         )
-                if not got_any and session.is_active and not session.is_paused:
+                if (
+                    not got_any
+                    and session.is_active
+                    and not session.is_paused
+                    and session.mode == "raw"
+                ):
                     next_proxy_retry_at = time.monotonic() + proxy_backoff
                     proxy_backoff = min(5.0, proxy_backoff * 2.0)
 
-            # 2. Fallback / основной режим через push-буфер от Edge-агента
+            # 2. Режим 'annotated' или fallback через push-буфер от Edge-агента
             async with session.condition:
                 if session.frame_counter == last_frame_id:
-                    wait_timeout = 0.3 if session.stream_url else 0.5
+                    wait_timeout = (
+                        0.3 if (session.stream_url and session.mode == "raw") else 0.5
+                    )
                     with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(
                             session.condition.wait(), timeout=wait_timeout
                         )
-                frame = session.latest_frame
+                frame = (
+                    session.latest_annotated_frame
+                    if session.mode == "annotated"
+                    else session.latest_frame
+                )
                 last_frame_id = session.frame_counter
 
-            if frame is not None:
+            if frame is not None and session.device_online:
                 yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
             await asyncio.sleep(0.02)
     except asyncio.CancelledError:
@@ -743,6 +862,7 @@ async def get_camera_live_stream(
     camera_id: int,
     current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
     db: Annotated[Session, Depends(get_db)],
+    mode: Annotated[str | None, Query()] = None,
 ) -> StreamingResponse:
     """Low-latency MJPEG-стрим камеры для прямого отображения в браузере."""
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
@@ -751,6 +871,11 @@ async def get_camera_live_stream(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Камера не найдена",
         )
+    if mode in ("raw", "annotated"):
+        session = live_manager.get_or_create(cam.hardware_id, camera_id=cam.id)
+        session.set_mode(mode)
+        async with session.condition:
+            session.condition.notify_all()
     return StreamingResponse(
         _mjpeg_generator(cam.hardware_id),
         media_type="multipart/x-mixed-replace; boundary=frame",
@@ -858,7 +983,7 @@ async def get_camera_controls(
         with contextlib.suppress(Exception):
             parsed_rgb = json.loads(rgb_setting.value)
             if isinstance(parsed_rgb, dict):
-                rgb = parsed_rgb
+                rgb = clamp_rgb_dict(parsed_rgb)
 
     cur_fmt, cur_res = _resolve_camera_format_and_resolution(
         db, cam.hardware_id, formats=formats
@@ -873,6 +998,88 @@ async def get_camera_controls(
         "current_format": cur_fmt,
         "current_resolution": cur_res,
     }
+
+
+def _persist_camera_controls_profile(
+    db: Session,
+    cam: Camera,
+    controls: dict[str, Any] | None,
+    fmt: str | None,
+    resolution: str | None,
+    rgb: dict[str, float] | None,
+    enqueue_edge_command: bool = True,
+) -> tuple[list[dict[str, Any]] | None, dict[str, float]]:
+    """Сохраняет настройки формата, разрешения, V4L2-контролов и RGB в профиль камеры."""
+    now = datetime.now(UTC)
+    if fmt:
+        _upsert_setting(db, f"camera_format_{cam.hardware_id}", fmt, now)
+    if resolution:
+        _upsert_setting(db, f"camera_res_{cam.hardware_id}", resolution, now)
+        active_session = live_manager.get(cam.hardware_id)
+        if active_session:
+            active_session.resolution = resolution
+
+    clamped_rgb: dict[str, float]
+    if rgb is not None:
+        clamped_rgb = clamp_rgb_dict(rgb)
+        _upsert_setting(
+            db, f"camera_rgb_{cam.hardware_id}", json.dumps(clamped_rgb), now
+        )
+    else:
+        existing_rgb_setting = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == f"camera_rgb_{cam.hardware_id}")
+            .first()
+        )
+        clamped_rgb = {"r": 1.0, "g": 1.0, "b": 1.0}
+        if existing_rgb_setting and existing_rgb_setting.value:
+            with contextlib.suppress(Exception):
+                clamped_rgb = clamp_rgb_dict(json.loads(existing_rgb_setting.value))
+
+    updated_controls: list[dict[str, Any]] | None = None
+    if controls:
+        ctrl_setting = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == f"camera_ctrls_{cam.hardware_id}")
+            .first()
+        )
+        if ctrl_setting and ctrl_setting.value:
+            existing_controls = json.loads(ctrl_setting.value)
+        elif not _is_real_cameras_mode(db):
+            existing_controls = get_default_mock_controls()
+        else:
+            existing_controls = []
+
+        if existing_controls:
+            apply_control_dependencies(existing_controls, controls)
+            _upsert_setting(
+                db,
+                f"camera_ctrls_{cam.hardware_id}",
+                json.dumps(existing_controls),
+                now,
+            )
+            updated_controls = existing_controls
+
+    if enqueue_edge_command:
+        cmd = EdgeCommand(
+            command_type="SET_CAMERA_CONTROLS",
+            installation_id=cam.installation_id,
+            is_global=cam.installation_id is None,
+            payload=json.dumps(
+                {
+                    "camera_hardware_id": cam.hardware_id,
+                    "controls": controls or {},
+                    "format": fmt,
+                    "resolution": resolution,
+                    "rgb": clamped_rgb if rgb is not None else None,
+                }
+            ),
+            status="pending",
+        )
+        db.add(cmd)
+
+    db.commit()
+    return updated_controls, clamped_rgb
 
 
 @router.patch("/{camera_id}/controls", response_model=dict[str, Any])
@@ -890,58 +1097,15 @@ def update_camera_controls(
             detail="Камера не найдена",
         )
 
-    now = datetime.now(UTC)
-    if body.format:
-        _upsert_setting(db, f"camera_format_{cam.hardware_id}", body.format, now)
-    if body.resolution:
-        _upsert_setting(db, f"camera_res_{cam.hardware_id}", body.resolution, now)
-        active_session = live_manager.get(cam.hardware_id)
-        if active_session:
-            active_session.resolution = body.resolution
-    if body.rgb:
-        _upsert_setting(db, f"camera_rgb_{cam.hardware_id}", json.dumps(body.rgb), now)
-
-    updated_controls: list[dict[str, Any]] | None = None
-    if body.controls:
-        ctrl_setting = (
-            db.query(SystemSetting)
-            .filter(SystemSetting.key == f"camera_ctrls_{cam.hardware_id}")
-            .first()
-        )
-        if ctrl_setting and ctrl_setting.value:
-            existing_controls = json.loads(ctrl_setting.value)
-        elif not _is_real_cameras_mode(db):
-            existing_controls = get_default_mock_controls()
-        else:
-            existing_controls = []
-
-        if existing_controls:
-            apply_control_dependencies(existing_controls, body.controls)
-            _upsert_setting(
-                db,
-                f"camera_ctrls_{cam.hardware_id}",
-                json.dumps(existing_controls),
-                now,
-            )
-            updated_controls = existing_controls
-
-    cmd = EdgeCommand(
-        command_type="SET_CAMERA_CONTROLS",
-        installation_id=cam.installation_id,
-        is_global=cam.installation_id is None,
-        payload=json.dumps(
-            {
-                "camera_hardware_id": cam.hardware_id,
-                "controls": body.controls or {},
-                "format": body.format,
-                "resolution": body.resolution,
-                "rgb": body.rgb,
-            }
-        ),
-        status="pending",
+    updated_controls, clamped_rgb = _persist_camera_controls_profile(
+        db=db,
+        cam=cam,
+        controls=body.controls,
+        fmt=body.format,
+        resolution=body.resolution,
+        rgb=body.rgb,
+        enqueue_edge_command=True,
     )
-    db.add(cmd)
-    db.commit()
 
     resp: dict[str, Any] = {
         "status": "updated",
@@ -949,7 +1113,57 @@ def update_camera_controls(
         "hardware_id": cam.hardware_id,
         "format": body.format,
         "resolution": body.resolution,
-        "rgb": body.rgb,
+        "rgb": clamped_rgb if body.rgb is not None else None,
+    }
+    if updated_controls is not None:
+        resp["controls"] = updated_controls
+    return resp
+
+
+@router.post("/{camera_id}/controls/save", response_model=dict[str, Any])
+def save_camera_controls(
+    camera_id: int,
+    body: CameraControlsSaveRequest,
+    current_user: Annotated[User, Depends(require_role("developer", "biologist"))],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Сохраняет настройки профиля камеры ('next_frame' или 'all_gallery' без разрушения raw_...jpg)."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Камера не найдена",
+        )
+
+    has_changes = bool(
+        body.controls or body.format or body.resolution or body.rgb is not None
+    )
+    updated_controls, saved_rgb = _persist_camera_controls_profile(
+        db=db,
+        cam=cam,
+        controls=body.controls,
+        fmt=body.format,
+        resolution=body.resolution,
+        rgb=body.rgb,
+        enqueue_edge_command=has_changes,
+    )
+
+    updated_captures = 0
+    if body.scope == "all_gallery":
+        updated_captures = apply_rgb_to_camera_captures(
+            db=db,
+            camera_id=cam.id,
+            rgb=saved_rgb,
+            base_media_dir=edge_api.get_media_dir(),
+        )
+
+    resp: dict[str, Any] = {
+        "status": "saved",
+        "scope": body.scope,
+        "camera_id": cam.id,
+        "hardware_id": cam.hardware_id,
+        "rgb": saved_rgb,
+        "updated_captures": updated_captures,
     }
     if updated_controls is not None:
         resp["controls"] = updated_controls

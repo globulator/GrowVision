@@ -14,6 +14,7 @@ from server.api.deps import (
     require_role,
 )
 from server.core.area import calculate_area_display
+from server.core.rgb import resolve_capture_display_rel_path
 from server.core.state import app_state
 from server.db.models import Capture, Installation, SystemSetting, User
 from shared.schedule import compute_next_capture_at
@@ -81,7 +82,11 @@ def get_installation_last_capture_info(
     if not last_cap:
         return None, None
 
-    last_raw_url = f"/{last_cap.raw_image_path}" if last_cap.raw_image_path else None
+    last_raw_url = (
+        f"/{resolve_capture_display_rel_path(last_cap.raw_image_path, edge_api.get_media_dir())}"
+        if last_cap.raw_image_path
+        else None
+    )
 
     meas = next(
         (m for m in last_cap.plant_measurements if m.plant_index == 0),
