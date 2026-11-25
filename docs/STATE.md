@@ -4,11 +4,11 @@
 Обновляется после каждого события. История — не более 15 последних строк.
 
 ## Сейчас
-- Текущий этап: 10.2
-- Название этапа: ONNX-сегментация растений с выбором движка («Авто / ONNX / HSV»), морфологическая склейка куста в HSV, нейтральный баланс белого и полировка Live/Gallery UI
+- Текущий этап: 11.1
+- Название этапа: Полноценное управление установками в Web UI (карточка `+`, единая модалка, архив, фильтры), мгновенная привязка камер и панель управления светом/реле
 - Режим: FAST (coordinator2 + builder2)
 - Статус: DONE
-- Итераций ревью: 1 из 3
+- Итераций ревью: 0 из 3
 - Ждём от пользователя: задачи следующего этапа
 
 ## Активные агенты
@@ -18,14 +18,12 @@
 | — | — | — | — | — |
 
 ## Коммиты текущего этапа
-- 5191179 feat(edge): integrate ONNX segmentation, HSV merge and neutral white balance
-- a51bd95 feat(server,shared): support segmentation_mode sync across API and Live
-- a033368 feat(web): add segmentation mode control and polish Live and Gallery UI
-- c313b98 fix(edge): allow auto ONNX inference in mock_mode when model file exists
-- Слияние stage-10/onnx-segmentation-and-calibration-polish в main, версия 0.8.2 (тег v0.8.2)
+- 02d3a13 fix(control): preserve relay states during RELAY_TEST and enrich relays status
+- cde8d35 feat(web): add units CRUD modal, filters, instant camera binding and light panel
+- Слияние stage-11/web-units-crud-cameras-and-light в main, версия 0.9.0 (тег v0.9.0)
 
 ## Последний вердикт ревью
-- Вердикт: PASS (по этапу 10.2, итераций ревью: 1/3)
+- Вердикт: PASS (по этапу 11.1, итераций ревью: 0/3)
 - Открытые дефекты: —
 
 ## Закрытые этапы
@@ -62,11 +60,9 @@
 - Этап 10: Перспективная калибровка ArUco, цветовой маркер и автоцветокоррекция, SVG-маркеры для печати, график роста в галерее и стабильный оверлей Live (принят после ревью, слит в main, версия 0.8.0)
 - Этап 10.1: Подавление шумов HSV-сегментации, устойчивая детекция цветового маркера с предпросмотром ROI и упрощённый переключатель графика роста (принят после ревью, слит в main, версия 0.8.1)
 - Этап 10.2: ONNX-сегментация растений с выбором движка («Авто / ONNX / HSV»), морфологическая склейка куста в HSV, нейтральный баланс белого и полировка Live/Gallery UI (принят после ревью, слит в main, версия 0.8.2)
+- Этап 11.1: Управление установками в Web UI (карточка `+`, единая модалка, архив, фильтры), мгновенная привязка камер и панель света/реле с сохранением состояний (принят после ревью, слит в main, версия 0.9.0)
 
 ## История (последние 10 событий)
-- 2026-11-25: Запущен этап 10 в ветке stage-10/aruco-metric-color-marker-and-gallery-chart (coordinator2 + builder2)
-- 2026-11-25: Реализованы перспективная калибровка ArUco, детекция цветового маркера (синяя рамка), автоцветокоррекция и генерация SVG (69d6d74)
-- 2026-11-25: Добавлены колонки PlantMeasurement, график роста без скачков единиц, автоцветокоррекция Live и стабильный оверлей отключения (ffd31b3)
 - 2026-11-25: Пройдены проверки pytest (edge 102, server 108, bot 73, cli 52, целевые e2e 16) и ruff
 - 2026-11-25: Ветка stage-10/aruco-metric-color-marker-and-gallery-chart слита в main, поднята версия 0.8.0 (тег v0.8.0), этап 10 закрыт (DONE)
 - 2026-11-25: Запущен этап 10.1 в ветке stage-10/fix-hsv-noise-color-marker-and-chart (coordinator2 + builder2)
@@ -74,3 +70,6 @@
 - 2026-11-25: Ветка stage-10/fix-hsv-noise-color-marker-and-chart слита в main, пройдены проверки pytest и ruff, версия 0.8.1 (тег v0.8.1), этап 10.1 закрыт (DONE)
 - 2026-11-25: Запущен этап 10.2 в ветке stage-10/onnx-segmentation-and-calibration-polish (coordinator2 + builder2)
 - 2026-11-25: Добавлены ONNX-сегментация с переключателем «Авто / ONNX / HSV», склейка HSV, нейтральный ББ и полировка Live/Gallery UI; ветка слита в main, версия 0.8.2 (тег v0.8.2), этап 10.2 закрыт (DONE)
+- 2026-11-25: Запущен этап 11.1 в ветке stage-11/web-units-crud-cameras-and-light (coordinator2 + builder2)
+- 2026-11-25: Реализованы CRUD/архив/фильтры установок в Web UI, мгновенная привязка камер, панель света и сохранение состояний реле в RELAY_TEST (02d3a13, cde8d35)
+- 2026-11-25: Ветка stage-11/web-units-crud-cameras-and-light слита в main, пройдены проверки pytest и ruff, версия 0.9.0 (тег v0.9.0), этап 11.1 закрыт (DONE)
