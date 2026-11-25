@@ -18,6 +18,12 @@ let streamReady = false;
 let deviceOfflineShown = false;
 let isClosingFlow = false;
 let onLiveProfileSavedCallback = null;
+let liveStartedAt = 0;
+let liveStreamRetryTimer = null;
+let liveRgbSyncTimer = null;
+let lastRgbSyncAt = 0;
+const LIVE_STARTUP_GRACE_MS = 5000;
+const LIVE_RGB_THROTTLE_MS = 180;
 
 const CATEGORY_DEFS = [
   {
@@ -96,8 +102,47 @@ function applyLiveRgbFilter(rgb) {
     );
   }
   if (streamImg) {
-    const isIdentity = Math.abs(r - 1.0) < 1e-3 && Math.abs(g - 1.0) < 1e-3 && Math.abs(b - 1.0) < 1e-3;
-    streamImg.style.filter = isIdentity ? '' : 'url(#live-rgb-filter)';
+    if (currentLiveLayer === 'annotated') {
+      // В режиме «Разметка» кадр уже скорректирован по RGB на edge_agent, сама разметка остаётся в неизменных цветах
+      streamImg.style.filter = '';
+    } else {
+      const isIdentity = Math.abs(r - 1.0) < 1e-3 && Math.abs(g - 1.0) < 1e-3 && Math.abs(b - 1.0) < 1e-3;
+      streamImg.style.filter = isIdentity ? '' : 'url(#live-rgb-filter)';
+    }
+  }
+}
+
+async function sendLiveRgbUpdate(cameraId, rgbPayload) {
+  if (!activeCamera || activeCamera.id !== cameraId) return;
+  lastRgbSyncAt = Date.now();
+  try {
+    await api.updateCameraControls(cameraId, { rgb: rgbPayload });
+  } catch (_) {
+    // Промежуточные ошибки при перетаскивании ползунка не прерывают настройку
+  }
+}
+
+function scheduleLiveRgbSync(immediate = false) {
+  if (!activeCamera || !activeCamera.id) return;
+  const cameraId = activeCamera.id;
+  const payload = {
+    r: clampRgbValue(draftRgb.r, 1.0),
+    g: clampRgbValue(draftRgb.g, 1.0),
+    b: clampRgbValue(draftRgb.b, 1.0),
+  };
+  if (liveRgbSyncTimer) {
+    clearTimeout(liveRgbSyncTimer);
+    liveRgbSyncTimer = null;
+  }
+  const elapsed = Date.now() - lastRgbSyncAt;
+  if (immediate || elapsed >= LIVE_RGB_THROTTLE_MS) {
+    sendLiveRgbUpdate(cameraId, payload);
+  } else {
+    const delay = Math.max(20, LIVE_RGB_THROTTLE_MS - elapsed);
+    liveRgbSyncTimer = setTimeout(() => {
+      liveRgbSyncTimer = null;
+      sendLiveRgbUpdate(cameraId, payload);
+    }, delay);
   }
 }
 
@@ -240,6 +285,18 @@ function attachStreamHandlers(cameraId, mode = currentLiveLayer) {
     clearTimeout(liveConnectTimeout);
     liveConnectTimeout = null;
   }
+  if (liveStreamRetryTimer) {
+    clearTimeout(liveStreamRetryTimer);
+    liveStreamRetryTimer = null;
+  }
+  if (liveRgbSyncTimer) {
+    clearTimeout(liveRgbSyncTimer);
+    liveRgbSyncTimer = null;
+  }
+  if (liveStreamRetryTimer) {
+    clearTimeout(liveStreamRetryTimer);
+    liveStreamRetryTimer = null;
+  }
 
   setLiveViewportState('loading');
 
@@ -250,12 +307,29 @@ function attachStreamHandlers(cameraId, mode = currentLiveLayer) {
       clearTimeout(liveConnectTimeout);
       liveConnectTimeout = null;
     }
+    if (liveStreamRetryTimer) {
+      clearTimeout(liveStreamRetryTimer);
+      liveStreamRetryTimer = null;
+    }
     setLiveViewportState('streaming');
   };
 
   streamImg.onerror = () => {
     if (!activeCamera || activeCamera.id !== cameraId) return;
     if (!streamImg.getAttribute('src')) return;
+    const inStartupGrace = !streamReady && (Date.now() - liveStartedAt) < LIVE_STARTUP_GRACE_MS;
+    if (inStartupGrace && !deviceOfflineShown) {
+      setLiveViewportState('loading');
+      if (liveStreamRetryTimer) clearTimeout(liveStreamRetryTimer);
+      liveStreamRetryTimer = setTimeout(() => {
+        liveStreamRetryTimer = null;
+        if (activeCamera && activeCamera.id === cameraId && !streamReady) {
+          const sm = currentLiveLayer === 'annotated' ? 'annotated' : 'raw';
+          streamImg.src = `/api/cameras/${cameraId}/live/stream?mode=${sm}&t=${Date.now()}`;
+        }
+      }, 400);
+      return;
+    }
     if (liveConnectTimeout) {
       clearTimeout(liveConnectTimeout);
       liveConnectTimeout = null;
@@ -290,6 +364,8 @@ export async function openLiveModal(camera) {
   initialCameraSnapshot = null;
   draftRgb = { r: 1.0, g: 1.0, b: 1.0 };
   currentLiveLayer = 'raw';
+  liveStartedAt = Date.now();
+  streamReady = false;
   deviceOfflineShown = false;
   isClosingFlow = false;
   updateLiveLayerButtonsUi();
@@ -409,6 +485,10 @@ async function discardLiveChangesAndClose() {
         (currentCameraControls.current_format || null) !== initialCameraSnapshot.format;
       const resChanged =
         (currentCameraControls.current_resolution || null) !== initialCameraSnapshot.resolution;
+      const rgbChanged =
+        Math.abs(draftRgb.r - initialCameraSnapshot.rgb.r) >= 0.005 ||
+        Math.abs(draftRgb.g - initialCameraSnapshot.rgb.g) >= 0.005 ||
+        Math.abs(draftRgb.b - initialCameraSnapshot.rgb.b) >= 0.005;
 
       // При откате сбрасываем сначала триггеры, выключающие auto, затем значения, затем auto=1
       const manualTriggers = {};
@@ -429,11 +509,12 @@ async function discardLiveChangesAndClose() {
       if (Object.keys(manualTriggers).length > 0) {
         await api.updateCameraControls(activeCamera.id, { controls: manualTriggers });
       }
-      if (Object.keys(regularCtrls).length > 0 || fmtChanged || resChanged) {
+      if (Object.keys(regularCtrls).length > 0 || fmtChanged || resChanged || rgbChanged) {
         const payload = {};
         if (Object.keys(regularCtrls).length > 0) payload.controls = regularCtrls;
         if (fmtChanged && initialCameraSnapshot.format) payload.format = initialCameraSnapshot.format;
         if (resChanged && initialCameraSnapshot.resolution) payload.resolution = initialCameraSnapshot.resolution;
+        if (rgbChanged) payload.rgb = { ...initialCameraSnapshot.rgb };
         await api.updateCameraControls(activeCamera.id, payload);
       }
       if (Object.keys(autoTriggers).length > 0) {
@@ -503,6 +584,14 @@ export async function closeLiveModal() {
     clearTimeout(liveConnectTimeout);
     liveConnectTimeout = null;
   }
+  if (liveStreamRetryTimer) {
+    clearTimeout(liveStreamRetryTimer);
+    liveStreamRetryTimer = null;
+  }
+  if (liveRgbSyncTimer) {
+    clearTimeout(liveRgbSyncTimer);
+    liveRgbSyncTimer = null;
+  }
 
   streamReady = false;
   deviceOfflineShown = false;
@@ -551,8 +640,9 @@ async function updateLiveMetrics() {
       pausedOverlay.classList.toggle('hidden', !Boolean(status.is_paused));
     }
 
+    const inStartupGrace = !streamReady && (Date.now() - liveStartedAt) < LIVE_STARTUP_GRACE_MS;
     if (status.device_online === false) {
-      if (!deviceOfflineShown) {
+      if (!inStartupGrace && !deviceOfflineShown) {
         deviceOfflineShown = true;
         if (liveConnectTimeout) {
           clearTimeout(liveConnectTimeout);
@@ -1006,12 +1096,14 @@ function renderCategoryPills() {
           draftRgb[ch.id] = clamped;
           valSpan.textContent = clamped.toFixed(2);
           applyLiveRgbFilter(draftRgb);
+          scheduleLiveRgbSync(false);
         },
         onCommitVal: (val) => {
           const clamped = clampRgbValue(val, 1.0);
           draftRgb[ch.id] = clamped;
           valSpan.textContent = clamped.toFixed(2);
           applyLiveRgbFilter(draftRgb);
+          scheduleLiveRgbSync(true);
         },
       });
       slider.id = `slider-rgb-${ch.id}`;
@@ -1021,6 +1113,7 @@ function renderCategoryPills() {
         draftRgb[ch.id] = 1.0;
         valSpan.textContent = '1.00';
         applyLiveRgbFilter(draftRgb);
+        scheduleLiveRgbSync(true);
       });
 
       head.appendChild(headRight);
@@ -1295,6 +1388,7 @@ async function switchLiveLayer(nextMode) {
   if (normalized === currentLiveLayer) return;
   currentLiveLayer = normalized;
   updateLiveLayerButtonsUi();
+  applyLiveRgbFilter(draftRgb);
   try {
     await api.setLiveMode(activeCamera.id, normalized);
   } catch (_) {
@@ -1393,6 +1487,8 @@ export function initCameras() {
   if (btnLiveRetry) {
     btnLiveRetry.addEventListener('click', async () => {
       if (!activeCamera || !activeCamera.id) return;
+      liveStartedAt = Date.now();
+      streamReady = false;
       deviceOfflineShown = false;
       setLiveViewportState('loading');
       try {

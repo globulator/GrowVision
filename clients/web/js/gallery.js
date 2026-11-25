@@ -23,6 +23,11 @@ let playTimer = null;
 let currentLoadId = 0;
 let isEncodingGif = false;
 let galleryCacheBuster = Date.now();
+let renderRequestId = 0;
+let galleryFrontImg = null;
+let galleryBackImg = null;
+const decodedFrameSrcs = new Set();
+const PRELOAD_WINDOW_AHEAD = 6;
 
 // Жесты: дабл-тап и свайпы
 let lastTapTime = 0;
@@ -107,6 +112,10 @@ export function closeGalleryModal() {
   isPlaying = false;
   clearInterval(playTimer);
   currentLoadId++;
+  renderRequestId++;
+  galleryFrontImg = null;
+  galleryBackImg = null;
+  decodedFrameSrcs.clear();
 
   // Очищаем кеш изображений для освобождения памяти
   loadedImages.forEach((img) => {
@@ -170,6 +179,10 @@ function updateCameraSwitcherUi() {
 // Загрузка изображений для текущей камеры и слоя
 async function loadCameraFrames() {
   const thisLoadId = ++currentLoadId;
+  renderRequestId++;
+  galleryFrontImg = null;
+  galleryBackImg = null;
+  decodedFrameSrcs.clear();
   pausePlayback();
   setControlsDisabled(true);
   showLoadingPlaceholder();
@@ -213,8 +226,16 @@ async function loadCameraFrames() {
         img.onload = () => {
           img.dataset.capturedAt = frame.captured_at || '';
           img.dataset.areaDisplay = frame.area_display || '—';
-          images[idx] = img;
-          resolve(img);
+          const finalize = () => {
+            decodedFrameSrcs.add(img.src);
+            images[idx] = img;
+            resolve(img);
+          };
+          if (typeof img.decode === 'function') {
+            img.decode().then(finalize, finalize);
+          } else {
+            finalize();
+          }
         };
         img.onerror = () => {
           attempts++;
@@ -265,10 +286,11 @@ async function loadCameraFrames() {
   }
   updateFpsAndWarnings(totalCount);
 
-  // Открываем последний кадр на паузе
+  // Открываем последний кадр на паузе и заранее прогреваем начало таймлапса
   currentFrameIndex = Math.max(0, loadedImages.length - 1);
   setControlsDisabled(false);
-  renderCurrentFrame();
+  preloadFrameWindow(0, PRELOAD_WINDOW_AHEAD);
+  await renderCurrentFrame();
   updatePlaybackUi();
 }
 
@@ -346,34 +368,95 @@ function updateFpsAndWarnings(framesCount) {
   return true;
 }
 
-function renderCurrentFrame() {
+function waitForImageReady(imgEl, srcUrl) {
+  return new Promise((resolve) => {
+    if (!srcUrl) {
+      resolve(false);
+      return;
+    }
+    const finish = () => {
+      if (typeof imgEl.decode === 'function') {
+        imgEl.decode().then(() => resolve(true), () => resolve(true));
+      } else {
+        resolve(true);
+      }
+    };
+    if (imgEl.src === srcUrl && imgEl.complete) {
+      if (imgEl.naturalWidth > 0) {
+        finish();
+      } else {
+        resolve(false);
+      }
+      return;
+    }
+    imgEl.onload = () => finish();
+    imgEl.onerror = () => resolve(false);
+    imgEl.src = srcUrl;
+  });
+}
+
+function preloadFrameWindow(centerIndex, lookAhead = PRELOAD_WINDOW_AHEAD) {
+  if (!loadedImages.length) return;
+  const indices = [];
+  for (let step = 1; step <= lookAhead; step++) {
+    const nextIdx = centerIndex + step;
+    if (nextIdx < loadedImages.length) indices.push(nextIdx);
+  }
+  if (centerIndex - 1 >= 0) {
+    indices.push(centerIndex - 1);
+  }
+  indices.forEach((idx) => {
+    const target = loadedImages[idx];
+    if (!target || target.dataset.broken === 'true' || !target.src) return;
+    if (decodedFrameSrcs.has(target.src)) return;
+    const hiddenPreload = new Image();
+    hiddenPreload.crossOrigin = 'anonymous';
+    waitForImageReady(hiddenPreload, target.src).then((ok) => {
+      if (ok) decodedFrameSrcs.add(target.src);
+    });
+  });
+}
+
+function ensureDoubleBufferImgs(box) {
+  if (
+    galleryFrontImg &&
+    galleryBackImg &&
+    galleryFrontImg.parentElement === box &&
+    galleryBackImg.parentElement === box
+  ) {
+    return { front: galleryFrontImg, back: galleryBackImg };
+  }
+  box.innerHTML = '';
+  const front = document.createElement('img');
+  front.className = 'gallery-main-img';
+  front.alt = '';
+
+  const back = document.createElement('img');
+  back.className = 'gallery-main-img gallery-buffer-hidden';
+  back.alt = '';
+
+  box.appendChild(front);
+  box.appendChild(back);
+  galleryFrontImg = front;
+  galleryBackImg = back;
+  return { front, back };
+}
+
+async function renderCurrentFrame() {
   const box = document.getElementById('gallery-image-box');
   const metaBox = document.getElementById('gallery-meta');
   const slider = document.getElementById('gallery-slider');
   if (!box || loadedImages.length === 0) return;
 
-  const img = loadedImages[currentFrameIndex];
+  const frameIdx = currentFrameIndex;
+  const img = loadedImages[frameIdx];
   if (!img) return;
-
-  box.innerHTML = '';
-  if (img.dataset.broken === 'true') {
-    box.innerHTML = getPlaceholderHTML('D');
-  } else {
-    const displayImg = document.createElement('img');
-    displayImg.className = 'gallery-main-img';
-    displayImg.src = img.src;
-    displayImg.alt = `Кадр ${currentFrameIndex + 1}`;
-    displayImg.onerror = () => {
-      box.innerHTML = getPlaceholderHTML('D');
-    };
-    box.appendChild(displayImg);
-  }
 
   // Обновление ползунка
   if (slider) {
     slider.min = '0';
     slider.max = String(loadedImages.length - 1);
-    slider.value = String(currentFrameIndex);
+    slider.value = String(frameIdx);
   }
 
   // Метаданные: Кадр X из N | Время (локальное браузера) | Площадь
@@ -385,10 +468,37 @@ function renderCurrentFrame() {
       timeStr = `${dt.toLocaleString('ru-RU')} (местное время)`;
     }
     const areaStr = img.dataset.areaDisplay || '—';
-    metaBox.textContent = `Кадр ${currentFrameIndex + 1} из ${total} | ${timeStr} | Площадь: ${areaStr}`;
+    metaBox.textContent = `Кадр ${frameIdx + 1} из ${total} | ${timeStr} | Площадь: ${areaStr}`;
   }
 
   updatePlaybackUi();
+  preloadFrameWindow(frameIdx, PRELOAD_WINDOW_AHEAD);
+
+  const reqId = ++renderRequestId;
+  if (img.dataset.broken === 'true') {
+    galleryFrontImg = null;
+    galleryBackImg = null;
+    box.innerHTML = getPlaceholderHTML('D');
+    return;
+  }
+
+  const { front, back } = ensureDoubleBufferImgs(box);
+  back.alt = `Кадр ${frameIdx + 1}`;
+  const ok = await waitForImageReady(back, img.src);
+  if (reqId !== renderRequestId || !currentUnit) return;
+
+  if (!ok) {
+    galleryFrontImg = null;
+    galleryBackImg = null;
+    box.innerHTML = getPlaceholderHTML('D');
+    return;
+  }
+
+  decodedFrameSrcs.add(img.src);
+  back.classList.remove('gallery-buffer-hidden');
+  front.classList.add('gallery-buffer-hidden');
+  galleryFrontImg = back;
+  galleryBackImg = front;
 }
 
 // Блокировка/разблокировка кнопок управления
@@ -458,6 +568,7 @@ function startPlayback() {
 
   isPlaying = true;
   updatePlaybackUi();
+  preloadFrameWindow(currentFrameIndex, PRELOAD_WINDOW_AHEAD);
 
   const durInput = document.getElementById('gallery-duration-input');
   let durationSec = parseFloat(durInput ? durInput.value : '3') || 3;
