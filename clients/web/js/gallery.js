@@ -23,6 +23,7 @@ let loadedImages = []; // Array of Image objects
 let currentFrameIndex = 0;
 let isPlaying = false;
 let playTimer = null;
+let playbackSessionId = 0;
 let currentLoadId = 0;
 let isEncodingGif = false;
 let galleryCacheBuster = Date.now();
@@ -30,6 +31,7 @@ let renderRequestId = 0;
 let galleryFrontImg = null;
 let galleryBackImg = null;
 const decodedFrameSrcs = new Set();
+const activePreloadImages = new Set();
 const PRELOAD_WINDOW_AHEAD = 6;
 
 // Жесты: дабл-тап и свайпы
@@ -45,10 +47,14 @@ export async function openGalleryModal(unit) {
   currentUnit = unit;
   currentLayer = 'raw';
   isPlaying = false;
+  playbackSessionId++;
   isChartOpen = false;
   chartMode = 'cm2';
   galleryCacheBuster = Date.now();
+  clearTimeout(playTimer);
   clearInterval(playTimer);
+  playTimer = null;
+  cancelActivePreloads();
   updateChartPanelUi();
 
   const modal = document.getElementById('modal-gallery');
@@ -116,9 +122,13 @@ export function closeGalleryModal() {
 
   // Отменяем воспроизведение и инкрементируем loadId для отмены параллельных загрузок
   isPlaying = false;
+  playbackSessionId++;
+  clearTimeout(playTimer);
   clearInterval(playTimer);
+  playTimer = null;
   currentLoadId++;
   renderRequestId++;
+  cancelActivePreloads();
   galleryFrontImg = null;
   galleryBackImg = null;
   decodedFrameSrcs.clear();
@@ -342,7 +352,7 @@ function updateFpsAndWarnings(framesCount) {
 
   if (!rawVal || isNaN(val) || val < 1 || !Number.isInteger(val)) {
     if (durErrEl) {
-      durErrEl.textContent = 'Длительность должна быть целым числом не меньше 1 с';
+      durErrEl.textContent = 'Минимум 1 с';
       durErrEl.classList.remove('hidden');
     }
     if (fpsWarnEl) fpsWarnEl.classList.add('hidden');
@@ -368,7 +378,7 @@ function updateFpsAndWarnings(framesCount) {
 
   if (fps > 30) {
     if (fpsWarnEl) {
-      fpsWarnEl.textContent = 'При экспорте FPS будет ограничен до 30';
+      fpsWarnEl.textContent = 'Макс. 30 FPS';
       fpsWarnEl.classList.remove('hidden');
     }
   } else if (val > framesCount) {
@@ -410,8 +420,18 @@ function waitForImageReady(imgEl, srcUrl) {
   });
 }
 
+function cancelActivePreloads() {
+  activePreloadImages.forEach((img) => {
+    img.onload = null;
+    img.onerror = null;
+    img.src = '';
+  });
+  activePreloadImages.clear();
+}
+
 function preloadFrameWindow(centerIndex, lookAhead = PRELOAD_WINDOW_AHEAD) {
   if (!loadedImages.length) return;
+  const sessionToken = playbackSessionId;
   const indices = [];
   for (let step = 1; step <= lookAhead; step++) {
     const nextIdx = centerIndex + step;
@@ -421,12 +441,16 @@ function preloadFrameWindow(centerIndex, lookAhead = PRELOAD_WINDOW_AHEAD) {
     indices.push(centerIndex - 1);
   }
   indices.forEach((idx) => {
+    if (sessionToken !== playbackSessionId) return;
     const target = loadedImages[idx];
     if (!target || target.dataset.broken === 'true' || !target.src) return;
     if (decodedFrameSrcs.has(target.src)) return;
     const hiddenPreload = new Image();
     hiddenPreload.crossOrigin = 'anonymous';
+    activePreloadImages.add(hiddenPreload);
     waitForImageReady(hiddenPreload, target.src).then((ok) => {
+      activePreloadImages.delete(hiddenPreload);
+      if (sessionToken !== playbackSessionId) return;
       if (ok) decodedFrameSrcs.add(target.src);
     });
   });
@@ -564,14 +588,40 @@ function updatePlaybackUi() {
   if (btnNext) btnNext.disabled = currentFrameIndex === total - 1;
   if (btnLast) btnLast.disabled = currentFrameIndex === total - 1;
 
-  // Иконка Play / Pause
+  // Иконка Play / Pause (обновляем DOM только при смене состояния, чтобы не срывать клик по кнопке)
   if (btnPlay) {
     btnPlay.disabled = false;
-    btnPlay.innerHTML = isPlaying
-      ? `<svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`
-      : `<svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
-    btnPlay.title = isPlaying ? 'Пауза' : 'Воспроизвести';
+    const nextState = isPlaying ? 'playing' : 'paused';
+    if (btnPlay.dataset.playState !== nextState) {
+      btnPlay.dataset.playState = nextState;
+      btnPlay.innerHTML = isPlaying
+        ? `<svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`
+        : `<svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
+    }
+    const label = isPlaying ? 'Пауза' : 'Воспроизвести';
+    btnPlay.title = label;
+    btnPlay.setAttribute('aria-label', label);
   }
+}
+
+function scheduleNextPlaybackTick(sessionId, frameIntervalMs) {
+  if (!isPlaying || sessionId !== playbackSessionId) return;
+  playTimer = setTimeout(async () => {
+    playTimer = null;
+    if (!isPlaying || sessionId !== playbackSessionId) return;
+    if (currentFrameIndex < loadedImages.length - 1) {
+      const tickStarted = Date.now();
+      currentFrameIndex++;
+      await renderCurrentFrame();
+      if (!isPlaying || sessionId !== playbackSessionId) return;
+      const elapsed = Date.now() - tickStarted;
+      const nextDelay = Math.max(0, frameIntervalMs - elapsed);
+      scheduleNextPlaybackTick(sessionId, nextDelay);
+    } else {
+      // Завершение одного прохода до последнего кадра
+      pausePlayback();
+    }
+  }, frameIntervalMs);
 }
 
 function startPlayback() {
@@ -582,6 +632,10 @@ function startPlayback() {
     currentFrameIndex = 0;
   }
 
+  clearTimeout(playTimer);
+  clearInterval(playTimer);
+  playTimer = null;
+  const sessionId = ++playbackSessionId;
   isPlaying = true;
   updatePlaybackUi();
   preloadFrameWindow(currentFrameIndex, PRELOAD_WINDOW_AHEAD);
@@ -591,23 +645,17 @@ function startPlayback() {
   durationSec = Math.max(1, Math.min(loadedImages.length, durationSec));
 
   const frameIntervalMs = Math.max(30, Math.round((durationSec * 1000) / loadedImages.length));
-
-  clearInterval(playTimer);
-  playTimer = setInterval(() => {
-    if (currentFrameIndex < loadedImages.length - 1) {
-      currentFrameIndex++;
-      renderCurrentFrame();
-    } else {
-      // Завершение одного прохода до последнего кадра
-      pausePlayback();
-    }
-  }, frameIntervalMs);
+  scheduleNextPlaybackTick(sessionId, frameIntervalMs);
 }
 
 function pausePlayback() {
   isPlaying = false;
+  playbackSessionId++;
+  clearTimeout(playTimer);
   clearInterval(playTimer);
   playTimer = null;
+  renderRequestId++;
+  cancelActivePreloads();
   updatePlaybackUi();
 }
 

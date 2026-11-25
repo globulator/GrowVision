@@ -14,6 +14,7 @@ let initialCameraSnapshot = null;
 let draftRgb = { r: 1.0, g: 1.0, b: 1.0 };
 let currentActiveTab = null;
 let currentLiveLayer = 'raw'; // 'raw' или 'annotated'
+let currentSegmentationMode = 'auto'; // 'auto' | 'onnx' | 'hsv'
 let streamReady = false;
 let deviceOfflineShown = false;
 let hasFirstLiveStatus = false;
@@ -363,6 +364,22 @@ function updateLiveLayerButtonsUi() {
   if (annBtn) annBtn.classList.toggle('active', currentLiveLayer === 'annotated');
 }
 
+function normalizeSegmentationMode(mode) {
+  const raw = String(mode || 'auto').trim().toLowerCase();
+  return raw === 'onnx' || raw === 'hsv' ? raw : 'auto';
+}
+
+function updateSegmentationModeButtonsUi() {
+  const container = document.getElementById('live-seg-mode-control');
+  if (!container) return;
+  const activeMode = normalizeSegmentationMode(currentSegmentationMode);
+  container.querySelectorAll('.seg-btn').forEach((btn) => {
+    const isActive = btn.dataset.segMode === activeMode;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  });
+}
+
 // Запуск и открытие модального окна Live-режима
 export async function openLiveModal(camera) {
   if (!camera || !camera.id) return;
@@ -372,6 +389,7 @@ export async function openLiveModal(camera) {
   initialCameraSnapshot = null;
   draftRgb = { r: 1.0, g: 1.0, b: 1.0 };
   currentLiveLayer = 'raw';
+  currentSegmentationMode = 'auto';
   liveStartedAt = Date.now();
   streamReady = false;
   deviceOfflineShown = false;
@@ -381,6 +399,7 @@ export async function openLiveModal(camera) {
   isAutoColorCalibrating = false;
   isClosingFlow = false;
   updateLiveLayerButtonsUi();
+  updateSegmentationModeButtonsUi();
   applyLiveRgbFilter(draftRgb);
 
   const modal = document.getElementById('modal-camera-live');
@@ -409,6 +428,10 @@ export async function openLiveModal(camera) {
     if (!activeCamera || activeCamera.id !== camera.id) return;
     if (resEl && startRes && startRes.resolution) {
       resEl.textContent = startRes.resolution;
+    }
+    if (startRes && startRes.segmentation_mode) {
+      currentSegmentationMode = normalizeSegmentationMode(startRes.segmentation_mode);
+      updateSegmentationModeButtonsUi();
     }
   } catch (err) {
     setLiveViewportState('error', err.message || 'Ошибка запуска Live-стрима');
@@ -446,7 +469,9 @@ export function hasUnsavedLiveChanges() {
 
   if (
     (currentCameraControls.current_format || null) !== initialCameraSnapshot.format ||
-    (currentCameraControls.current_resolution || null) !== initialCameraSnapshot.resolution
+    (currentCameraControls.current_resolution || null) !== initialCameraSnapshot.resolution ||
+    normalizeSegmentationMode(currentSegmentationMode) !==
+      normalizeSegmentationMode(initialCameraSnapshot.segmentation_mode)
   ) {
     return true;
   }
@@ -501,6 +526,9 @@ async function discardLiveChangesAndClose() {
         Math.abs(draftRgb.r - initialCameraSnapshot.rgb.r) >= 0.005 ||
         Math.abs(draftRgb.g - initialCameraSnapshot.rgb.g) >= 0.005 ||
         Math.abs(draftRgb.b - initialCameraSnapshot.rgb.b) >= 0.005;
+      const segModeChanged =
+        normalizeSegmentationMode(currentSegmentationMode) !==
+        normalizeSegmentationMode(initialCameraSnapshot.segmentation_mode);
 
       // При откате сбрасываем сначала триггеры, выключающие auto, затем значения, затем auto=1
       const manualTriggers = {};
@@ -521,12 +549,23 @@ async function discardLiveChangesAndClose() {
       if (Object.keys(manualTriggers).length > 0) {
         await api.updateCameraControls(activeCamera.id, { controls: manualTriggers });
       }
-      if (Object.keys(regularCtrls).length > 0 || fmtChanged || resChanged || rgbChanged) {
+      if (
+        Object.keys(regularCtrls).length > 0 ||
+        fmtChanged ||
+        resChanged ||
+        rgbChanged ||
+        segModeChanged
+      ) {
         const payload = {};
         if (Object.keys(regularCtrls).length > 0) payload.controls = regularCtrls;
         if (fmtChanged && initialCameraSnapshot.format) payload.format = initialCameraSnapshot.format;
         if (resChanged && initialCameraSnapshot.resolution) payload.resolution = initialCameraSnapshot.resolution;
         if (rgbChanged) payload.rgb = { ...initialCameraSnapshot.rgb };
+        if (segModeChanged) {
+          payload.segmentation_mode = normalizeSegmentationMode(
+            initialCameraSnapshot.segmentation_mode
+          );
+        }
         await api.updateCameraControls(activeCamera.id, payload);
       }
       if (Object.keys(autoTriggers).length > 0) {
@@ -561,6 +600,7 @@ async function saveLiveChangesAndClose(scope) {
         format: currentCameraControls.current_format || null,
         resolution: currentCameraControls.current_resolution || null,
         rgb: { ...draftRgb },
+        segmentation_mode: normalizeSegmentationMode(currentSegmentationMode),
       });
       if (typeof onLiveProfileSavedCallback === 'function') {
         await onLiveProfileSavedCallback(scope);
@@ -614,6 +654,8 @@ export async function closeLiveModal() {
   hideAutoColorPreview();
   currentActiveTab = null;
   currentLiveLayer = 'raw';
+  currentSegmentationMode = 'auto';
+  updateSegmentationModeButtonsUi();
   initialCameraSnapshot = null;
   currentCameraControls = null;
   draftRgb = { r: 1.0, g: 1.0, b: 1.0 };
@@ -726,14 +768,21 @@ async function loadCameraControls(cameraId, refresh = false) {
         g: clampRgbValue(data.rgb?.g, 1.0),
         b: clampRgbValue(data.rgb?.b, 1.0),
       };
+      const initSegMode = normalizeSegmentationMode(data.segmentation_mode);
       initialCameraSnapshot = {
         format: data.current_format || null,
         resolution: data.current_resolution || null,
         controls: ctrlMap,
         rgb: initRgb,
+        segmentation_mode: initSegMode,
       };
+      currentSegmentationMode = initSegMode;
+      updateSegmentationModeButtonsUi();
       draftRgb = { ...initRgb };
       applyLiveRgbFilter(draftRgb);
+    } else if (data && data.segmentation_mode) {
+      currentSegmentationMode = normalizeSegmentationMode(data.segmentation_mode);
+      updateSegmentationModeButtonsUi();
     }
 
     const resEl = document.getElementById('live-res');
@@ -1573,6 +1622,28 @@ async function downloadLiveSnapshot() {
   }
 }
 
+async function switchSegmentationMode(nextMode) {
+  const normalized = normalizeSegmentationMode(nextMode);
+  if (normalized === currentSegmentationMode) return;
+  const prevMode = currentSegmentationMode;
+  currentSegmentationMode = normalized;
+  updateSegmentationModeButtonsUi();
+  if (currentCameraControls) {
+    currentCameraControls.segmentation_mode = normalized;
+  }
+  if (!activeCamera || !activeCamera.id) return;
+  try {
+    await api.updateCameraControls(activeCamera.id, { segmentation_mode: normalized });
+  } catch (err) {
+    currentSegmentationMode = prevMode;
+    if (currentCameraControls) {
+      currentCameraControls.segmentation_mode = prevMode;
+    }
+    updateSegmentationModeButtonsUi();
+    showError(err.message || 'Ошибка переключения режима сегментации');
+  }
+}
+
 async function switchLiveLayer(nextMode) {
   if (!activeCamera || !activeCamera.id) return;
   const normalized = nextMode === 'annotated' ? 'annotated' : 'raw';
@@ -1618,6 +1689,23 @@ export function initCameras() {
   }
   if (autoColorCancelBtn) {
     autoColorCancelBtn.addEventListener('click', hideAutoColorPreview);
+  }
+  document.addEventListener('click', (e) => {
+    const previewPanel = document.getElementById('live-auto-color-preview');
+    if (!previewPanel || previewPanel.classList.contains('hidden')) return;
+    const target = e.target;
+    if (target instanceof Node && previewPanel.contains(target)) return;
+    if (target instanceof Element && target.closest('#btn-live-auto-color')) return;
+    hideAutoColorPreview();
+  });
+
+  const segModeControl = document.getElementById('live-seg-mode-control');
+  if (segModeControl) {
+    segModeControl.querySelectorAll('.seg-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        switchSegmentationMode(btn.dataset.segMode);
+      });
+    });
   }
 
   if (btnMenu) {

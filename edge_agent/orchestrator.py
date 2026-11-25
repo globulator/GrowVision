@@ -83,6 +83,8 @@ class EdgeOrchestrator:
         self.last_scheduled_debug_log_line: str | None = None
         self._camera_rgb: dict[str, tuple[float, float, float]] = {}
         self._last_server_rgb: dict[str, tuple[float, float, float]] = {}
+        self._camera_segmentation_modes: dict[str, str] = {}
+        self._last_server_segmentation_modes: dict[str, str] = {}
 
     def start(self) -> None:
         """Запускает фоновые потоки оркестратора."""
@@ -228,6 +230,7 @@ class EdgeOrchestrator:
             # Переводим реле активных установок в нормальное состояние (свет ВКЛ)
             self.init_installations_light()
             self._sync_rgb_from_installations(self.active_installations)
+            self._sync_segmentation_modes_from_installations(self.active_installations)
 
             if getattr(self.live_stream, "is_running", False) and getattr(
                 self.live_stream, "active_camera_id", None
@@ -687,6 +690,50 @@ class EdgeOrchestrator:
             return norm
         return (1.0, 1.0, 1.0)
 
+    @staticmethod
+    def _normalize_segmentation_mode(raw_mode: Any) -> str:
+        """Нормализует режим сегментации к ('auto', 'onnx', 'hsv')."""
+        raw = str(raw_mode or "auto").strip().lower()
+        return raw if raw in ("auto", "onnx", "hsv") else "auto"
+
+    def _sync_segmentation_modes_from_installations(
+        self, installations: list[Any]
+    ) -> None:
+        """Синхронизирует сохранённые режимы сегментации камер из ответа сервера."""
+        for inst in installations:
+            modes_map = getattr(inst, "camera_segmentation_modes", None)
+            if not isinstance(modes_map, dict):
+                continue
+            for hw_id, raw_mode in modes_map.items():
+                norm = self._normalize_segmentation_mode(raw_mode)
+                if self._last_server_segmentation_modes.get(hw_id) != norm:
+                    self._last_server_segmentation_modes[hw_id] = norm
+                    self._camera_segmentation_modes[hw_id] = norm
+                    if (
+                        getattr(self.live_stream, "is_running", False)
+                        and getattr(self.live_stream, "active_camera_id", None) == hw_id
+                        and hasattr(self.live_stream, "set_segmentation_mode")
+                    ):
+                        self.live_stream.set_segmentation_mode(norm)
+
+    def _get_camera_segmentation_mode(self, inst: Any, cam_hw_id: str) -> str:
+        """Возвращает актуальный режим сегментации для указанной камеры."""
+        if (
+            getattr(self.live_stream, "is_running", False)
+            and getattr(self.live_stream, "active_camera_id", None) == cam_hw_id
+        ):
+            live_mode = getattr(self.live_stream, "segmentation_mode", None)
+            if isinstance(live_mode, str) and live_mode in ("auto", "onnx", "hsv"):
+                return live_mode
+        if cam_hw_id in self._camera_segmentation_modes:
+            return self._camera_segmentation_modes[cam_hw_id]
+        modes_map = getattr(inst, "camera_segmentation_modes", None)
+        if isinstance(modes_map, dict) and cam_hw_id in modes_map:
+            norm = self._normalize_segmentation_mode(modes_map[cam_hw_id])
+            self._camera_segmentation_modes[cam_hw_id] = norm
+            return norm
+        return "auto"
+
     def _prepare_capture_rgb(
         self, inst: Any, cam_hw_id: str, raw_bytes: bytes
     ) -> tuple[bytes, bool]:
@@ -734,6 +781,35 @@ class EdgeOrchestrator:
             self.live_stream.set_rgb_gains(*norm_rgb)
         elif hw_id in self._camera_rgb:
             self.live_stream.set_rgb_gains(*self._camera_rgb[hw_id])
+
+        raw_seg = payload.get("segmentation_mode")
+        if raw_seg is not None:
+            norm_seg = self._normalize_segmentation_mode(raw_seg)
+            self._camera_segmentation_modes[hw_id] = norm_seg
+            self._last_server_segmentation_modes[hw_id] = norm_seg
+            if hasattr(self.live_stream, "set_segmentation_mode"):
+                self.live_stream.set_segmentation_mode(norm_seg)
+        elif (
+            cmd.installation
+            and isinstance(
+                getattr(cmd.installation, "camera_segmentation_modes", None), dict
+            )
+            and hw_id in cmd.installation.camera_segmentation_modes
+        ):
+            norm_seg = self._normalize_segmentation_mode(
+                cmd.installation.camera_segmentation_modes[hw_id]
+            )
+            self._camera_segmentation_modes[hw_id] = norm_seg
+            self._last_server_segmentation_modes[hw_id] = norm_seg
+            if hasattr(self.live_stream, "set_segmentation_mode"):
+                self.live_stream.set_segmentation_mode(norm_seg)
+        elif hw_id in self._camera_segmentation_modes and hasattr(
+            self.live_stream, "set_segmentation_mode"
+        ):
+            self.live_stream.set_segmentation_mode(
+                self._camera_segmentation_modes[hw_id]
+            )
+
         st = "done" if success else "error"
         msg = (
             f"Live-стрим запущен для {hw_id}"
@@ -813,6 +889,18 @@ class EdgeOrchestrator:
                 self._camera_rgb[hw_id] = norm_rgb
                 self._last_server_rgb[hw_id] = norm_rgb
             self.live_stream.set_rgb_gains(r, g, b)
+
+        seg_mode_raw = payload.get("segmentation_mode")
+        if seg_mode_raw is not None:
+            norm_seg = self._normalize_segmentation_mode(seg_mode_raw)
+            if hw_id:
+                self._camera_segmentation_modes[hw_id] = norm_seg
+                self._last_server_segmentation_modes[hw_id] = norm_seg
+            if (
+                not hw_id
+                or getattr(self.live_stream, "active_camera_id", None) in (None, hw_id)
+            ) and hasattr(self.live_stream, "set_segmentation_mode"):
+                self.live_stream.set_segmentation_mode(norm_seg)
 
         from edge_agent.camera_controls import set_v4l2_control
 
@@ -1016,6 +1104,7 @@ class EdgeOrchestrator:
                     )
 
                     now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    seg_mode = self._get_camera_segmentation_mode(inst, cam_hw_id)
                     # 2. Компьютерное зрение по скорректированному кадру
                     ann_bytes, aruco_area, measurements = self.vision.process_capture(
                         prepared_raw_bytes,
@@ -1024,6 +1113,7 @@ class EdgeOrchestrator:
                         camera_name=cam_hw_id,
                         captured_at=now_str,
                         aruco_size_mm=getattr(inst, "aruco_size_mm", None),
+                        segmentation_mode=seg_mode,
                     )
 
                     # 3. Метаданные (тестовый кадр не сохраняется в БД/media сервера)
@@ -1122,6 +1212,7 @@ class EdgeOrchestrator:
                             inst, cam_hw_id, raw_bytes
                         )
                         now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        seg_mode = self._get_camera_segmentation_mode(inst, cam_hw_id)
                         ann_bytes, aruco_area, measurements = (
                             self.vision.process_capture(
                                 prepared_raw_bytes,
@@ -1130,6 +1221,7 @@ class EdgeOrchestrator:
                                 camera_name=cam_hw_id,
                                 captured_at=now_str,
                                 aruco_size_mm=getattr(inst, "aruco_size_mm", None),
+                                segmentation_mode=seg_mode,
                             )
                         )
 

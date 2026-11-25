@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ENV_FILE = REPO_ROOT / "edge_agent" / ".env"
 DEFAULT_OFFLINE_QUEUE_DIR = REPO_ROOT / "edge_agent" / "offline_queue"
 DEFAULT_MODELS_DIR = REPO_ROOT / "edge_agent" / "models"
-DEFAULT_MODEL_PATH = DEFAULT_MODELS_DIR / "lettuce_seg_v1.onnx"
+DEFAULT_MODEL_PATH = DEFAULT_MODELS_DIR / "plant_seg.onnx"
 DEFAULT_V4L_BY_ID_DIR = Path("/dev/v4l/by-id")
 DEFAULT_SYS_DIR = Path("/sys")
 
@@ -95,6 +95,11 @@ class EdgeConfig(BaseModel):
         """Имя файла модели."""
         return self.model_path.name
 
+    @property
+    def onnx_model_path(self) -> Path:
+        """Путь к ONNX-модели сегментации растений."""
+        return self.model_path
+
     def validate_api_key(self) -> None:
         """Проверяет наличие обязательного ключа API."""
         if not self.edge_api_key.strip():
@@ -155,17 +160,18 @@ def load_config(env_path: Path | str | None = None) -> EdgeConfig:
         resolve_path(queue_dir_raw) if queue_dir_raw else DEFAULT_OFFLINE_QUEUE_DIR
     )
 
+    onnx_model_path_raw = get_val("ONNX_MODEL_PATH")
     model_path_raw = get_val("MODEL_PATH")
-    if model_path_raw:
+    if onnx_model_path_raw:
+        model_path = resolve_path(onnx_model_path_raw)
+    elif model_path_raw:
         model_path = resolve_path(model_path_raw)
     else:
         models_dir_raw = get_val("MODELS_DIR")
         models_dir = (
             resolve_path(models_dir_raw) if models_dir_raw else DEFAULT_MODELS_DIR
         )
-        model_name = (
-            get_val("MODEL_NAME", "lettuce_seg_v1.onnx") or "lettuce_seg_v1.onnx"
-        )
+        model_name = get_val("MODEL_NAME", "plant_seg.onnx") or "plant_seg.onnx"
         model_path = models_dir / model_name
 
     try:
