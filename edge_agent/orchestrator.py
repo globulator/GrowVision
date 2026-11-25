@@ -4,6 +4,7 @@ import platform
 import threading
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 from edge_agent.client import EdgeAPIClient
 from edge_agent.config import EdgeConfig
@@ -57,6 +58,7 @@ class EdgeOrchestrator:
             v4l_by_id_dir=config.v4l_by_id_dir,
             client=self.client,
             mock_cameras=config.mock_cameras,
+            vision=self.vision,
         )
 
         self.running = threading.Event()
@@ -222,6 +224,11 @@ class EdgeOrchestrator:
 
             # Переводим реле активных установок в нормальное состояние (свет ВКЛ)
             self.init_installations_light()
+
+            if getattr(self.live_stream, "is_running", False) and getattr(
+                self.live_stream, "active_camera_id", None
+            ):
+                self._update_live_camera_context(self.live_stream.active_camera_id)
 
             # Если в очереди есть неотправленные пакеты, запускаем асинхронный сброс
             if queue_count > 0:
@@ -520,6 +527,107 @@ class EdgeOrchestrator:
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"Не удалось синхронизировать контролы {hw_id}: {exc}")
 
+    def _update_live_camera_context(self, hw_id: str, inst: Any = None) -> None:
+        """Передаёт в LiveStreamManager данные установки для CV-разметки."""
+        setter = getattr(self.live_stream, "set_camera_context", None)
+        if not callable(setter):
+            return
+        target_inst = inst
+        if target_inst is None:
+            for item in self.active_installations:
+                if hw_id in (getattr(item, "camera_hardware_ids", None) or []):
+                    target_inst = item
+                    break
+        if target_inst is not None:
+            setter(
+                inst_name=getattr(target_inst, "name", None),
+                culture_name=getattr(target_inst, "culture_name", None),
+                aruco_size_mm=getattr(target_inst, "aruco_size_mm", None),
+            )
+        else:
+            setter()
+
+    def _capture_via_live_snapshot(
+        self, inst: Any, cam_hw_id: str, inst_delay: float
+    ) -> bytes | None:
+        """Пробует захватить кадр через /snapshot работающего ustreamer без паузы стрима."""
+        snapshot_fn = getattr(self.live_stream, "capture_ustreamer_snapshot", None)
+        if not callable(snapshot_fn):
+            return None
+
+        # Быстрая предварительная проверка доступности ustreamer /snapshot до переключения реле
+        if getattr(self.live_stream, "process", None) is None:
+            return None
+
+        light_pin = inst.light_gpio_pin
+        flash_pin = inst.flash_gpio_pin
+        same_pins = light_pin == flash_pin
+        try:
+            if not same_pins:
+                self.hardware.set_light(light_pin, False)
+                self.hardware.set_flash(flash_pin, True)
+            else:
+                self.hardware.set_light(light_pin, True)
+
+            if self.config.hardware_mode != "mock":
+                switch_pause = (
+                    max(0.5, self.config.relay_switch_delay_ms / 1000.0)
+                    if not same_pins
+                    else 0.5
+                )
+                total_delay = switch_pause + max(0.0, float(inst_delay))
+                if total_delay > 0:
+                    time.sleep(total_delay)
+
+            snap = snapshot_fn(cam_hw_id)
+            if isinstance(snap, (bytes, bytearray)) and len(snap) > 0:
+                return bytes(snap)
+            return None
+        finally:
+            if not same_pins:
+                self.hardware.set_flash(flash_pin, False)
+            self.hardware.set_light(light_pin, True)
+
+    def _capture_frame_for_camera(
+        self, inst: Any, cam_hw_id: str, inst_delay: float, frame_idx: int
+    ) -> bytes:
+        """Захватывает кадр для камеры: через /snapshot без паузы Live или с паузой в fallback."""
+        is_live_for_cam = bool(
+            getattr(self.live_stream, "is_running", False)
+            and getattr(self.live_stream, "active_camera_id", None) == cam_hw_id
+        )
+        if is_live_for_cam:
+            snap_bytes = self._capture_via_live_snapshot(inst, cam_hw_id, inst_delay)
+            if snap_bytes is not None:
+                logger.info(
+                    f"[SNAP] Кадр {cam_hw_id} получен через ustreamer /snapshot без паузы Live"
+                )
+                return snap_bytes
+
+            self.live_stream.set_paused(True)
+            try:
+                return self.hardware.capture_frame_with_sequence(
+                    camera_hardware_id=cam_hw_id,
+                    light_pin=inst.light_gpio_pin,
+                    flash_pin=inst.flash_gpio_pin,
+                    warmup_frames=self.config.camera_warmup_frames,
+                    switch_delay_ms=self.config.relay_switch_delay_ms,
+                    capture_delay_sec=inst_delay,
+                    frame_index=frame_idx,
+                )
+            finally:
+                self.live_stream.set_paused(False)
+
+        return self.hardware.capture_frame_with_sequence(
+            camera_hardware_id=cam_hw_id,
+            light_pin=inst.light_gpio_pin,
+            flash_pin=inst.flash_gpio_pin,
+            warmup_frames=self.config.camera_warmup_frames,
+            switch_delay_ms=self.config.relay_switch_delay_ms,
+            capture_delay_sec=inst_delay,
+            frame_index=frame_idx,
+        )
+
     def _handle_start_live(self, cmd: CommandItem) -> None:
         """Обработка команды START_LIVE."""
         payload = cmd.payload or {}
@@ -537,6 +645,7 @@ class EdgeOrchestrator:
             )
             return
 
+        self._update_live_camera_context(hw_id, inst=cmd.installation)
         success = self.live_stream.start(hw_id, width=w, height=h, pixel_format=fmt)
         st = "done" if success else "error"
         msg = (
@@ -668,10 +777,6 @@ class EdgeOrchestrator:
             )
             return
 
-        is_live = self.live_stream.is_running
-        if is_live:
-            self.live_stream.set_paused(True)
-
         success_count = 0
         last_error_message = ""
         debug_log_lines: list[str] = []
@@ -693,15 +798,9 @@ class EdgeOrchestrator:
             for cam_hw_id in cam_ids:
                 try:
                     frame_idx = self._get_and_inc_frame_index(inst.id, cam_hw_id)
-                    # 1. Захват кадра с последовательностью переключения реле (light=0, flash=1, delay, capture, light=1, flash=0)
-                    raw_bytes = self.hardware.capture_frame_with_sequence(
-                        camera_hardware_id=cam_hw_id,
-                        light_pin=inst.light_gpio_pin,
-                        flash_pin=inst.flash_gpio_pin,
-                        warmup_frames=self.config.camera_warmup_frames,
-                        switch_delay_ms=self.config.relay_switch_delay_ms,
-                        capture_delay_sec=inst_delay,
-                        frame_index=frame_idx,
+                    # 1. Захват кадра (через /snapshot без паузы Live, либо через реле + capture_frame_with_sequence)
+                    raw_bytes = self._capture_frame_for_camera(
+                        inst, cam_hw_id, inst_delay, frame_idx
                     )
 
                     now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -783,18 +882,12 @@ class EdgeOrchestrator:
                     debug_log_line=combined_debug_log,
                 ),
             )
-        if is_live:
-            self.live_stream.set_paused(False)
 
     def trigger_scheduled_capture(self) -> str | None:
         """Запускает разовую плановую автосъемку по всем активным установкам."""
         if not self.active_installations:
             logger.debug("Нет активных установок для плановой съемки")
             return None
-
-        is_live = self.live_stream.is_running
-        if is_live:
-            self.live_stream.set_paused(True)
 
         logger.info(
             f"Старт плановой автосъемки для {len(self.active_installations)} установок"
@@ -813,14 +906,8 @@ class EdgeOrchestrator:
                 for cam_hw_id in inst.camera_hardware_ids:
                     try:
                         frame_idx = self._get_and_inc_frame_index(inst.id, cam_hw_id)
-                        raw_bytes = self.hardware.capture_frame_with_sequence(
-                            camera_hardware_id=cam_hw_id,
-                            light_pin=inst.light_gpio_pin,
-                            flash_pin=inst.flash_gpio_pin,
-                            warmup_frames=self.config.camera_warmup_frames,
-                            switch_delay_ms=self.config.relay_switch_delay_ms,
-                            capture_delay_sec=inst_delay,
-                            frame_index=frame_idx,
+                        raw_bytes = self._capture_frame_for_camera(
+                            inst, cam_hw_id, inst_delay, frame_idx
                         )
                         now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
                         ann_bytes, aruco_area, measurements = (
@@ -869,8 +956,6 @@ class EdgeOrchestrator:
         finally:
             self.hardware.release_lock()
             self.is_scheduled_capture_running.clear()
-            if is_live:
-                self.live_stream.set_paused(False)
 
         debug_lines = []
         if self.config.test_capture_interval_sec is not None:
