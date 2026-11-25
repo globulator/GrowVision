@@ -20,6 +20,7 @@ let hasFirstLiveStatus = false;
 let streamAttached = false;
 let colorMarkerDetected = false;
 let isAutoColorCalibrating = false;
+let pendingAutoColorPreview = null;
 let isClosingFlow = false;
 let onLiveProfileSavedCallback = null;
 let liveStartedAt = 0;
@@ -610,6 +611,7 @@ export async function closeLiveModal() {
   streamAttached = false;
   colorMarkerDetected = false;
   isAutoColorCalibrating = false;
+  hideAutoColorPreview();
   currentActiveTab = null;
   currentLiveLayer = 'raw';
   initialCameraSnapshot = null;
@@ -1406,37 +1408,101 @@ function formatControlTitle(name) {
   return titles[name] || name;
 }
 
-// Выполнение автоцветокоррекции по эталонному цветовому маркеру (без сброса видео в заглушку ошибки)
+function hideAutoColorPreview() {
+  pendingAutoColorPreview = null;
+  const panel = document.getElementById('live-auto-color-preview');
+  const roiImg = document.getElementById('live-auto-color-roi-img');
+  if (panel) panel.classList.add('hidden');
+  if (roiImg) {
+    roiImg.removeAttribute('src');
+    roiImg.classList.add('hidden');
+  }
+}
+
+function showAutoColorPreview(rgb, roiBase64) {
+  pendingAutoColorPreview = {
+    rgb: {
+      r: clampRgbValue(rgb?.r, 1.0),
+      g: clampRgbValue(rgb?.g, 1.0),
+      b: clampRgbValue(rgb?.b, 1.0),
+    },
+    roiBase64: typeof roiBase64 === 'string' ? roiBase64 : '',
+  };
+
+  const panel = document.getElementById('live-auto-color-preview');
+  const roiImg = document.getElementById('live-auto-color-roi-img');
+  const rgbEl = document.getElementById('live-auto-color-rgb-values');
+  const { r, g, b } = pendingAutoColorPreview.rgb;
+
+  if (rgbEl) {
+    rgbEl.textContent = `R: ${r.toFixed(2)} · G: ${g.toFixed(2)} · B: ${b.toFixed(2)}`;
+  }
+  if (roiImg) {
+    if (pendingAutoColorPreview.roiBase64) {
+      const src = pendingAutoColorPreview.roiBase64.startsWith('data:')
+        ? pendingAutoColorPreview.roiBase64
+        : `data:image/jpeg;base64,${pendingAutoColorPreview.roiBase64}`;
+      roiImg.src = src;
+      roiImg.classList.remove('hidden');
+    } else {
+      roiImg.removeAttribute('src');
+      roiImg.classList.add('hidden');
+    }
+  }
+  if (panel) {
+    panel.classList.remove('hidden');
+  }
+}
+
+// Запрос предпросмотра автоцветокоррекции (без изменения текущих настроек камеры до подтверждения)
 async function handleAutoColorCalibrate() {
   if (!activeCamera || !activeCamera.id || isAutoColorCalibrating || !colorMarkerDetected) return;
   const targetCameraId = activeCamera.id;
   isAutoColorCalibrating = true;
   syncAutoColorButtonUi();
   try {
-    const res = await api.autoColorCalibrate(targetCameraId);
+    const res = await api.autoColorCalibrate(targetCameraId, { preview: true });
     if (!activeCamera || activeCamera.id !== targetCameraId) return;
-    if (res && res.rgb) {
-      draftRgb = {
-        r: clampRgbValue(res.rgb.r, 1.0),
-        g: clampRgbValue(res.rgb.g, 1.0),
-        b: clampRgbValue(res.rgb.b, 1.0),
-      };
-      applyLiveRgbFilter(draftRgb);
-      ['r', 'g', 'b'].forEach((ch) => {
-        const slider = document.getElementById(`slider-rgb-${ch}`);
-        const valSpan = document.getElementById(`val-rgb-${ch}`);
-        if (slider) slider.value = String(draftRgb[ch]);
-        if (valSpan) valSpan.textContent = draftRgb[ch].toFixed(2);
-      });
-      showToast(
-        `Автоцветокоррекция: R=${draftRgb.r.toFixed(2)}, G=${draftRgb.g.toFixed(2)}, B=${draftRgb.b.toFixed(2)}`
-      );
+    const recRgb = res && (res.recommended_rgb || res.rgb);
+    if (recRgb) {
+      showAutoColorPreview(recRgb, res.roi_image_base64 || '');
     }
   } catch (err) {
     showToast(err.message || 'Не удалось выполнить автоцветокоррекцию', 'error');
   } finally {
     isAutoColorCalibrating = false;
     syncAutoColorButtonUi();
+  }
+}
+
+// Подтверждение и применение рекомендованных коэффициентов RGB из плашки предпросмотра
+async function applyAutoColorPreview() {
+  if (!activeCamera || !activeCamera.id || !pendingAutoColorPreview) return;
+  const targetCameraId = activeCamera.id;
+  const nextRgb = { ...pendingAutoColorPreview.rgb };
+  const applyBtn = document.getElementById('btn-live-auto-color-apply');
+  if (applyBtn) applyBtn.disabled = true;
+
+  try {
+    await api.updateCameraControls(targetCameraId, { rgb: nextRgb });
+    if (!activeCamera || activeCamera.id !== targetCameraId) return;
+    draftRgb = { ...nextRgb };
+    lastRgbSyncAt = Date.now();
+    applyLiveRgbFilter(draftRgb);
+    ['r', 'g', 'b'].forEach((ch) => {
+      const slider = document.getElementById(`slider-rgb-${ch}`);
+      const valSpan = document.getElementById(`val-rgb-${ch}`);
+      if (slider) slider.value = String(draftRgb[ch]);
+      if (valSpan) valSpan.textContent = draftRgb[ch].toFixed(2);
+    });
+    hideAutoColorPreview();
+    showToast(
+      `Автоцветокоррекция: R=${draftRgb.r.toFixed(2)}, G=${draftRgb.g.toFixed(2)}, B=${draftRgb.b.toFixed(2)}`
+    );
+  } catch (err) {
+    showToast(err.message || 'Не удалось применить цветокоррекцию', 'error');
+  } finally {
+    if (applyBtn) applyBtn.disabled = false;
   }
 }
 
@@ -1544,6 +1610,15 @@ export function initCameras() {
   const unsavedDiscardBtn = document.getElementById('btn-live-unsaved-discard');
   const unsavedNextBtn = document.getElementById('btn-live-unsaved-next');
   const unsavedGalleryBtn = document.getElementById('btn-live-unsaved-gallery');
+  const autoColorApplyBtn = document.getElementById('btn-live-auto-color-apply');
+  const autoColorCancelBtn = document.getElementById('btn-live-auto-color-cancel');
+
+  if (autoColorApplyBtn) {
+    autoColorApplyBtn.addEventListener('click', applyAutoColorPreview);
+  }
+  if (autoColorCancelBtn) {
+    autoColorCancelBtn.addEventListener('click', hideAutoColorPreview);
+  }
 
   if (btnMenu) {
     btnMenu.addEventListener('click', openCamerasModal);
