@@ -27,9 +27,35 @@ GrowVision/
 
 ## Быстрый старт
 
-### Автоматическое развёртывание и обновление (Linux)
+### Единый мастер установки и диагностики (`./install.sh`)
 
-- **Первичная установка сервера:** `sudo bash scripts/install_server.sh`
+Для автоматической установки, диагностики окружения, генерации `.env` и `systemd`-юнитов используйте единый мастер (работает на стандартной библиотеке Python 3, без сторонних зависимостей):
+
+```bash
+# Интерактивный мастер
+./install.sh
+
+# Только диагностика системы, зависимостей и сети (без изменений на диске)
+./install.sh --check --non-interactive --profile 6
+
+# Неинтерактивная установка с генерацией systemd-юнитов
+./install.sh --non-interactive --profile 1 --topology A --output-systemd deploy/systemd
+```
+
+Поддерживаемые профили (`--profile`):
+1. `1` (`full`) — Server + Edge Agent + Telegram Bot + CLI на одной машине
+2. `2` (`server`) — только Server
+3. `3` (`edge`) — только Edge Agent (Raspberry Pi)
+4. `4` (`bot`) — только Telegram Bot
+5. `5` (`cli`) — только CLI
+6. `6` (`dev` / `mock`) — локальная разработка без железа (`HARDWARE_MODE=mock`, `MOCK_CAMERAS=true`)
+
+Схемы топологии (`--topology`):
+- **A (Монолит)**: все компоненты на одном хосте (`127.0.0.1`).
+- **B (Server+Bot / Edge)**: Server и Bot на одном хосте, Edge-агент отдельно на Raspberry Pi (LAN или NetBird/Tailscale VPN).
+- **C (Распределённая)**: Server, Edge и Bot на разных хостах (через LAN или NetBird/Tailscale VPN).
+
+Дополнительно:
 - **Универсальное обновление (сервер / RPi):** `gv-update` (или `./scripts/gv-update.sh`)
 
 ### Сервер (ручной запуск)
@@ -108,7 +134,7 @@ cp clients/telegram_bot/.env.example clients/telegram_bot/.env
 - `TELEGRAM_BOT_TOKEN` — токен бота от `@BotFather`
 - `SERVER_URL` — адрес сервера (по умолчанию `http://127.0.0.1:8000`)
 - `CLIENT_API_KEY` — ключ клиента (должен совпадать с `server/.env`)
-- `TELEGRAM_PROXY` — опциональный HTTP/SOCKS5 прокси для Telegram API
+- `TELEGRAM_PROXY` — опциональный HTTP/SOCKS5 прокси для Telegram API (`http://`, `https://`, `socks5://`, `socks5h://`; схема `socks://` автоматически нормализуется в `socks5://`; внутренний клиент к Server API работает с `trust_env=False` и не зависит от системных прокси)
 - `BOT_DEBUG_LOG` — включение структурированного JSONL-журнала событий (true/false)
 
 #### 2. Запуск Telegram-бота

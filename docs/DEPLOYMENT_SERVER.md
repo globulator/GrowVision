@@ -2,6 +2,16 @@
 
 В данном руководстве описан процесс установки, настройки и непрерывной работы бэкенд-сервера и Telegram-бота системы **GrowVision** на сервере или управляющем ПК под управлением Linux (Ubuntu 22.04/24.04 LTS или Debian 12 Bookworm).
 
+> [!TIP]
+> Для автоматической установки, проверки зависимостей, генерации секретных ключей `.env` и подготовки `systemd`-юнитов можно использовать единый мастер [`install.sh`](../install.sh):
+> ```bash
+> # Профиль 2 (Server only) или 1 (Full), топология A/B/C:
+> ./install.sh --profile 2 --topology B --output-systemd deploy/systemd
+> # Только диагностика без изменений:
+> ./install.sh --check --non-interactive --profile 2
+> ```
+> Мастер поддерживает 6 профилей (`full`, `server`, `edge`, `bot`, `cli`, `dev`), схемы топологии **A** (монолит `127.0.0.1`), **B** (Server+Bot на одном хосте, Edge на RPi) и **C** (все компоненты на разных хостах), а также автоматически определяет IP-адреса **NetBird** (`netbird status`) и **Tailscale** (`tailscale ip -4`).
+
 ---
 
 ## 1. Системные требования
@@ -126,6 +136,10 @@ CLIENT_API_KEY=generate_strong_secret_for_clients_here
 
 # Внешний URL для веб-плеера таймлапса (отправляется по кнопке в чате)
 WEB_PUBLIC_URL=http://192.168.1.100:8000
+
+# Опциональный прокси для Telegram API (http://, https://, socks5://, socks5h://; socks:// нормализуется в socks5://)
+# Запросы бота к SERVER_URL выполняются с trust_env=False (системные HTTP_PROXY/ALL_PROXY игнорируются)
+TELEGRAM_PROXY=
 ```
 
 ---
