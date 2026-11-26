@@ -91,9 +91,66 @@ def _parse_bool_setting(raw: str | None, default: bool) -> bool:
     return default
 
 
-def _read_settings_map(db: Session, keys: list[str]) -> dict[str, str]:
+def _read_settings_map(
+    db: Session,
+    keys: list[str],
+    settings_cache: dict[str, str] | None = None,
+) -> dict[str, str]:
+    if not keys:
+        return {}
+    if settings_cache is not None:
+        return {k: settings_cache[k] for k in keys if k in settings_cache}
     rows = db.query(SystemSetting).filter(SystemSetting.key.in_(keys)).all()
     return {row.key: row.value for row in rows if row.value is not None}
+
+
+def _get_setting_value(
+    db: Session,
+    key: str,
+    settings_cache: dict[str, str] | None = None,
+) -> str | None:
+    if settings_cache is not None:
+        return settings_cache.get(key)
+    row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+    return row.value if row else None
+
+
+def load_light_settings_cache(
+    db: Session,
+    inst_ids: list[int],
+    *,
+    include_global: bool = True,
+    extra_keys: list[str] | None = None,
+) -> dict[str, str]:
+    """Загружает настройки света (глобальные и по списку установок) одним IN-запросом."""
+    keys: list[str] = []
+    if include_global:
+        keys.extend(
+            [
+                GLOBAL_LIGHT_MODE_KEY,
+                GLOBAL_FLASH_MODE_KEY,
+                GLOBAL_DAY_NIGHT_ENABLED_KEY,
+                GLOBAL_DAY_START_KEY,
+                GLOBAL_DAY_END_KEY,
+            ]
+        )
+    for inst_id in inst_ids:
+        keys.extend(
+            [
+                inst_light_state_key(inst_id),
+                inst_flash_state_key(inst_id),
+                inst_light_pins_key(inst_id),
+                inst_flash_pins_key(inst_id),
+                inst_light_color_key(inst_id),
+                inst_flash_color_key(inst_id),
+                inst_day_night_enabled_key(inst_id),
+                inst_day_start_key(inst_id),
+                inst_day_end_key(inst_id),
+            ]
+        )
+    if extra_keys:
+        keys.extend(extra_keys)
+    return _read_settings_map(db, keys)
 
 
 def _safe_hhmm(raw: str | None, fallback: str) -> str:
@@ -136,11 +193,16 @@ def normalize_light_mode(raw: str | None) -> LightMode:
     return "default"
 
 
-def get_global_light_mode(db: Session, *, is_flash: bool = False) -> LightMode:
+def get_global_light_mode(
+    db: Session,
+    *,
+    is_flash: bool = False,
+    settings_cache: dict[str, str] | None = None,
+) -> LightMode:
     """Возвращает глобальный режим света или вспышки из SystemSetting."""
     key = GLOBAL_FLASH_MODE_KEY if is_flash else GLOBAL_LIGHT_MODE_KEY
-    row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
-    return normalize_light_mode(row.value if row else None)
+    raw = _get_setting_value(db, key, settings_cache=settings_cache)
+    return normalize_light_mode(raw)
 
 
 def set_global_light_mode(
@@ -156,12 +218,16 @@ def set_global_light_mode(
 
 
 def get_global_day_night_settings(
-    db: Session, *, now_time: time | datetime | None = None
+    db: Session,
+    *,
+    now_time: time | datetime | None = None,
+    settings_cache: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Возвращает глобальные настройки цикла дня и ночи из SystemSetting."""
     by_key = _read_settings_map(
         db,
         [GLOBAL_DAY_NIGHT_ENABLED_KEY, GLOBAL_DAY_START_KEY, GLOBAL_DAY_END_KEY],
+        settings_cache=settings_cache,
     )
     enabled = _parse_bool_setting(by_key.get(GLOBAL_DAY_NIGHT_ENABLED_KEY), False)
     day_start = _safe_hhmm(by_key.get(GLOBAL_DAY_START_KEY), DEFAULT_DAY_START)
@@ -201,12 +267,13 @@ def get_installation_day_night_settings(
     inst_id: int,
     *,
     now_time: time | datetime | None = None,
+    settings_cache: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Возвращает индивидуальные настройки цикла дня и ночи установки из SystemSetting."""
     k_en = inst_day_night_enabled_key(inst_id)
     k_st = inst_day_start_key(inst_id)
     k_ed = inst_day_end_key(inst_id)
-    by_key = _read_settings_map(db, [k_en, k_st, k_ed])
+    by_key = _read_settings_map(db, [k_en, k_st, k_ed], settings_cache=settings_cache)
     enabled = _parse_bool_setting(by_key.get(k_en), False)
     day_start = _safe_hhmm(by_key.get(k_st), DEFAULT_DAY_START)
     day_end = _safe_hhmm(by_key.get(k_ed), DEFAULT_DAY_END)
@@ -242,13 +309,17 @@ def set_installation_day_night_settings(
 
 
 def get_individual_light_state(
-    db: Session, inst_id: int, *, is_flash: bool = False
+    db: Session,
+    inst_id: int,
+    *,
+    is_flash: bool = False,
+    settings_cache: dict[str, str] | None = None,
 ) -> bool:
     """Возвращает индивидуальное состояние света/вспышки установки из SystemSetting."""
     key = inst_flash_state_key(inst_id) if is_flash else inst_light_state_key(inst_id)
     default = not is_flash
-    row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
-    return _parse_bool_setting(row.value if row else None, default)
+    raw = _get_setting_value(db, key, settings_cache=settings_cache)
+    return _parse_bool_setting(raw, default)
 
 
 def set_individual_light_state(
@@ -265,13 +336,17 @@ def set_individual_light_state(
 
 
 def get_installation_channel_pins(
-    db: Session, inst: Installation, *, is_flash: bool = False
+    db: Session,
+    inst: Installation,
+    *,
+    is_flash: bool = False,
+    settings_cache: dict[str, str] | None = None,
 ) -> list[int]:
     """Возвращает список GPIO-пинов света или вспышки установки (1 или 3 пина)."""
     key = inst_flash_pins_key(inst.id) if is_flash else inst_light_pins_key(inst.id)
     fallback = int(inst.flash_gpio_pin if is_flash else inst.light_gpio_pin)
-    row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
-    return parse_pins_setting(row.value if row else None, fallback)
+    raw = _get_setting_value(db, key, settings_cache=settings_cache)
+    return parse_pins_setting(raw, fallback)
 
 
 def set_installation_channel_pins(
@@ -288,14 +363,18 @@ def set_installation_channel_pins(
 
 
 def get_installation_channel_color(
-    db: Session, inst_id: int, *, is_flash: bool = False
+    db: Session,
+    inst_id: int,
+    *,
+    is_flash: bool = False,
+    settings_cache: dict[str, str] | None = None,
 ) -> str:
     """Возвращает сохранённый HEX-цвет (#RRGGBB) света или вспышки установки."""
     key = inst_flash_color_key(inst_id) if is_flash else inst_light_color_key(inst_id)
-    row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
-    if row and row.value:
+    raw = _get_setting_value(db, key, settings_cache=settings_cache)
+    if raw:
         try:
-            return normalize_hex_color(row.value)
+            return normalize_hex_color(raw)
         except ValueError:
             pass
     return DEFAULT_COLOR_HEX
@@ -376,27 +455,47 @@ def get_installation_light_snapshot(
     global_flash_mode: LightMode | None = None,
     global_day_night: dict[str, Any] | None = None,
     now_time: time | datetime | None = None,
+    settings_cache: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Возвращает полный срез индивидуальных, глобальных и эффективных состояний установки."""
+    cache = (
+        settings_cache
+        if settings_cache is not None
+        else load_light_settings_cache(
+            db,
+            [inst.id],
+            include_global=(
+                global_light_mode is None
+                or global_flash_mode is None
+                or global_day_night is None
+            ),
+        )
+    )
     g_light = (
         global_light_mode
         if global_light_mode is not None
-        else get_global_light_mode(db, is_flash=False)
+        else get_global_light_mode(db, is_flash=False, settings_cache=cache)
     )
     g_flash = (
         global_flash_mode
         if global_flash_mode is not None
-        else get_global_light_mode(db, is_flash=True)
+        else get_global_light_mode(db, is_flash=True, settings_cache=cache)
     )
     g_dn = (
         global_day_night
         if global_day_night is not None
-        else get_global_day_night_settings(db, now_time=now_time)
+        else get_global_day_night_settings(db, now_time=now_time, settings_cache=cache)
     )
-    inst_dn = get_installation_day_night_settings(db, inst.id, now_time=now_time)
+    inst_dn = get_installation_day_night_settings(
+        db, inst.id, now_time=now_time, settings_cache=cache
+    )
 
-    ind_light = get_individual_light_state(db, inst.id, is_flash=False)
-    ind_flash = get_individual_light_state(db, inst.id, is_flash=True)
+    ind_light = get_individual_light_state(
+        db, inst.id, is_flash=False, settings_cache=cache
+    )
+    ind_flash = get_individual_light_state(
+        db, inst.id, is_flash=True, settings_cache=cache
+    )
 
     eff_light = compute_effective_main_light_state(
         global_day_night_enabled=g_dn["enabled"],
@@ -419,10 +518,18 @@ def get_installation_light_snapshot(
         light_locked = False
         light_lock_reason = None
 
-    light_pins = get_installation_channel_pins(db, inst, is_flash=False)
-    flash_pins = get_installation_channel_pins(db, inst, is_flash=True)
-    light_color = get_installation_channel_color(db, inst.id, is_flash=False)
-    flash_color = get_installation_channel_color(db, inst.id, is_flash=True)
+    light_pins = get_installation_channel_pins(
+        db, inst, is_flash=False, settings_cache=cache
+    )
+    flash_pins = get_installation_channel_pins(
+        db, inst, is_flash=True, settings_cache=cache
+    )
+    light_color = get_installation_channel_color(
+        db, inst.id, is_flash=False, settings_cache=cache
+    )
+    flash_color = get_installation_channel_color(
+        db, inst.id, is_flash=True, settings_cache=cache
+    )
 
     return {
         "individual_light_state": ind_light,
@@ -463,20 +570,29 @@ def compute_active_pin_states(
     now_time: time | datetime | None = None,
 ) -> dict[int, bool]:
     """Строит карту целевых GPIO-пинов (pin -> bool) для списка установок."""
+    cache = load_light_settings_cache(
+        db,
+        [inst.id for inst in installations],
+        include_global=(
+            global_light_mode is None
+            or global_flash_mode is None
+            or global_day_night is None
+        ),
+    )
     g_light = (
         global_light_mode
         if global_light_mode is not None
-        else get_global_light_mode(db, is_flash=False)
+        else get_global_light_mode(db, is_flash=False, settings_cache=cache)
     )
     g_flash = (
         global_flash_mode
         if global_flash_mode is not None
-        else get_global_light_mode(db, is_flash=True)
+        else get_global_light_mode(db, is_flash=True, settings_cache=cache)
     )
     g_dn = (
         global_day_night
         if global_day_night is not None
-        else get_global_day_night_settings(db, now_time=now_time)
+        else get_global_day_night_settings(db, now_time=now_time, settings_cache=cache)
     )
     pin_states: dict[int, bool] = {}
     for inst in installations:
@@ -487,6 +603,7 @@ def compute_active_pin_states(
             global_flash_mode=g_flash,
             global_day_night=g_dn,
             now_time=now_time,
+            settings_cache=cache,
         )
         for pin in snap["light_pins"]:
             pin_states[pin] = snap["light_state"]
@@ -509,9 +626,12 @@ def build_light_main_command_payload(
     now_time: time | datetime | None = None,
 ) -> tuple[dict[int, bool], dict[str, Any]]:
     """Формирует карту light-пинов и payload для команды LIGHT_MAIN."""
-    g_light = get_global_light_mode(db, is_flash=False)
-    g_flash = get_global_light_mode(db, is_flash=True)
-    g_dn = get_global_day_night_settings(db, now_time=now_time)
+    cache = load_light_settings_cache(
+        db, [item.id for item in installations], include_global=True
+    )
+    g_light = get_global_light_mode(db, is_flash=False, settings_cache=cache)
+    g_flash = get_global_light_mode(db, is_flash=True, settings_cache=cache)
+    g_dn = get_global_day_night_settings(db, now_time=now_time, settings_cache=cache)
 
     light_pin_states: dict[int, bool] = {}
     inst_states_map: dict[str, dict[str, Any]] = {}
@@ -523,6 +643,7 @@ def build_light_main_command_payload(
             global_flash_mode=g_flash,
             global_day_night=g_dn,
             now_time=now_time,
+            settings_cache=cache,
         )
         inst_states_map[str(item.id)] = {
             "light_gpio_pin": format_gpio_pins(snap["light_pins"]),

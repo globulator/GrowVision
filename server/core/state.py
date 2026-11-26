@@ -1,3 +1,4 @@
+import asyncio
 import threading
 import time
 import uuid
@@ -42,6 +43,9 @@ class InMemoryState:
         self._test_snapshots: dict[str, EphemeralSnapshot] = {}
         self._command_to_test_snapshots: dict[int, list[str]] = {}
         self._latest_test_snapshot_by_installation: dict[int, str] = {}
+        self._command_events: dict[
+            int, list[tuple[asyncio.AbstractEventLoop, asyncio.Event]]
+        ] = {}
 
     def set_pin_state(self, pin: int, state: bool) -> None:
         """Сохраняет состояние реле для GPIO-пина."""
@@ -240,6 +244,39 @@ class InMemoryState:
             self._test_snapshots.clear()
             self._command_to_test_snapshots.clear()
             self._latest_test_snapshot_by_installation.clear()
+            self._command_events.clear()
+
+    def register_command_event(self, command_id: int) -> asyncio.Event:
+        """Регистрирует asyncio.Event ожидания завершения команды для текущего event loop."""
+        loop = asyncio.get_running_loop()
+        event = asyncio.Event()
+        with self._lock:
+            self._command_events.setdefault(command_id, []).append((loop, event))
+        return event
+
+    def unregister_command_event(self, command_id: int, event: asyncio.Event) -> None:
+        """Удаляет зарегистрированный asyncio.Event ожидания команды."""
+        with self._lock:
+            entries = self._command_events.get(command_id)
+            if not entries:
+                return
+            remaining = [(lp, evt) for lp, evt in entries if evt is not event]
+            if remaining:
+                self._command_events[command_id] = remaining
+            else:
+                self._command_events.pop(command_id, None)
+
+    def notify_command_event(self, command_id: int) -> None:
+        """Потокобезопасно уведомляет все корутины, ожидающие завершения команды."""
+        with self._lock:
+            entries = list(self._command_events.get(command_id, ()))
+        for loop, event in entries:
+            if loop.is_closed():
+                continue
+            try:
+                loop.call_soon_threadsafe(event.set)
+            except RuntimeError:
+                continue
 
     def cleanup_stale_entries(self, db: Any, max_age_seconds: float = 300.0) -> int:
         """Удаляет записи app_state для команд, завершенных более max_age_seconds назад."""

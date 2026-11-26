@@ -1,6 +1,4 @@
-import asyncio
 import json
-import time
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -10,6 +8,7 @@ from sqlalchemy.orm import Session
 from server.api import edge as edge_api
 from server.api.deps import format_utc_z, get_current_user, get_db, require_role
 from server.core.area import calculate_area_display
+from server.core.commands import wait_command_result
 from server.core.light_state import (
     LightMode,
     build_light_main_command_payload,
@@ -172,41 +171,6 @@ def validate_target_and_resolve(
             detail="Установка в архиве",
         )
     return inst.id, False, active_count
-
-
-async def wait_command_result(
-    cmd_id: int, timeout_sec: float, db: Session
-) -> EdgeCommand:
-    """Ожидает завершения команды RPi с таймаутом. Сразу 504 при timeout."""
-    start_time = time.monotonic()
-    while time.monotonic() - start_time < timeout_sec:
-        await asyncio.sleep(0.05)
-        db.expire_all()
-        cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd_id).first()
-        if not cmd:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Команда не найдена",
-            )
-        if cmd.status == "timeout":
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Превышено время ожидания ответа Raspberry Pi",
-            )
-        if cmd.status in ("done", "error"):
-            return cmd
-
-    # По истечении ожидания
-    db.expire_all()
-    cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd_id).first()
-    if cmd and cmd.status == "pending":
-        cmd.status = "timeout"
-        db.commit()
-
-    raise HTTPException(
-        status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-        detail="Превышено время ожидания ответа Raspberry Pi",
-    )
 
 
 def _serialize_ephemeral_snapshot(snap: EphemeralSnapshot) -> dict[str, Any]:

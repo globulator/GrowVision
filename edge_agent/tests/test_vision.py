@@ -223,3 +223,64 @@ def test_hsv_segmentation_filters_dark_noisy_background(mock_vision: VisionPipel
     _, meas_leaf = mock_vision.segment_plants(enc_leaf.tobytes())
     assert len(meas_leaf) == 1
     assert meas_leaf[0].area_px > 2000.0
+
+
+def test_process_capture_single_imdecode_and_cached_aruco_detector():
+    """process_capture декодирует JPEG 1 раз, переиспользует ArucoDetector и не портит np.ndarray."""
+    from unittest.mock import patch
+
+    import cv2
+    import numpy as np
+
+    synth_frame = generate_synthetic_frame(0, "cam-01", overlay_aruco=True)
+    with patch.object(
+        cv2.aruco, "ArucoDetector", wraps=cv2.aruco.ArucoDetector
+    ) as detector_cls:
+        vp = VisionPipeline(mock_mode=True)
+        init_calls = detector_cls.call_count
+        assert init_calls >= 1
+
+        with patch.object(cv2, "imdecode", wraps=cv2.imdecode) as imdecode_spy:
+            ann_bytes, area, meas = vp.process_capture(synth_frame)
+            assert ann_bytes and area is not None and len(meas) >= 1
+            assert imdecode_spy.call_count == 1
+            # Повторный вызов не пересоздаёт ArucoDetector
+            assert detector_cls.call_count == init_calls
+
+        bgr = cv2.imdecode(np.frombuffer(synth_frame, np.uint8), cv2.IMREAD_COLOR)
+        assert bgr is not None
+        bgr_before = bgr.copy()
+        with patch.object(cv2, "imdecode", wraps=cv2.imdecode) as imdecode_spy:
+            a2, _ = vp.detect_aruco_details(bgr)
+            cm_c, cm_g = vp.detect_color_marker_details(bgr)
+            seg_bytes, seg_meas = vp.segment_plants(bgr)
+            assert imdecode_spy.call_count == 0
+            assert a2 is not None
+            assert cm_c is None and cm_g is None
+            assert isinstance(seg_bytes, bytes) and len(seg_meas) >= 1
+        assert np.array_equal(bgr, bgr_before)
+
+
+def test_live_stream_generate_frame_single_imdecode():
+    """LiveStreamManager._generate_frame в режиме annotated декодирует кадр ровно 1 раз."""
+    from unittest.mock import MagicMock, patch
+
+    import cv2
+
+    from edge_agent.live_stream import LiveStreamManager
+
+    vp = VisionPipeline(mock_mode=True)
+    mgr = LiveStreamManager(
+        mode="mock", mock_cameras=True, client=MagicMock(), vision=vp
+    )
+    mgr.is_running = True
+    mgr.active_camera_id = "mock-usb-cam-1"
+    mgr._resolution_verified = False
+    mgr._last_color_check_at = 0.0
+    mgr.set_rgb_gains(0.8, 1.0, 0.9)
+    mgr.set_stream_mode("annotated")
+
+    with patch.object(cv2, "imdecode", wraps=cv2.imdecode) as imdecode_spy:
+        frame = mgr._generate_frame()
+        assert frame is not None and frame.startswith(b"\xff\xd8")
+        assert imdecode_spy.call_count == 1

@@ -440,6 +440,7 @@ def edge_command_result(
                 )
 
     db.commit()
+    app_state.notify_command_event(command_id)
 
     return {"ok": True}
 

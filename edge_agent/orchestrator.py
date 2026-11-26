@@ -1473,6 +1473,97 @@ class EdgeOrchestrator:
             ),
         )
 
+    def _get_inst_capture_delay(self, inst: Any) -> float:
+        """Возвращает задержку съёмки для установки с фолбэком на глобальную настройку."""
+        delay = getattr(inst, "capture_delay_sec", None)
+        return (
+            float(delay) if delay is not None else float(self.global_capture_delay_sec)
+        )
+
+    def _process_and_dispatch_capture(
+        self,
+        inst: Any,
+        cam_hw_id: str,
+        inst_delay: float,
+        is_manual: bool,
+        is_test: bool,
+        command_id: int | None = None,
+    ) -> tuple[bool, str]:
+        """Единый пайплайн захвата кадра, CV-обработки, отправки и буферизации в offline_queue."""
+        frame_idx = self._get_and_inc_frame_index(inst.id, cam_hw_id)
+        # 1. Захват кадра (через /snapshot без паузы Live, либо через реле + capture_frame_with_sequence)
+        raw_bytes = self._capture_frame_for_camera(
+            inst, cam_hw_id, inst_delay, frame_idx
+        )
+        prepared_raw_bytes, rgb_applied = self._prepare_capture_rgb(
+            inst, cam_hw_id, raw_bytes
+        )
+
+        now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        seg_mode = self._get_camera_segmentation_mode(inst, cam_hw_id)
+        # 2. Компьютерное зрение по скорректированному кадру
+        ann_bytes, aruco_area, measurements = self.vision.process_capture(
+            prepared_raw_bytes,
+            inst_name=getattr(inst, "name", None),
+            culture_name=getattr(inst, "culture_name", None),
+            camera_name=cam_hw_id,
+            captured_at=now_str,
+            aruco_size_mm=getattr(inst, "aruco_size_mm", None),
+            segmentation_mode=seg_mode,
+        )
+
+        # 3. Метаданные (тестовый кадр не сохраняется в БД/media сервера)
+        meta = CaptureMeta(
+            installation_id=inst.id,
+            camera_hardware_id=cam_hw_id,
+            captured_at=now_str,
+            is_manual=is_manual,
+            is_test=is_test,
+            aruco_area_px=aruco_area,
+            command_id=command_id,
+            rgb_applied=rgb_applied,
+            measurements=measurements,
+        )
+
+        # 4. Загрузка кадра на сервер
+        try:
+            status_code, resp_body = self.client.upload_capture(
+                meta,
+                prepared_raw_bytes,
+                ann_bytes,
+            )
+        except Exception as exc:  # noqa: BLE001
+            status_code, resp_body = 0, {"error": str(exc)}
+
+        if status_code in (200, 201):
+            return True, ""
+
+        if not is_test:
+            logger.warning(
+                f"Кадр для установки {inst.id} ({cam_hw_id}) не загружен ({status_code}). Сохранение в очередь."
+            )
+            save_to_queue(
+                self.config.offline_queue_dir,
+                meta,
+                prepared_raw_bytes,
+                ann_bytes,
+            )
+
+        if status_code == 0:
+            err_msg = (
+                "Ошибка сети при отправке тестового кадра"
+                if is_test
+                else "Ошибка сети при отправке кадра"
+            )
+            return False, err_msg
+
+        detail = (
+            resp_body.get("detail", f"Код сервера {status_code}")
+            if isinstance(resp_body, dict)
+            else f"Код сервера {status_code}"
+        )
+        return False, f"Ошибка загрузки кадра: {detail}"
+
     def _handle_snap(self, cmd: CommandItem) -> None:
         """Обработка команды SNAP (все камеры установки, последовательность реле, загрузка кадра перед result)."""
         snap_start = time.perf_counter()
@@ -1503,65 +1594,24 @@ class EdgeOrchestrator:
                 continue
 
             inst_captured_count = 0
-            inst_delay = (
-                inst.capture_delay_sec
-                if getattr(inst, "capture_delay_sec", None) is not None
-                else self.global_capture_delay_sec
-            )
+            inst_delay = self._get_inst_capture_delay(inst)
 
             # Снимаем ВСЕ привязанные камеры данной установки
             for cam_hw_id in cam_ids:
                 try:
-                    frame_idx = self._get_and_inc_frame_index(inst.id, cam_hw_id)
-                    # 1. Захват кадра (через /snapshot без паузы Live, либо через реле + capture_frame_with_sequence)
-                    raw_bytes = self._capture_frame_for_camera(
-                        inst, cam_hw_id, inst_delay, frame_idx
-                    )
-                    prepared_raw_bytes, rgb_applied = self._prepare_capture_rgb(
-                        inst, cam_hw_id, raw_bytes
-                    )
-
-                    now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    seg_mode = self._get_camera_segmentation_mode(inst, cam_hw_id)
-                    # 2. Компьютерное зрение по скорректированному кадру
-                    ann_bytes, aruco_area, measurements = self.vision.process_capture(
-                        prepared_raw_bytes,
-                        inst_name=getattr(inst, "name", None),
-                        culture_name=getattr(inst, "culture_name", None),
-                        camera_name=cam_hw_id,
-                        captured_at=now_str,
-                        aruco_size_mm=getattr(inst, "aruco_size_mm", None),
-                        segmentation_mode=seg_mode,
-                    )
-
-                    # 3. Метаданные (тестовый кадр не сохраняется в БД/media сервера)
-                    meta = CaptureMeta(
-                        installation_id=inst.id,
-                        camera_hardware_id=cam_hw_id,
-                        captured_at=now_str,
+                    ok, err_msg = self._process_and_dispatch_capture(
+                        inst,
+                        cam_hw_id,
+                        inst_delay,
                         is_manual=True,
                         is_test=True,
-                        aruco_area_px=aruco_area,
                         command_id=cmd.id,
-                        rgb_applied=rgb_applied,
-                        measurements=measurements,
                     )
-
-                    # 4. Загрузка кадра на сервер строго перед отправкой result
-                    status_code, resp_body = self.client.upload_capture(
-                        meta,
-                        prepared_raw_bytes,
-                        ann_bytes,
-                    )
-
-                    if status_code in (200, 201):
+                    if ok:
                         success_count += 1
                         inst_captured_count += 1
-                    elif status_code == 0:
-                        last_error_message = "Ошибка сети при отправке тестового кадра"
-                    else:
-                        detail = resp_body.get("detail", f"Код сервера {status_code}")
-                        last_error_message = f"Ошибка загрузки кадра: {detail}"
+                    elif err_msg:
+                        last_error_message = err_msg
 
                 except Exception as e:  # noqa: BLE001
                     logger.error(
@@ -1615,63 +1665,19 @@ class EdgeOrchestrator:
 
         try:
             for inst in self.active_installations:
-                inst_delay = (
-                    inst.capture_delay_sec
-                    if getattr(inst, "capture_delay_sec", None) is not None
-                    else self.global_capture_delay_sec
-                )
+                inst_delay = self._get_inst_capture_delay(inst)
                 for cam_hw_id in inst.camera_hardware_ids:
                     try:
-                        frame_idx = self._get_and_inc_frame_index(inst.id, cam_hw_id)
-                        raw_bytes = self._capture_frame_for_camera(
-                            inst, cam_hw_id, inst_delay, frame_idx
-                        )
-                        prepared_raw_bytes, rgb_applied = self._prepare_capture_rgb(
-                            inst, cam_hw_id, raw_bytes
-                        )
-                        now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-                        seg_mode = self._get_camera_segmentation_mode(inst, cam_hw_id)
-                        ann_bytes, aruco_area, measurements = (
-                            self.vision.process_capture(
-                                prepared_raw_bytes,
-                                inst_name=getattr(inst, "name", None),
-                                culture_name=getattr(inst, "culture_name", None),
-                                camera_name=cam_hw_id,
-                                captured_at=now_str,
-                                aruco_size_mm=getattr(inst, "aruco_size_mm", None),
-                                segmentation_mode=seg_mode,
-                            )
-                        )
-
-                        meta = CaptureMeta(
-                            installation_id=inst.id,
-                            camera_hardware_id=cam_hw_id,
-                            captured_at=now_str,
+                        ok, _ = self._process_and_dispatch_capture(
+                            inst,
+                            cam_hw_id,
+                            inst_delay,
                             is_manual=False,
-                            aruco_area_px=aruco_area,
+                            is_test=False,
                             command_id=None,
-                            rgb_applied=rgb_applied,
-                            measurements=measurements,
                         )
-
-                        status_code, _ = self.client.upload_capture(
-                            meta,
-                            prepared_raw_bytes,
-                            ann_bytes,
-                        )
-
-                        if status_code in (200, 201):
+                        if ok:
                             total_captured += 1
-                        else:
-                            logger.warning(
-                                f"Плановый кадр для установки {inst.id} не загружен ({status_code}). Сохранение в очередь."
-                            )
-                            save_to_queue(
-                                self.config.offline_queue_dir,
-                                meta,
-                                prepared_raw_bytes,
-                                ann_bytes,
-                            )
                     except Exception as exc:  # noqa: BLE001
                         logger.error(
                             f"Сбой при плановой съемке установки {inst.id}: {exc}"

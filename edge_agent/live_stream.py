@@ -279,20 +279,44 @@ class LiveStreamManager:
             self.vision = VisionPipeline(mock_mode=(self.mode == "mock"))
         return self.vision
 
+    @staticmethod
+    def _decode_jpeg_bgr(raw_frame: bytes) -> Any:
+        """Декодирует JPEG-байты в BGR np.ndarray один раз для переиспользования в кадре."""
+        if not raw_frame:
+            return None
+        with contextlib.suppress(Exception):
+            import cv2  # type: ignore
+            import numpy as np  # type: ignore
+
+            nparr = np.frombuffer(raw_frame, np.uint8)
+            return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        return None
+
     def _update_color_marker_status(
-        self, raw_frame: bytes, force: bool = False
-    ) -> None:
+        self,
+        raw_frame: bytes | Any,
+        force: bool = False,
+        decoded_bgr: Any = None,
+    ) -> Any:
         """Периодически проверяет наличие цветового маркера на исходном кадре без RGB-искажений."""
         now_m = time.monotonic()
         if not force and (now_m - self._last_color_check_at) < 0.4:
-            return
+            return decoded_bgr
         self._last_color_check_at = now_m
+        if decoded_bgr is None:
+            decoded_bgr = (
+                self._decode_jpeg_bgr(raw_frame)
+                if isinstance(raw_frame, (bytes, bytearray))
+                else raw_frame
+            )
         with contextlib.suppress(Exception):
             vision = self._get_vision()
             detector = getattr(vision, "detect_color_marker_details", None)
             if callable(detector):
-                corners, _ = detector(raw_frame)
+                cv_input = decoded_bgr if decoded_bgr is not None else raw_frame
+                corners, _ = detector(cv_input)
                 self.color_marker_detected = corners is not None
+        return decoded_bgr
 
     def get_raw_frame_for_calibration(self, camera_hardware_id: str) -> bytes | None:
         """Возвращает свежий неискажённый (без RGB-гейнов) кадр для автоцветокоррекции."""
@@ -319,15 +343,20 @@ class LiveStreamManager:
                 return self._last_raw_frame
         return None
 
-    def _annotate_frame(self, raw_frame: bytes) -> bytes:
+    def _annotate_frame(self, raw_frame: bytes, decoded_bgr: Any = None) -> bytes:
         """Применяет RGB-коррекцию до CV-анализа и накладывает разметку для режима 'Разметка'."""
         vision = self._get_vision()
 
         try:
-            corrected_frame = apply_rgb_to_jpeg_bytes(raw_frame, *self.rgb_gains)
+            if decoded_bgr is None:
+                decoded_bgr = self._decode_jpeg_bgr(raw_frame)
+            if decoded_bgr is not None:
+                cv_input: Any = apply_rgb_gains_to_bgr(decoded_bgr, *self.rgb_gains)
+            else:
+                cv_input = apply_rgb_to_jpeg_bytes(raw_frame, *self.rgb_gains)
             now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             ann_bytes, _, _ = vision.process_capture(
-                corrected_frame,
+                cv_input,
                 inst_name=self._camera_context.get("inst_name"),
                 culture_name=self._camera_context.get("culture_name"),
                 camera_name=self.active_camera_id,
@@ -609,6 +638,7 @@ class LiveStreamManager:
             return self._last_frame
 
         raw_frame: bytes | None = None
+        decoded_bgr: Any = None
 
         # 1. Попытка забрать из ustreamer /snapshot и проверить /state при его наличии
         if self.process is not None:
@@ -660,18 +690,13 @@ class LiveStreamManager:
                 self._consecutive_read_errors = 0
 
                 if not self._resolution_verified:
-                    with contextlib.suppress(Exception):
-                        import cv2
-                        import numpy as np
-
-                        nparr = np.frombuffer(raw_frame, np.uint8)
-                        img_probe = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                        if img_probe is not None:
-                            ah, aw = img_probe.shape[:2]
-                            if aw > 0 and ah > 0:
-                                self.current_width = int(aw)
-                                self.current_height = int(ah)
-                                self._resolution_verified = True
+                    decoded_bgr = self._decode_jpeg_bgr(raw_frame)
+                    if decoded_bgr is not None:
+                        ah, aw = decoded_bgr.shape[:2]
+                        if aw > 0 and ah > 0:
+                            self.current_width = int(aw)
+                            self.current_height = int(ah)
+                            self._resolution_verified = True
 
         # 2. В режиме реальных камер без активного ustreamer — реальный OpenCV V4L2 fallback (без синтетики)
         if raw_frame is None:
@@ -702,11 +727,13 @@ class LiveStreamManager:
         if raw_frame is not None:
             self._has_delivered_frame = True
             self._last_raw_frame = raw_frame
-            self._update_color_marker_status(raw_frame)
+            decoded_bgr = self._update_color_marker_status(
+                raw_frame, decoded_bgr=decoded_bgr
+            )
 
         # 3. CV-разметка (с предварительной RGB-коррекцией) в режиме 'annotated'
         if self.stream_mode == "annotated" and raw_frame is not None:
-            raw_frame = self._annotate_frame(raw_frame)
+            raw_frame = self._annotate_frame(raw_frame, decoded_bgr=decoded_bgr)
 
         self._last_frame = raw_frame
         return raw_frame

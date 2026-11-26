@@ -141,19 +141,22 @@ def test_autocalibrate_camera_success_flow(client, dev_user, test_env):
     import threading
 
     def complete_command():
-        time.sleep(0.1)
-        with session_factory() as db:
-            cmd = (
-                db.query(EdgeCommand)
-                .filter(EdgeCommand.command_type == "AUTOCALIBRATE_CAMERA")
-                .first()
-            )
-            if cmd:
-                cmd.status = "done"
-                cmd.result_message = "1920x1080 (MJPG), автофокус: поддерживается"
-                cmd.debug_log = "[CAM] probe capabilities ok"
-                cmd.completed_at = datetime.now(UTC)
-                db.commit()
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+            with session_factory() as db:
+                cmd = (
+                    db.query(EdgeCommand)
+                    .filter(EdgeCommand.command_type == "AUTOCALIBRATE_CAMERA")
+                    .first()
+                )
+                if cmd:
+                    cmd.status = "done"
+                    cmd.result_message = "1920x1080 (MJPG), автофокус: поддерживается"
+                    cmd.debug_log = "[CAM] probe capabilities ok"
+                    cmd.completed_at = datetime.now(UTC)
+                    db.commit()
+                    return
 
     t = threading.Thread(target=complete_command)
     t.start()

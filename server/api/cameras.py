@@ -10,7 +10,7 @@ import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from edge_agent.camera_controls import (
     apply_control_dependencies,
@@ -19,6 +19,7 @@ from edge_agent.camera_controls import (
 )
 from server.api import edge as edge_api
 from server.api.deps import format_utc_z, get_db, require_role
+from server.core.commands import wait_command_result
 from server.core.live_manager import live_manager
 from server.core.rgb import (
     apply_rgb_to_camera_captures,
@@ -156,7 +157,21 @@ class CameraBindRequest(BaseModel):
     installation_id: int | None = None
 
 
-def serialize_camera(cam: Camera, db: Session | None = None) -> dict[str, Any]:
+def _load_camera_profiles_map(db: Session, hardware_ids: list[str]) -> dict[str, str]:
+    """Загружает сводки профилей калибровки камер одним IN-запросом."""
+    if not hardware_ids:
+        return {}
+    prefix = "camera_profile_"
+    keys = [f"{prefix}{hw_id}" for hw_id in hardware_ids]
+    rows = db.query(SystemSetting).filter(SystemSetting.key.in_(keys)).all()
+    return {row.key[len(prefix) :]: row.value for row in rows if row.value}
+
+
+def serialize_camera(
+    cam: Camera,
+    db: Session | None = None,
+    profiles_by_hw: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Формирует представление камеры по API_CONTRACT.md п. 4.3."""
     res = {
         "id": cam.id,
@@ -167,7 +182,11 @@ def serialize_camera(cam: Camera, db: Session | None = None) -> dict[str, Any]:
         "installation_id": cam.installation_id,
         "installation_name": cam.installation.name if cam.installation else None,
     }
-    if db is not None:
+    if profiles_by_hw is not None:
+        summary = profiles_by_hw.get(cam.hardware_id)
+        if summary:
+            res["calibration_summary"] = summary
+    elif db is not None:
         setting = (
             db.query(SystemSetting)
             .filter(SystemSetting.key == f"camera_profile_{cam.hardware_id}")
@@ -200,36 +219,7 @@ async def scan_cameras(
     db.commit()
     db.refresh(cmd)
 
-    start_time = time.monotonic()
-    finished_cmd = None
-    while time.monotonic() - start_time < 10.0:
-        await asyncio.sleep(0.05)
-        db.expire_all()
-        check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
-        if not check_cmd:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Команда не найдена",
-            )
-        if check_cmd.status == "timeout":
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Превышено время ожидания ответа Raspberry Pi",
-            )
-        if check_cmd.status in ("done", "error"):
-            finished_cmd = check_cmd
-            break
-
-    if not finished_cmd:
-        db.expire_all()
-        check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
-        if check_cmd and check_cmd.status == "pending":
-            check_cmd.status = "timeout"
-            db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="Превышено время ожидания ответа Raspberry Pi",
-        )
+    finished_cmd = await wait_command_result(cmd.id, 10.0, db)
 
     resp: dict[str, Any] = {
         "command_id": finished_cmd.id,
@@ -250,11 +240,15 @@ async def scan_cameras(
     scanned_hw_ids = app_state.pop_scanned_cameras(finished_cmd.id) or []
     now = datetime.now(UTC)
 
+    # Предзагрузка всех известных камер для устранения N+1 запросов в цикле
+    existing_cameras = db.query(Camera).options(joinedload(Camera.installation)).all()
+    cameras_by_hw: dict[str, Camera] = {c.hardware_id: c for c in existing_cameras}
+
     # Регистрация новых камер и обновление существующих
     result_cameras: list[Camera] = []
     scanned_set = set(scanned_hw_ids)
     for hw_id in scanned_hw_ids:
-        cam = db.query(Camera).filter(Camera.hardware_id == hw_id).first()
+        cam = cameras_by_hw.get(hw_id)
         if not cam:
             cam = Camera(
                 hardware_id=hw_id,
@@ -265,13 +259,14 @@ async def scan_cameras(
             )
             db.add(cam)
             db.flush()
+            cameras_by_hw[hw_id] = cam
         else:
             cam.is_online = True
             cam.last_seen_at = now
         result_cameras.append(cam)
 
     # Камеры, которые не были обнаружены при сканировании, переводятся в offline
-    for other_cam in db.query(Camera).all():
+    for other_cam in existing_cameras:
         if other_cam.hardware_id not in scanned_set:
             other_cam.is_online = False
 
@@ -279,7 +274,13 @@ async def scan_cameras(
 
     # Сортировка по id asc
     result_cameras.sort(key=lambda c: c.id)
-    resp["cameras"] = [serialize_camera(c, db=db) for c in result_cameras]
+    profiles_by_hw = _load_camera_profiles_map(
+        db, [c.hardware_id for c in result_cameras]
+    )
+    resp["cameras"] = [
+        serialize_camera(c, db=db, profiles_by_hw=profiles_by_hw)
+        for c in result_cameras
+    ]
     if debug_info:
         resp["debug_info"] = debug_info
 
@@ -295,8 +296,14 @@ def list_cameras(
 
     Список всех камер с информацией о подключении и привязке к установкам.
     """
-    cameras = db.query(Camera).order_by(Camera.id.asc()).all()
-    return [serialize_camera(cam, db) for cam in cameras]
+    cameras = (
+        db.query(Camera)
+        .options(joinedload(Camera.installation))
+        .order_by(Camera.id.asc())
+        .all()
+    )
+    profiles_by_hw = _load_camera_profiles_map(db, [cam.hardware_id for cam in cameras])
+    return [serialize_camera(cam, db, profiles_by_hw=profiles_by_hw) for cam in cameras]
 
 
 @router.get("/markers/aruco.svg")
@@ -408,36 +415,7 @@ async def autocalibrate_camera(
     db.commit()
     db.refresh(cmd)
 
-    start_time = time.monotonic()
-    finished_cmd = None
-    while time.monotonic() - start_time < 10.0:
-        await asyncio.sleep(0.05)
-        db.expire_all()
-        check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
-        if not check_cmd:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Команда не найдена",
-            )
-        if check_cmd.status == "timeout":
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Превышено время ожидания ответа Raspberry Pi",
-            )
-        if check_cmd.status in ("done", "error"):
-            finished_cmd = check_cmd
-            break
-
-    if not finished_cmd:
-        db.expire_all()
-        check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
-        if check_cmd and check_cmd.status == "pending":
-            check_cmd.status = "timeout"
-            db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="Превышено время ожидания ответа Raspberry Pi",
-        )
+    finished_cmd = await wait_command_result(cmd.id, 10.0, db)
 
     if finished_cmd.status == "error":
         raise HTTPException(
@@ -1090,13 +1068,8 @@ async def get_camera_controls(
         db.commit()
         db.refresh(cmd)
 
-        start_time = time.monotonic()
-        while time.monotonic() - start_time < 8.0:
-            await asyncio.sleep(0.05)
-            db.expire_all()
-            check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
-            if not check_cmd or check_cmd.status in ("done", "error", "timeout"):
-                break
+        with contextlib.suppress(HTTPException):
+            await wait_command_result(cmd.id, 8.0, db)
 
         fmt_list_setting = (
             db.query(SystemSetting)
@@ -1403,36 +1376,7 @@ async def auto_color_calibrate_camera(
     db.commit()
     db.refresh(cmd)
 
-    start_time = time.monotonic()
-    finished_cmd = None
-    while time.monotonic() - start_time < 10.0:
-        await asyncio.sleep(0.05)
-        db.expire_all()
-        check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
-        if not check_cmd:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Команда не найдена",
-            )
-        if check_cmd.status == "timeout":
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Превышено время ожидания ответа Raspberry Pi",
-            )
-        if check_cmd.status in ("done", "error"):
-            finished_cmd = check_cmd
-            break
-
-    if not finished_cmd:
-        db.expire_all()
-        check_cmd = db.query(EdgeCommand).filter(EdgeCommand.id == cmd.id).first()
-        if check_cmd and check_cmd.status == "pending":
-            check_cmd.status = "timeout"
-            db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="Превышено время ожидания ответа Raspberry Pi",
-        )
+    finished_cmd = await wait_command_result(cmd.id, 10.0, db)
 
     if finished_cmd.status == "error":
         app_state.pop_command_data(finished_cmd.id)

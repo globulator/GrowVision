@@ -106,6 +106,33 @@ def apply_rgb_to_jpeg_bytes(
     return enc.tobytes() if ok else image_bytes
 
 
+def _is_ndarray(image_input: Any) -> bool:
+    """Проверяет, является ли вход готовым BGR-массивом numpy.ndarray."""
+    return CV2_AVAILABLE and np is not None and isinstance(image_input, np.ndarray)
+
+
+def _decode_bgr_input(image_input: bytes | Any) -> Any:
+    """Декодирует байты изображения в BGR np.ndarray или возвращает переданный np.ndarray."""
+    if not CV2_AVAILABLE or image_input is None:
+        return None
+    if _is_ndarray(image_input):
+        return image_input if image_input.size > 0 else None
+    if not image_input:
+        return None
+    nparr = np.frombuffer(image_input, np.uint8)
+    return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+
+def _ensure_jpeg_bytes(image_input: bytes | Any) -> bytes:
+    """Гарантирует возврат bytes (кодирует np.ndarray в JPEG только при фолбэке)."""
+    if isinstance(image_input, (bytes, bytearray)):
+        return bytes(image_input)
+    if _is_ndarray(image_input) and image_input.size > 0:
+        ok, enc = cv2.imencode(".jpg", image_input)
+        return enc.tobytes() if ok else b""
+    return b""
+
+
 def _build_aruco_detector_params() -> Any:
     """Создаёт настроенные DetectorParameters для детекции с камеры и экрана монитора."""
     if not CV2_AVAILABLE or not hasattr(cv2, "aruco"):
@@ -1292,6 +1319,54 @@ class VisionPipeline:
         self._model_loaded = False
         self._session_load_failed = False
         self._last_failed_path: Path | None = None
+        self._aruco_params: Any = None
+        self._aruco_dicts: dict[int, Any] = {}
+        self._aruco_detectors: dict[int, Any] = {}
+        self._aruco_dict_entries: list[tuple[str, int]] = []
+        self._aruco_module_id: int | None = None
+        self._init_aruco_detectors()
+
+    def _init_aruco_detectors(self) -> None:
+        """Предсоздаёт и кэширует DetectorParameters, словари и ArucoDetector для всех ARUCO_DICTIONARY_IDS."""
+        self._aruco_params = None
+        self._aruco_dicts = {}
+        self._aruco_detectors = {}
+        self._aruco_dict_entries = []
+        self._aruco_module_id = None
+        if not CV2_AVAILABLE or cv2 is None or not hasattr(cv2, "aruco"):
+            return
+        self._aruco_module_id = id(cv2.aruco)
+        params = _build_aruco_detector_params()
+        self._aruco_params = params
+        has_detector_cls = hasattr(cv2.aruco, "ArucoDetector")
+        for dict_name in ARUCO_DICTIONARY_IDS:
+            dict_id = getattr(cv2.aruco, dict_name, None)
+            if dict_id is None:
+                continue
+            aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
+            self._aruco_dicts[dict_id] = aruco_dict
+            self._aruco_dict_entries.append((dict_name, dict_id))
+            if has_detector_cls:
+                self._aruco_detectors[dict_id] = (
+                    cv2.aruco.ArucoDetector(aruco_dict, params)
+                    if params is not None
+                    else cv2.aruco.ArucoDetector(aruco_dict)
+                )
+
+    def _ensure_aruco_detectors(
+        self,
+    ) -> tuple[list[tuple[str, int]], dict[int, Any], dict[int, Any], Any]:
+        """Возвращает кэш детекторов ArUco, обновляя его при появлении или подмене cv2.aruco."""
+        if not CV2_AVAILABLE or cv2 is None or not hasattr(cv2, "aruco"):
+            return [], {}, {}, None
+        if id(cv2.aruco) != self._aruco_module_id:
+            self._init_aruco_detectors()
+        return (
+            self._aruco_dict_entries,
+            self._aruco_dicts,
+            self._aruco_detectors,
+            self._aruco_params,
+        )
 
     def _ensure_session(self, allow_in_mock: bool = False) -> Any:
         """Лениво загружает и кэширует ONNX InferenceSession с CPUExecutionProvider."""
@@ -1351,60 +1426,90 @@ class VisionPipeline:
             return self.model_path.name
         return "none"
 
+    @staticmethod
+    def _extract_best_aruco_corner(
+        corners: Any, ids: Any, dict_label: Any
+    ) -> tuple[float | None, Any | None]:
+        """Выбирает ArUco-маркер с наибольшей площадью, отсеивая мелкие ложные срабатывания."""
+        if ids is not None and len(corners) > 0:
+            # Выбираем маркер с наибольшей площадью, отсеивая мелкие ложные срабатывания
+            best_corners = max(
+                (c[0] for c in corners),
+                key=lambda pts: float(cv2.contourArea(pts)),
+            )
+            area = float(cv2.contourArea(best_corners))
+            if area >= 64.0:
+                logger.debug(
+                    f"ArUco маркер ({dict_label}) обнаружен, площадь: {area:.1f} px"
+                )
+                return round(area, 1), best_corners.copy()
+        return None, None
+
     def _detect_aruco_in_gray(
-        self, gray_img: Any, params: Any
+        self,
+        gray_img: Any,
+        params: Any = None,
+        detectors: dict[Any, Any] | None = None,
     ) -> tuple[float | None, Any | None]:
         """Ищет маркер ArUco по набору поддерживаемых словарей на полутоновом кадре."""
-        for dict_name in ARUCO_DICTIONARY_IDS:
-            dict_id = getattr(cv2.aruco, dict_name, None)
-            if dict_id is None:
-                continue
-            aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
-            if hasattr(cv2.aruco, "ArucoDetector"):
-                detector = (
-                    cv2.aruco.ArucoDetector(aruco_dict, params)
-                    if params is not None
-                    else cv2.aruco.ArucoDetector(aruco_dict)
+        if detectors is not None:
+            for dict_label, detector in detectors.items():
+                corners, ids, _ = detector.detectMarkers(gray_img)
+                area, best_corners = self._extract_best_aruco_corner(
+                    corners, ids, dict_label
                 )
+                if area is not None:
+                    return area, best_corners
+            return None, None
+
+        entries, dicts, cached_detectors, cached_params = self._ensure_aruco_detectors()
+        active_params = params if params is not None else cached_params
+        use_cached_detectors = params is None or params is cached_params
+
+        for dict_name, dict_id in entries:
+            detector = cached_detectors.get(dict_id) if use_cached_detectors else None
+            if detector is not None:
                 corners, ids, _ = detector.detectMarkers(gray_img)
             else:
-                corners, ids, _ = cv2.aruco.detectMarkers(
-                    gray_img,
-                    aruco_dict,
-                    parameters=params,
-                )
-
-            if ids is not None and len(corners) > 0:
-                # Выбираем маркер с наибольшей площадью, отсеивая мелкие ложные срабатывания
-                best_corners = max(
-                    (c[0] for c in corners),
-                    key=lambda pts: float(cv2.contourArea(pts)),
-                )
-                area = float(cv2.contourArea(best_corners))
-                if area >= 64.0:
-                    logger.debug(
-                        f"ArUco маркер ({dict_name}) обнаружен, площадь: {area:.1f} px"
+                aruco_dict = dicts[dict_id]
+                if hasattr(cv2.aruco, "ArucoDetector"):
+                    detector = (
+                        cv2.aruco.ArucoDetector(aruco_dict, active_params)
+                        if active_params is not None
+                        else cv2.aruco.ArucoDetector(aruco_dict)
                     )
-                    return round(area, 1), best_corners.copy()
+                    corners, ids, _ = detector.detectMarkers(gray_img)
+                else:
+                    corners, ids, _ = cv2.aruco.detectMarkers(
+                        gray_img,
+                        aruco_dict,
+                        parameters=active_params,
+                    )
+
+            area, best_corners = self._extract_best_aruco_corner(
+                corners, ids, dict_name
+            )
+            if area is not None:
+                return area, best_corners
         return None, None
 
     def detect_aruco_details(
-        self, image_bytes: bytes
+        self,
+        image_bytes: bytes | Any,
+        detectors: dict[Any, Any] | None = None,
     ) -> tuple[float | None, Any | None]:
         """Обнаруживает ArUco-маркер и возвращает (площадь_px, углы_маркера)."""
         if not CV2_AVAILABLE:
             return None, None
 
         try:
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            img = _decode_bgr_input(image_bytes)
             if img is None:
                 return None, None
 
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            params = _build_aruco_detector_params()
 
-            area, corners = self._detect_aruco_in_gray(gray, params)
+            area, corners = self._detect_aruco_in_gray(gray, detectors=detectors)
             if area is not None:
                 return area, corners
 
@@ -1412,12 +1517,12 @@ class VisionPipeline:
             blurred = cv2.GaussianBlur(gray, (3, 3), 0)
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             enhanced = clahe.apply(blurred)
-            return self._detect_aruco_in_gray(enhanced, params)
+            return self._detect_aruco_in_gray(enhanced, detectors=detectors)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Ошибка при детекции ArUco маркера: {e}")
             return None, None
 
-    def detect_aruco(self, image_bytes: bytes) -> float | None:
+    def detect_aruco(self, image_bytes: bytes | Any) -> float | None:
         """Обнаруживает ArUco-маркер и вычисляет его площадь в пикселях.
 
         Возвращает None, если маркер не найден или если cv2 недоступен.
@@ -1426,14 +1531,13 @@ class VisionPipeline:
         return area
 
     def detect_color_marker_details(
-        self, image_bytes: bytes
+        self, image_bytes: bytes | Any
     ) -> tuple[Any | None, tuple[float, float, float] | None]:
         """Обнаруживает цветовой маркер в кадре и возвращает (углы_маркера, (r, g, b))."""
-        if not CV2_AVAILABLE or not image_bytes:
+        if not CV2_AVAILABLE or image_bytes is None:
             return None, None
         try:
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            img = _decode_bgr_input(image_bytes)
             if img is None:
                 return None, None
             return detect_color_marker_in_bgr(img)
@@ -1442,14 +1546,13 @@ class VisionPipeline:
             return None, None
 
     def detect_color_marker_with_roi(
-        self, image_bytes: bytes
+        self, image_bytes: bytes | Any
     ) -> tuple[Any | None, tuple[float, float, float] | None, bytes | None]:
         """Обнаруживает цветовой маркер и возвращает (углы_маркера, (r, g, b), jpeg_roi_кроп)."""
-        if not CV2_AVAILABLE or not image_bytes:
+        if not CV2_AVAILABLE or image_bytes is None:
             return None, None, None
         try:
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            img = _decode_bgr_input(image_bytes)
             if img is None:
                 return None, None, None
             corners, gains = detect_color_marker_in_bgr(img)
@@ -1462,7 +1565,7 @@ class VisionPipeline:
             return None, None, None
 
     def calibrate_color_from_marker(
-        self, image_bytes: bytes
+        self, image_bytes: bytes | Any
     ) -> tuple[float, float, float] | None:
         """Вычисляет коэффициенты автоцветокоррекции (r, g, b) по эталонному цветовому маркеру."""
         _, gains = self.detect_color_marker_details(image_bytes)
@@ -1575,7 +1678,7 @@ class VisionPipeline:
 
     def segment_plants(
         self,
-        image_bytes: bytes,
+        image_bytes: bytes | Any,
         aruco_area_px: float | None = None,
         aruco_size_mm: float | None = None,
         inst_name: str | None = None,
@@ -1596,7 +1699,7 @@ class VisionPipeline:
             logger.error(
                 "OpenCV недоступен. Сегментация невозможна, возврат сырого кадра."
             )
-            return image_bytes, []
+            return _ensure_jpeg_bytes(image_bytes), []
 
         mode = self._normalize_segmentation_mode(segmentation_mode)
 
@@ -1646,10 +1749,9 @@ class VisionPipeline:
             )
 
         try:
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            img = _decode_bgr_input(image_bytes)
             if img is None:
-                return image_bytes, []
+                return _ensure_jpeg_bytes(image_bytes), []
 
             h, w = img.shape[:2]
 
@@ -1689,7 +1791,7 @@ class VisionPipeline:
                 aruco_corners=aruco_corners,
                 color_marker_corners=color_marker_corners,
             )
-            return (annotated_bytes or image_bytes), measurements
+            return (annotated_bytes or _ensure_jpeg_bytes(image_bytes)), measurements
 
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -1709,7 +1811,7 @@ class VisionPipeline:
 
     def _segment_plants_hsv(
         self,
-        image_bytes: bytes,
+        image_bytes: bytes | Any,
         aruco_area_px: float | None = None,
         aruco_size_mm: float | None = None,
         inst_name: str | None = None,
@@ -1721,13 +1823,12 @@ class VisionPipeline:
     ) -> tuple[bytes, list[PlantMeasurementMeta]]:
         """Сегментация растений в mock-режиме по цветовому порогу HSV."""
         if not CV2_AVAILABLE:
-            return image_bytes, []
+            return _ensure_jpeg_bytes(image_bytes), []
 
         try:
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            img = _decode_bgr_input(image_bytes)
             if img is None:
-                return image_bytes, []
+                return _ensure_jpeg_bytes(image_bytes), []
 
             h, w = img.shape[:2]
             # Адаптивный порог минимальной площади от разрешения кадра: отсекает мелкий шум теней
@@ -1765,15 +1866,15 @@ class VisionPipeline:
                 aruco_corners=aruco_corners,
                 color_marker_corners=color_marker_corners,
             )
-            return (annotated_bytes or image_bytes), measurements
+            return (annotated_bytes or _ensure_jpeg_bytes(image_bytes)), measurements
 
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Ошибка при HSV-сегментации: {exc}")
-            return image_bytes, []
+            return _ensure_jpeg_bytes(image_bytes), []
 
     def process_capture(
         self,
-        image_bytes: bytes,
+        image_bytes: bytes | Any,
         inst_name: str | None = None,
         culture_name: str | None = None,
         camera_name: str | None = None,
@@ -1782,10 +1883,13 @@ class VisionPipeline:
         segmentation_mode: str = "auto",
     ) -> tuple[bytes, float | None, list[PlantMeasurementMeta]]:
         """Полная обработка кадра: детекция ArUco, цветового маркера и сегментация растений."""
-        aruco_area, aruco_corners = self.detect_aruco_details(image_bytes)
-        color_corners, _ = self.detect_color_marker_details(image_bytes)
+        # Декодируем входной кадр ровно 1 раз и переиспользуем готовый BGR np.ndarray
+        img = _decode_bgr_input(image_bytes)
+        cv_input = img if img is not None else image_bytes
+        aruco_area, aruco_corners = self.detect_aruco_details(cv_input)
+        color_corners, _ = self.detect_color_marker_details(cv_input)
         annotated_bytes, measurements = self.segment_plants(
-            image_bytes,
+            cv_input,
             aruco_area_px=aruco_area,
             aruco_size_mm=aruco_size_mm,
             inst_name=inst_name,
@@ -1796,4 +1900,6 @@ class VisionPipeline:
             color_marker_corners=color_corners,
             segmentation_mode=segmentation_mode,
         )
+        if not annotated_bytes:
+            annotated_bytes = _ensure_jpeg_bytes(image_bytes)
         return annotated_bytes, aruco_area, measurements

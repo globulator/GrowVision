@@ -1,5 +1,7 @@
 import json
 import shutil
+from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -11,7 +13,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
 
 from server.api import edge as edge_api
 from server.api.deps import (
@@ -28,6 +31,7 @@ from server.core.light_state import (
     delete_installation_light_settings,
     get_installation_channel_pins,
     get_installation_light_snapshot,
+    load_light_settings_cache,
     set_individual_light_state,
     set_installation_channel_color,
     set_installation_channel_pins,
@@ -145,24 +149,17 @@ class InstallationPatch(BaseModel):
         return self
 
 
-def get_installation_last_capture_info(
-    inst_id: int, aruco_size_mm: float | None, db: Session
+def _extract_capture_display_info(
+    last_cap: Capture | None,
+    aruco_size_mm: float | None,
+    media_dir: Path,
 ) -> tuple[str | None, str | None]:
-    """Вычисляет last_area_display и last_frame_raw_url по последнему плановому кадру."""
-    last_cap = (
-        db.query(Capture)
-        .filter(
-            Capture.installation_id == inst_id,
-            Capture.is_manual.is_(False),
-        )
-        .order_by(Capture.captured_at.desc(), Capture.id.desc())
-        .first()
-    )
+    """Извлекает (last_area_display, last_frame_raw_url) из объекта планового кадра."""
     if not last_cap:
         return None, None
 
     last_raw_url = (
-        f"/{resolve_capture_display_rel_path(last_cap.raw_image_path, edge_api.get_media_dir())}"
+        f"/{resolve_capture_display_rel_path(last_cap.raw_image_path, media_dir)}"
         if last_cap.raw_image_path
         else None
     )
@@ -180,33 +177,73 @@ def get_installation_last_capture_info(
     return area_display, last_raw_url
 
 
+def get_installation_last_capture_info(
+    inst_id: int, aruco_size_mm: float | None, db: Session
+) -> tuple[str | None, str | None]:
+    """Вычисляет last_area_display и last_frame_raw_url по последнему плановому кадру."""
+    last_cap = (
+        db.query(Capture)
+        .options(joinedload(Capture.plant_measurements))
+        .filter(
+            Capture.installation_id == inst_id,
+            Capture.is_manual.is_(False),
+        )
+        .order_by(Capture.captured_at.desc(), Capture.id.desc())
+        .first()
+    )
+    return _extract_capture_display_info(
+        last_cap, aruco_size_mm, edge_api.get_media_dir()
+    )
+
+
 def serialize_installation(
     inst: Installation,
     role: str,
     db: Session,
     warnings: list[str] | None = None,
+    last_capture_info: tuple[str | None, str | None] | None = None,
+    frames_count: int | None = None,
+    last_any_captured_at: datetime | None = None,
+    settings_cache: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Строит проекцию карточки установки в зависимости от роли клиента."""
-    area_display, last_raw_url = get_installation_last_capture_info(
-        inst.id, inst.aruco_size_mm, db
-    )
-    frames_count = db.query(Capture).filter(Capture.installation_id == inst.id).count()
+    if last_capture_info is not None:
+        area_display, last_raw_url = last_capture_info
+    else:
+        area_display, last_raw_url = get_installation_last_capture_info(
+            inst.id, inst.aruco_size_mm, db
+        )
+
+    if frames_count is None:
+        frames_count = (
+            db.query(Capture).filter(Capture.installation_id == inst.id).count()
+        )
 
     next_capture_at = None
     if not inst.is_archived:
-        last_cap = (
-            db.query(Capture)
-            .filter(Capture.installation_id == inst.id)
-            .order_by(Capture.captured_at.desc())
-            .first()
-        )
-        last_time = last_cap.captured_at if last_cap else None
-        setting = (
-            db.query(SystemSetting)
-            .filter(SystemSetting.key == "capture_interval_hours")
-            .first()
-        )
-        interval_h = int(setting.value) if setting and setting.value else 1
+        if last_any_captured_at is not None:
+            last_time = last_any_captured_at
+        elif frames_count == 0:
+            last_time = None
+        else:
+            last_cap = (
+                db.query(Capture)
+                .filter(Capture.installation_id == inst.id)
+                .order_by(Capture.captured_at.desc())
+                .first()
+            )
+            last_time = last_cap.captured_at if last_cap else None
+
+        if settings_cache is not None:
+            interval_raw = settings_cache.get("capture_interval_hours")
+        else:
+            setting = (
+                db.query(SystemSetting)
+                .filter(SystemSetting.key == "capture_interval_hours")
+                .first()
+            )
+            interval_raw = setting.value if setting else None
+        interval_h = int(interval_raw) if interval_raw else 1
         next_dt = compute_next_capture_at(last_time, interval_h)
         next_capture_at = format_utc_z(next_dt)
 
@@ -247,7 +284,9 @@ def serialize_installation(
     )
 
     if role == "developer":
-        light_snap = get_installation_light_snapshot(db, inst)
+        light_snap = get_installation_light_snapshot(
+            db, inst, settings_cache=settings_cache
+        )
         data.update(
             {
                 "light_gpio_pin": format_gpio_pins(light_snap["light_pins"]),
@@ -284,9 +323,18 @@ def check_pin_conflicts_and_warnings(
     active_installations = query.all()
 
     inst_pins_map: list[tuple[str, set[int]]] = []
+    pins_cache = load_light_settings_cache(
+        db, [inst.id for inst in active_installations], include_global=False
+    )
     for inst in active_installations:
-        used = set(get_installation_channel_pins(db, inst, is_flash=False)) | set(
-            get_installation_channel_pins(db, inst, is_flash=True)
+        used = set(
+            get_installation_channel_pins(
+                db, inst, is_flash=False, settings_cache=pins_cache
+            )
+        ) | set(
+            get_installation_channel_pins(
+                db, inst, is_flash=True, settings_cache=pins_cache
+            )
         )
         inst_pins_map.append((inst.name, used))
 
@@ -334,10 +382,93 @@ def list_installations(
     query = db.query(Installation)
     if not include_archived:
         query = query.filter(Installation.is_archived.is_(False))
+    if client_user.role != "guest":
+        query = query.options(joinedload(Installation.cameras))
 
     installations = query.order_by(Installation.id.asc()).all()
+    if not installations:
+        return []
+
+    inst_ids = [inst.id for inst in installations]
+
+    # Агрегатная статистика по кадрам (количество и дата последнего кадра) одним запросом
+    stats_rows = (
+        db.query(
+            Capture.installation_id,
+            func.count(Capture.id),
+            func.max(Capture.captured_at),
+        )
+        .filter(Capture.installation_id.in_(inst_ids))
+        .group_by(Capture.installation_id)
+        .all()
+    )
+    counts_by_inst: dict[int, int] = {row[0]: int(row[1]) for row in stats_rows}
+    last_any_by_inst: dict[int, datetime] = {
+        row[0]: row[2] for row in stats_rows if row[2] is not None
+    }
+
+    # Последний плановый кадр на установку с замерами одним запросом
+    ranked_subq = (
+        db.query(
+            Capture.id.label("cap_id"),
+            func.row_number()
+            .over(
+                partition_by=Capture.installation_id,
+                order_by=(Capture.captured_at.desc(), Capture.id.desc()),
+            )
+            .label("rn"),
+        )
+        .filter(
+            Capture.installation_id.in_(inst_ids),
+            Capture.is_manual.is_(False),
+        )
+        .subquery()
+    )
+    last_planned_caps = (
+        db.query(Capture)
+        .options(joinedload(Capture.plant_measurements))
+        .join(ranked_subq, Capture.id == ranked_subq.c.cap_id)
+        .filter(ranked_subq.c.rn == 1)
+        .all()
+    )
+    planned_cap_by_inst: dict[int, Capture] = {
+        cap.installation_id: cap for cap in last_planned_caps
+    }
+
+    # Единая выборка SystemSetting для интервала съёмки и настроек света на время запроса
+    if client_user.role == "developer":
+        settings_cache = load_light_settings_cache(
+            db,
+            inst_ids,
+            include_global=True,
+            extra_keys=["capture_interval_hours"],
+        )
+    else:
+        interval_row = (
+            db.query(SystemSetting)
+            .filter(SystemSetting.key == "capture_interval_hours")
+            .first()
+        )
+        settings_cache = (
+            {"capture_interval_hours": interval_row.value}
+            if interval_row and interval_row.value is not None
+            else {}
+        )
+
+    media_dir = edge_api.get_media_dir()
     return [
-        serialize_installation(inst, client_user.role, db) for inst in installations
+        serialize_installation(
+            inst,
+            client_user.role,
+            db,
+            last_capture_info=_extract_capture_display_info(
+                planned_cap_by_inst.get(inst.id), inst.aruco_size_mm, media_dir
+            ),
+            frames_count=counts_by_inst.get(inst.id, 0),
+            last_any_captured_at=last_any_by_inst.get(inst.id),
+            settings_cache=settings_cache,
+        )
+        for inst in installations
     ]
 
 

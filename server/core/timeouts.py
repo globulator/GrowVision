@@ -27,6 +27,7 @@ def expire_stale_commands(db: Session, now: datetime | None = None) -> int:
     )
 
     updated_count = 0
+    timed_out_ids: list[int] = []
 
     # 1. Running команды
     running_commands = (
@@ -49,6 +50,7 @@ def expire_stale_commands(db: Session, now: datetime | None = None) -> int:
         if elapsed_sec > timeout_limit:
             cmd.status = "timeout"
             updated_count += 1
+            timed_out_ids.append(cmd.id)
 
     # 2. Pending команды (> 30 с)
     pending_commands = (
@@ -63,9 +65,12 @@ def expire_stale_commands(db: Session, now: datetime | None = None) -> int:
         if (now - cmd_created).total_seconds() > 30.0:
             cmd.status = "timeout"
             updated_count += 1
+            timed_out_ids.append(cmd.id)
 
     if updated_count > 0:
         db.commit()
+        for cid in timed_out_ids:
+            app_state.notify_command_event(cid)
 
     # Периодическая очистка app_state раз в 60 с
     global _last_state_cleanup
