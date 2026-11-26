@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from server.api.deps import (
+    ClientUser,
     format_utc_z,
     get_current_user_optional,
     get_db,
@@ -71,6 +72,37 @@ def is_raspberry_pi() -> bool:
     return importlib.util.find_spec("gpiozero") is not None
 
 
+def _get_settings_dict(db: Session) -> dict[str, Any]:
+    """Читает актуальные глобальные настройки системы из БД."""
+    rows = (
+        db.query(SystemSetting)
+        .filter(
+            SystemSetting.key.in_(
+                ["capture_interval_hours", "debug_mode", "capture_delay_sec"]
+            )
+        )
+        .all()
+    )
+    by_key = {row.key: row.value for row in rows if row.value is not None}
+
+    raw_interval = by_key.get("capture_interval_hours")
+    capture_interval_hours = (
+        int(raw_interval) if raw_interval and raw_interval.isdigit() else 1
+    )
+
+    raw_debug = by_key.get("debug_mode")
+    debug_mode = raw_debug.lower() == "true" if raw_debug else False
+
+    raw_delay = by_key.get("capture_delay_sec")
+    capture_delay_sec = float(raw_delay) if raw_delay else 1.5
+
+    return {
+        "capture_interval_hours": capture_interval_hours,
+        "debug_mode": debug_mode,
+        "capture_delay_sec": capture_delay_sec,
+    }
+
+
 @router.get("/api/system/status", response_model=dict[str, Any])
 def get_system_status(
     current_user: Annotated[User, Depends(require_role("developer"))],
@@ -98,28 +130,7 @@ def get_system_status(
             rpi_telemetry = None
 
     # 2. Настройки
-    interval_setting = (
-        db.query(SystemSetting)
-        .filter(SystemSetting.key == "capture_interval_hours")
-        .first()
-    )
-    capture_interval_hours = (
-        int(interval_setting.value)
-        if interval_setting and interval_setting.value.isdigit()
-        else 1
-    )
-
-    debug_setting = (
-        db.query(SystemSetting).filter(SystemSetting.key == "debug_mode").first()
-    )
-    debug_mode = debug_setting.value.lower() == "true" if debug_setting else False
-
-    delay_setting = (
-        db.query(SystemSetting).filter(SystemSetting.key == "capture_delay_sec").first()
-    )
-    capture_delay_sec = (
-        float(delay_setting.value) if delay_setting and delay_setting.value else 1.5
-    )
+    settings_dict = _get_settings_dict(db)
 
     hw_info = rpi_telemetry.get("hardware") if isinstance(rpi_telemetry, dict) else None
     hw_mode = (
@@ -166,54 +177,21 @@ def get_system_status(
         "rpi_last_heartbeat_at": rpi_last_heartbeat_at,
         "is_real_rpi": real_rpi,
         "cameras_summary": cameras_summary,
-        "settings": {
-            "capture_interval_hours": capture_interval_hours,
-            "debug_mode": debug_mode,
-            "capture_delay_sec": capture_delay_sec,
-        },
+        "settings": settings_dict,
         "rpi_telemetry": rpi_telemetry,
     }
 
 
 @router.get("/api/system/settings", response_model=dict[str, Any])
 def get_system_settings(
-    current_user: Annotated[
-        User, Depends(require_role("guest", "biologist", "developer"))
-    ],
+    client_user: Annotated[ClientUser, Depends(get_current_user_optional)],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
     """4.6. GET /api/system/settings.
 
     Возвращает актуальные глобальные настройки системы.
     """
-    interval_setting = (
-        db.query(SystemSetting)
-        .filter(SystemSetting.key == "capture_interval_hours")
-        .first()
-    )
-    capture_interval_hours = (
-        int(interval_setting.value)
-        if interval_setting and interval_setting.value.isdigit()
-        else 1
-    )
-
-    debug_setting = (
-        db.query(SystemSetting).filter(SystemSetting.key == "debug_mode").first()
-    )
-    debug_mode = debug_setting.value.lower() == "true" if debug_setting else False
-
-    delay_setting = (
-        db.query(SystemSetting).filter(SystemSetting.key == "capture_delay_sec").first()
-    )
-    capture_delay_sec = (
-        float(delay_setting.value) if delay_setting and delay_setting.value else 1.5
-    )
-
-    return {
-        "capture_interval_hours": capture_interval_hours,
-        "debug_mode": debug_mode,
-        "capture_delay_sec": capture_delay_sec,
-    }
+    return _get_settings_dict(db)
 
 
 @router.patch("/api/system/settings", response_model=dict[str, Any])

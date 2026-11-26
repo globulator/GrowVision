@@ -1,13 +1,14 @@
 """Иерархия и расчёт состояний основного света и вспышки (общие режимы, цикл дня/ночи и индивидуальные настройки)."""
 
 import json
-from datetime import UTC, datetime, time
+from datetime import datetime, time
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
 from server.core.state import app_state
 from server.core.system_status import is_rpi_online
+from server.db.database import upsert_system_setting
 from server.db.models import EdgeCommand, Installation, SystemSetting
 from shared.light_cycle import (
     DEFAULT_DAY_END,
@@ -77,18 +78,6 @@ def inst_day_start_key(inst_id: int) -> str:
 def inst_day_end_key(inst_id: int) -> str:
     """Ключ SystemSetting для окончания светового дня установки (HH:MM)."""
     return f"inst_day_end_{inst_id}"
-
-
-def _upsert_setting(
-    db: Session, key: str, value: str, now: datetime | None = None
-) -> None:
-    ts = now or datetime.now(UTC)
-    existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
-    if existing:
-        existing.value = value
-        existing.updated_at = ts
-    else:
-        db.add(SystemSetting(key=key, value=value, updated_at=ts))
 
 
 def _parse_bool_setting(raw: str | None, default: bool) -> bool:
@@ -163,7 +152,7 @@ def set_global_light_mode(
 ) -> None:
     """Сохраняет глобальный режим света или вспышки в SystemSetting."""
     key = GLOBAL_FLASH_MODE_KEY if is_flash else GLOBAL_LIGHT_MODE_KEY
-    _upsert_setting(db, key, normalize_light_mode(mode), now=now)
+    upsert_system_setting(db, key, normalize_light_mode(mode), now=now)
 
 
 def get_global_day_night_settings(
@@ -196,14 +185,14 @@ def set_global_day_night_settings(
     raw_end = current["day_end"] if day_end is None else day_end
     norm_start, norm_end = validate_day_night_window(raw_start, raw_end)
 
-    _upsert_setting(
+    upsert_system_setting(
         db,
         GLOBAL_DAY_NIGHT_ENABLED_KEY,
         "true" if next_enabled else "false",
         now=now,
     )
-    _upsert_setting(db, GLOBAL_DAY_START_KEY, norm_start, now=now)
-    _upsert_setting(db, GLOBAL_DAY_END_KEY, norm_end, now=now)
+    upsert_system_setting(db, GLOBAL_DAY_START_KEY, norm_start, now=now)
+    upsert_system_setting(db, GLOBAL_DAY_END_KEY, norm_end, now=now)
     return _build_day_night_dict(next_enabled, norm_start, norm_end, now_time=now_time)
 
 
@@ -241,14 +230,14 @@ def set_installation_day_night_settings(
     raw_end = current["day_end"] if day_end is None else day_end
     norm_start, norm_end = validate_day_night_window(raw_start, raw_end)
 
-    _upsert_setting(
+    upsert_system_setting(
         db,
         inst_day_night_enabled_key(inst_id),
         "true" if next_enabled else "false",
         now=now,
     )
-    _upsert_setting(db, inst_day_start_key(inst_id), norm_start, now=now)
-    _upsert_setting(db, inst_day_end_key(inst_id), norm_end, now=now)
+    upsert_system_setting(db, inst_day_start_key(inst_id), norm_start, now=now)
+    upsert_system_setting(db, inst_day_end_key(inst_id), norm_end, now=now)
     return _build_day_night_dict(next_enabled, norm_start, norm_end, now_time=now_time)
 
 
@@ -272,7 +261,7 @@ def set_individual_light_state(
 ) -> None:
     """Сохраняет индивидуальное состояние света/вспышки установки в SystemSetting."""
     key = inst_flash_state_key(inst_id) if is_flash else inst_light_state_key(inst_id)
-    _upsert_setting(db, key, "true" if state else "false", now=now)
+    upsert_system_setting(db, key, "true" if state else "false", now=now)
 
 
 def get_installation_channel_pins(
@@ -295,7 +284,7 @@ def set_installation_channel_pins(
 ) -> None:
     """Сохраняет список GPIO-пинов света или вспышки установки в SystemSetting."""
     key = inst_flash_pins_key(inst_id) if is_flash else inst_light_pins_key(inst_id)
-    _upsert_setting(db, key, serialize_pins_setting(pins), now=now)
+    upsert_system_setting(db, key, serialize_pins_setting(pins), now=now)
 
 
 def get_installation_channel_color(
@@ -323,7 +312,7 @@ def set_installation_channel_color(
     """Нормализует и сохраняет HEX-цвет (#RRGGBB) канала установки в SystemSetting."""
     norm = normalize_hex_color(color, default=DEFAULT_COLOR_HEX)
     key = inst_flash_color_key(inst_id) if is_flash else inst_light_color_key(inst_id)
-    _upsert_setting(db, key, norm, now=now)
+    upsert_system_setting(db, key, norm, now=now)
     return norm
 
 
@@ -555,6 +544,45 @@ def build_light_main_command_payload(
         "installation_states": inst_states_map,
     }
     return light_pin_states, payload
+
+
+def build_single_installation_light_payload(
+    snap: dict[str, Any] | None = None,
+    *,
+    state: bool | None = None,
+    individual_state: bool | None = None,
+    mode: LightMode | None = None,
+    pins: list[int] | None = None,
+    color: str | None = None,
+) -> dict[str, Any]:
+    """Формирует payload команды LIGHT_MAIN/LIGHT_FLASH для одной установки."""
+    resolved_state = (
+        bool(snap["light_state"]) if state is None and snap is not None else bool(state)
+    )
+    resolved_ind = (
+        bool(snap["individual_light_state"])
+        if individual_state is None and snap is not None
+        else bool(individual_state)
+    )
+    resolved_mode = (
+        snap["global_light_mode"] if mode is None and snap is not None else mode
+    )
+    resolved_pins = (
+        list(snap["light_pins"])
+        if pins is None and snap is not None
+        else list(pins or [])
+    )
+    resolved_color = (
+        snap["light_color"] if color is None and snap is not None else color
+    )
+    return {
+        "state": resolved_state,
+        "individual_state": resolved_ind,
+        "mode": resolved_mode,
+        "pins": resolved_pins,
+        "color": resolved_color,
+        "pin_states": {str(p): resolved_state for p in resolved_pins},
+    }
 
 
 def sync_day_night_phases_step(

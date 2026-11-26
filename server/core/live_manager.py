@@ -261,7 +261,7 @@ class LiveSessionManager:
         return self._sessions.get(hardware_id)
 
     def stop(self, hardware_id: str) -> None:
-        session = self._sessions.get(hardware_id)
+        session = self._sessions.pop(hardware_id, None)
         if session:
             session.is_active = False
             session.stream_url = None

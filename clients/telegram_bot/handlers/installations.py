@@ -1169,12 +1169,3 @@ async def process_capture_delay_input(
     except Exception as exc:  # noqa: BLE001
         err = format_api_error(exc)
         await message.answer(f"❌ Ошибка установки задержки:\n{err}")
-
-
-# ================== Заглушки пагинации и служебных кнопок (Критерий 1) ==================
-
-
-@router.callback_query(F.data.in_({"pag:noop", "frm:noop"}))
-async def handle_noop_callbacks(callback: CallbackQuery) -> None:
-    """Явный ответ на клики по служебным кнопкам без действия (Критерий 1)."""
-    await callback.answer()

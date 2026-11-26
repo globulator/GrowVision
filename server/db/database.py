@@ -1,6 +1,7 @@
 import contextlib
 import sqlite3
 from collections.abc import Generator
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, text
@@ -44,6 +45,21 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+def upsert_system_setting(
+    db: Session, key: str, value: str, now: datetime | None = None
+) -> None:
+    """Создаёт или обновляет запись SystemSetting по ключу."""
+    from server.db.models import SystemSetting
+
+    ts = now or datetime.now(UTC)
+    existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+    if existing:
+        existing.value = value
+        existing.updated_at = ts
+    else:
+        db.add(SystemSetting(key=key, value=value, updated_at=ts))
 
 
 def init_db(target_engine: Engine | None = None) -> None:

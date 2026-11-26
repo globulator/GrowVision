@@ -405,15 +405,18 @@ def test_scheduled_capture_buffered_to_queue_on_network_error(
 def test_orchestrator_stop_idempotent(orchestrator: EdgeOrchestrator):
     """Проверка идемпотентности метода stop(): повторные вызовы безопасны и не повторяют cleanup."""
     orchestrator.hardware.cleanup = MagicMock()
+    orchestrator.client.close = MagicMock()
     assert orchestrator._stopped is False
     orchestrator.stop()
     assert orchestrator._stopped is True
     assert orchestrator.hardware.cleanup.call_count == 1
+    assert orchestrator.client.close.call_count == 1
 
     # Повторный вызов
     orchestrator.stop()
     assert orchestrator._stopped is True
     assert orchestrator.hardware.cleanup.call_count == 1
+    assert orchestrator.client.close.call_count == 1
 
 
 def test_orchestrator_logger_no_duplicate_handlers():

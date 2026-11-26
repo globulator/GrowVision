@@ -1,10 +1,11 @@
+import json
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from server.db.models import SystemSetting
+from server.db.models import EdgeCommand, SystemSetting, User
 
 
 def is_rpi_online(db: Session) -> tuple[bool, datetime | None]:
@@ -59,3 +60,28 @@ def validate_target_value(v: Any) -> int | Literal["all"]:
     if v == "all":
         return "all"
     raise ValueError("target должен быть целым числом или 'all'")
+
+
+def build_debug_info(
+    cmd: EdgeCommand, user: User, db: Session
+) -> dict[str, Any] | None:
+    """Формирует debug_info для Developer при debug_mode=True."""
+    if user.role != "developer" or not is_debug_mode(db):
+        return None
+
+    payload_data = None
+    if cmd.payload:
+        try:
+            payload_data = json.loads(cmd.payload)
+        except (json.JSONDecodeError, TypeError):
+            payload_data = cmd.payload
+
+    return {
+        "command": {
+            "id": cmd.id,
+            "command_type": cmd.command_type,
+            "target": "all" if cmd.is_global else cmd.installation_id,
+            "payload": payload_data,
+        },
+        "log_line": cmd.debug_log or "",
+    }

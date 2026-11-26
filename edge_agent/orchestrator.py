@@ -1,5 +1,4 @@
 import base64
-import inspect
 import logging
 import os
 import platform
@@ -139,6 +138,12 @@ class EdgeOrchestrator:
             self._scheduler_thread.join(timeout=2.0)
         self.live_stream.stop()
         self.hardware.cleanup()
+        close_fn = getattr(self.client, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"Ошибка при закрытии HTTP-клиента: {exc}")
         logger.info("Edge-агент остановлен")
 
     @staticmethod
@@ -157,16 +162,6 @@ class EdgeOrchestrator:
             return DEFAULT_COLOR_HEX
         raw_color = getattr(inst, "flash_color" if is_flash else "light_color", None)
         return normalize_hex_color(raw_color, default=DEFAULT_COLOR_HEX)
-
-    @staticmethod
-    def _supports_kwarg(fn: Any, kwarg: str) -> bool:
-        try:
-            sig = inspect.signature(fn)
-            return kwarg in sig.parameters or any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-            )
-        except (TypeError, ValueError):
-            return False
 
     def init_installations_light(self) -> None:
         """Инициализирует целевые состояния света и вспышки новых установок под аппаратным мьютексом."""
@@ -195,21 +190,13 @@ class EdgeOrchestrator:
                 srv_flash = bool(getattr(inst, "flash_state", False))
 
                 l_arg: int | list[int] = l_pins[0] if len(l_pins) == 1 else l_pins
-                if self._supports_kwarg(self.hardware.set_light, "color"):
-                    self.hardware.set_light(
-                        l_arg, srv_light, source="init", color=l_color
-                    )
-                else:
-                    self.hardware.set_light(l_arg, srv_light, source="init")
+                self.hardware.set_light(l_arg, srv_light, source="init", color=l_color)
 
                 if set(f_pins) != set(l_pins):
                     f_arg: int | list[int] = f_pins[0] if len(f_pins) == 1 else f_pins
-                    if self._supports_kwarg(self.hardware.set_flash, "color"):
-                        self.hardware.set_flash(
-                            f_arg, srv_flash, source="init", color=f_color
-                        )
-                    else:
-                        self.hardware.set_flash(f_arg, srv_flash, source="init")
+                    self.hardware.set_flash(
+                        f_arg, srv_flash, source="init", color=f_color
+                    )
 
                 self._last_server_light_states[inst.id] = (
                     srv_light,
@@ -776,13 +763,9 @@ class EdgeOrchestrator:
             "duration": duration,
             "initial_states": initial_states,
         }
-        if rgb_channels and self._supports_kwarg(
-            self.hardware.test_relay, "rgb_channels"
-        ):
+        if rgb_channels:
             test_kwargs["rgb_channels"] = rgb_channels
-        if initial_colors and self._supports_kwarg(
-            self.hardware.test_relay, "initial_colors"
-        ):
+        if initial_colors:
             test_kwargs["initial_colors"] = initial_colors
 
         restored = self.hardware.test_relay(pins, **test_kwargs)
@@ -964,37 +947,28 @@ class EdgeOrchestrator:
         begin_fn = getattr(self.hardware, "begin_capture_pins", None)
         end_fn = getattr(self.hardware, "end_capture_pins", None)
         if callable(begin_fn):
-            if self._supports_kwarg(begin_fn, "light_color"):
-                begin_fn(
-                    light_arg,
-                    flash_arg,
-                    light_color=l_color,
-                    flash_color=f_color,
-                )
-            else:
-                begin_fn(light_arg, flash_arg)
+            begin_fn(
+                light_arg,
+                flash_arg,
+                light_color=l_color,
+                flash_color=f_color,
+            )
         try:
             if not same_pins:
                 self.hardware.set_light(light_arg, False, source="capture_warmup")
-                if self._supports_kwarg(self.hardware.set_flash, "color"):
-                    self.hardware.set_flash(
-                        flash_arg,
-                        True,
-                        source="capture_warmup",
-                        color=DEFAULT_COLOR_HEX,
-                    )
-                else:
-                    self.hardware.set_flash(flash_arg, True, source="capture_warmup")
+                self.hardware.set_flash(
+                    flash_arg,
+                    True,
+                    source="capture_warmup",
+                    color=DEFAULT_COLOR_HEX,
+                )
             else:
-                if self._supports_kwarg(self.hardware.set_light, "color"):
-                    self.hardware.set_light(
-                        light_arg,
-                        True,
-                        source="capture_warmup",
-                        color=DEFAULT_COLOR_HEX,
-                    )
-                else:
-                    self.hardware.set_light(light_arg, True, source="capture_warmup")
+                self.hardware.set_light(
+                    light_arg,
+                    True,
+                    source="capture_warmup",
+                    color=DEFAULT_COLOR_HEX,
+                )
 
             if self.config.hardware_mode != "mock":
                 switch_pause = (
@@ -1034,21 +1008,17 @@ class EdgeOrchestrator:
         f_color = self._extract_channel_color(inst, is_flash=True)
         light_arg: int | list[int] = l_pins[0] if len(l_pins) == 1 else l_pins
         flash_arg: int | list[int] = f_pins[0] if len(f_pins) == 1 else f_pins
-        kwargs: dict[str, Any] = {
-            "camera_hardware_id": cam_hw_id,
-            "light_pin": light_arg,
-            "flash_pin": flash_arg,
-            "warmup_frames": warmup_frames,
-            "switch_delay_ms": switch_delay_ms,
-            "capture_delay_sec": capture_delay_sec,
-            "frame_index": frame_index,
-        }
-        if self._supports_kwarg(
-            self.hardware.capture_frame_with_sequence, "light_color"
-        ):
-            kwargs["light_color"] = l_color
-            kwargs["flash_color"] = f_color
-        return self.hardware.capture_frame_with_sequence(**kwargs)
+        return self.hardware.capture_frame_with_sequence(
+            camera_hardware_id=cam_hw_id,
+            light_pin=light_arg,
+            flash_pin=flash_arg,
+            warmup_frames=warmup_frames,
+            switch_delay_ms=switch_delay_ms,
+            capture_delay_sec=capture_delay_sec,
+            frame_index=frame_index,
+            light_color=l_color,
+            flash_color=f_color,
+        )
 
     def _capture_frame_for_camera(
         self, inst: Any, cam_hw_id: str, inst_delay: float, frame_idx: int

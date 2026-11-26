@@ -43,7 +43,7 @@ class DebugLoggingMiddleware(BaseMiddleware):
                 if current_state and "password" in current_state.lower()
                 else (event.text or event.caption or "")
             )
-            debug_logger.log_event(
+            await debug_logger.alog_event(
                 "incoming_message",
                 user_id=user_id,
                 state=current_state,
@@ -52,7 +52,7 @@ class DebugLoggingMiddleware(BaseMiddleware):
             )
         elif isinstance(event, CallbackQuery):
             user_id = event.from_user.id if event.from_user else 0
-            debug_logger.log_event(
+            await debug_logger.alog_event(
                 "callback_query",
                 user_id=user_id,
                 state=current_state,
@@ -67,7 +67,7 @@ class DebugLoggingMiddleware(BaseMiddleware):
                 if current_state and "password" in current_state.lower()
                 else str(exc)
             )
-            debug_logger.log_event(
+            await debug_logger.alog_event(
                 "handler_error",
                 state=current_state,
                 error=err_text,

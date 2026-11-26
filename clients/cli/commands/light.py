@@ -1,10 +1,12 @@
-import httpx
 import typer
 
 from clients.cli.client import APIClient
 from clients.cli.formatting import console, err_console, print_debug_info
 from clients.cli.pins import normalize_hex_color
-from clients.cli.resolver import resolve_installation_target
+from clients.cli.resolver import (
+    get_bulk_command_timeout,
+    resolve_installation_target,
+)
 
 light_app = typer.Typer(
     name="light", help="Управление освещением и реле", no_args_is_help=True
@@ -22,24 +24,6 @@ def _parse_state(state_str: str) -> bool:
         f"[red]Некорректное состояние «{state_str}». Используйте on или off.[/red]"
     )
     raise typer.Exit(code=1)
-
-
-def _get_timeout(target: int | str, client: APIClient) -> float:
-    """Вычисляет таймаут по CLI_SPEC.md разд. 2.4."""
-    if target == "all":
-        # Узнаем количество активных установок
-        try:
-            items = client.request(
-                method="GET",
-                url="/api/installations",
-                context="get active count",
-                params={"include_archived": False},
-            )
-            n = len(items) if isinstance(items, list) else 1
-        except (httpx.HTTPError, SystemExit):
-            n = 1
-        return float(30 + 10 * n)
-    return 30.0
 
 
 @light_app.command(name="info")
@@ -118,7 +102,7 @@ def _execute_light_command(
     if norm_color is not None:
         payload["color"] = norm_color
 
-    timeout = _get_timeout(unit_target, client)
+    timeout = get_bulk_command_timeout(unit_target, client)
     target_str = (
         f"установки #{unit_target}"
         if isinstance(unit_target, int)
@@ -197,7 +181,7 @@ def light_test(
         include_archived=False,
     )
 
-    timeout = _get_timeout(unit_target, client)
+    timeout = get_bulk_command_timeout(unit_target, client)
     target_str = (
         f"установки #{unit_target}"
         if isinstance(unit_target, int)

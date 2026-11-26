@@ -73,10 +73,12 @@ def build_dispatcher(config: BotConfig, api_client: GrowVisionApiClient) -> Disp
 
     # Регистрация роутеров:
     # 1. bug_router (перехват заметок на * в любом состоянии)
-    # 2. Бизнес-роутеры
-    # 3. fallback_router (неизвестный текст вне ввода)
+    # 2. common.router (общие заглушки вроде pag:noop / frm:noop до бизнес-роутеров)
+    # 3. Бизнес-роутеры
+    # 4. fallback_router (неизвестный текст вне ввода)
     routers = [
         common.bug_router,
+        common.router,
         start_auth.router,
         installations.router,
         cameras.router,
@@ -235,6 +237,8 @@ async def main() -> None:
             with contextlib.suppress(asyncio.CancelledError):
                 await code_worker
         logger.info("Остановка бота и закрытие сетевых соединений...")
+        with contextlib.suppress(Exception):
+            await get_debug_logger().aflush()
         await api_client.close()
         await bot.session.close()
         logger.info("Бот успешно остановлен")

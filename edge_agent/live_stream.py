@@ -17,6 +17,24 @@ from shared.logger import get_logger
 
 logger = get_logger("edge_agent.live_stream")
 
+_DEFAULT_URLOPEN = urllib.request.urlopen
+
+
+def _open_local_ustreamer(req: urllib.request.Request, timeout: float) -> Any:
+    """Открывает локальный URL ustreamer без системного прокси.
+
+    При активном mock-патче urllib.request.urlopen делегирует вызов ему.
+    """
+    current_urlopen = urllib.request.urlopen
+    if (
+        current_urlopen is not _DEFAULT_URLOPEN
+        or getattr(current_urlopen, "__module__", None) != "urllib.request"
+    ):
+        return current_urlopen(req, timeout=timeout)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(req, timeout=timeout)
+
+
 USTREAMER_FORMAT_MAP: dict[str, str] = {
     "MJPG": "MJPEG",
     "MJPEG": "MJPEG",
@@ -186,7 +204,7 @@ class LiveStreamManager:
         """Запрашивает локальный /state у ustreamer."""
         try:
             req = urllib.request.Request(f"http://127.0.0.1:{self.current_port}/state")
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _open_local_ustreamer(req, timeout=timeout) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode("utf-8", errors="ignore"))
                     if isinstance(data, dict):
@@ -244,7 +262,7 @@ class LiveStreamManager:
             req = urllib.request.Request(
                 f"http://127.0.0.1:{self.current_port}/snapshot"
             )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _open_local_ustreamer(req, timeout=timeout) as resp:
                 if resp.status == 200:
                     data = resp.read()
                     if data and data.startswith(b"\xff\xd8"):
@@ -625,7 +643,7 @@ class LiveStreamManager:
                     req = urllib.request.Request(
                         f"http://127.0.0.1:{self.current_port}/snapshot"
                     )
-                    with urllib.request.urlopen(req, timeout=2.5) as resp:
+                    with _open_local_ustreamer(req, timeout=2.5) as resp:
                         if resp.status == 200:
                             raw_frame = resp.read()
                 if raw_frame is None:

@@ -26,7 +26,8 @@ from server.core.rgb import (
     clamp_rgb_dict,
 )
 from server.core.state import app_state
-from server.core.system_status import check_rpi_online, is_debug_mode, is_rpi_online
+from server.core.system_status import build_debug_info, check_rpi_online, is_rpi_online
+from server.db.database import upsert_system_setting
 from server.db.models import Camera, EdgeCommand, Installation, SystemSetting, User
 from shared.markers import generate_aruco_marker_svg, generate_color_marker_svg
 from shared.schemas import SegmentationMode
@@ -61,9 +62,6 @@ def _is_real_cameras_mode(db: Session) -> bool:
     if "mock_cameras" in hw:
         return not bool(hw["mock_cameras"])
     return False
-
-
-_is_rpi_hardware_mode = _is_real_cameras_mode
 
 
 def _resolve_camera_format_and_resolution(
@@ -148,16 +146,6 @@ def _resolve_camera_format_and_resolution(
             cur_res = "1280x720"
 
     return cur_fmt, cur_res
-
-
-def _upsert_setting(db: Session, key: str, value: str, now: datetime) -> None:
-    """Создаёт или обновляет SystemSetting по ключу."""
-    existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
-    if existing:
-        existing.value = value
-        existing.updated_at = now
-    else:
-        db.add(SystemSetting(key=key, value=value, updated_at=now))
 
 
 class CameraBindRequest(BaseModel):
@@ -248,17 +236,7 @@ async def scan_cameras(
         "status": finished_cmd.status,
     }
 
-    debug_info = None
-    if is_debug_mode(db):
-        debug_info = {
-            "command": {
-                "id": finished_cmd.id,
-                "command_type": finished_cmd.command_type,
-                "target": "all",
-                "payload": None,
-            },
-            "log_line": finished_cmd.debug_log or "",
-        }
+    debug_info = build_debug_info(finished_cmd, current_user, db)
 
     if finished_cmd.status == "error":
         app_state.pop_scanned_cameras(finished_cmd.id)
@@ -470,22 +448,7 @@ async def autocalibrate_camera(
     summary = finished_cmd.result_message or "Калибровка выполнена успешно"
 
     # Сохраняем сводку профиля в SystemSetting
-    setting = (
-        db.query(SystemSetting)
-        .filter(SystemSetting.key == f"camera_profile_{cam.hardware_id}")
-        .first()
-    )
-    if setting:
-        setting.value = summary
-        setting.updated_at = datetime.now(UTC)
-    else:
-        db.add(
-            SystemSetting(
-                key=f"camera_profile_{cam.hardware_id}",
-                value=summary,
-                updated_at=datetime.now(UTC),
-            )
-        )
+    upsert_system_setting(db, f"camera_profile_{cam.hardware_id}", summary)
     db.commit()
 
     return {
@@ -1214,9 +1177,9 @@ def _persist_camera_controls_profile(
     """Сохраняет настройки формата, разрешения, V4L2-контролов, RGB и segmentation_mode в профиль камеры."""
     now = datetime.now(UTC)
     if fmt:
-        _upsert_setting(db, f"camera_format_{cam.hardware_id}", fmt, now)
+        upsert_system_setting(db, f"camera_format_{cam.hardware_id}", fmt, now)
     if resolution:
-        _upsert_setting(db, f"camera_res_{cam.hardware_id}", resolution, now)
+        upsert_system_setting(db, f"camera_res_{cam.hardware_id}", resolution, now)
         active_session = live_manager.get(cam.hardware_id)
         if active_session:
             active_session.resolution = resolution
@@ -1224,7 +1187,9 @@ def _persist_camera_controls_profile(
     saved_seg_mode: SegmentationMode
     if segmentation_mode is not None:
         saved_seg_mode = edge_api.normalize_segmentation_mode(segmentation_mode)
-        _upsert_setting(db, f"camera_seg_mode_{cam.hardware_id}", saved_seg_mode, now)
+        upsert_system_setting(
+            db, f"camera_seg_mode_{cam.hardware_id}", saved_seg_mode, now
+        )
         active_session = live_manager.get(cam.hardware_id)
         if active_session:
             active_session.set_segmentation_mode(saved_seg_mode)
@@ -1241,7 +1206,7 @@ def _persist_camera_controls_profile(
     clamped_rgb: dict[str, float]
     if rgb is not None:
         clamped_rgb = clamp_rgb_dict(rgb)
-        _upsert_setting(
+        upsert_system_setting(
             db, f"camera_rgb_{cam.hardware_id}", json.dumps(clamped_rgb), now
         )
     else:
@@ -1271,7 +1236,7 @@ def _persist_camera_controls_profile(
 
         if existing_controls:
             apply_control_dependencies(existing_controls, controls)
-            _upsert_setting(
+            upsert_system_setting(
                 db,
                 f"camera_ctrls_{cam.hardware_id}",
                 json.dumps(existing_controls),

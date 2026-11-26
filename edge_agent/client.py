@@ -1,6 +1,7 @@
 import contextlib
+import threading
 import time
-from typing import Any
+from typing import Any, Self
 
 import httpx
 
@@ -32,6 +33,8 @@ class EdgeAPIClient:
         self.timeout = timeout
         self.upload_timeout = upload_timeout
         self.transport = transport
+        self._client_lock = threading.Lock()
+        self._http_client: httpx.Client | None = None
         self._live_http_client: httpx.Client | None = None
 
     def _get_headers(self) -> dict[str, str]:
@@ -50,24 +53,46 @@ class EdgeAPIClient:
             trust_env=False,
         )
 
+    def _get_client(self) -> httpx.Client:
+        """Возвращает долгоживущий HTTP-клиент с Keep-Alive для основных запросов."""
+        with self._client_lock:
+            if self._http_client is None or self._http_client.is_closed:
+                self._http_client = self._create_client()
+            return self._http_client
+
+    def close(self) -> None:
+        """Закрывает долгоживущие HTTP-клиенты и освобождает пул соединений."""
+        with self._client_lock:
+            if self._http_client is not None:
+                with contextlib.suppress(Exception):
+                    self._http_client.close()
+                self._http_client = None
+            if self._live_http_client is not None:
+                with contextlib.suppress(Exception):
+                    self._live_http_client.close()
+                self._live_http_client = None
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
     def send_heartbeat(self, telemetry: HeartbeatRequest) -> HeartbeatResponse | None:
         """Отправляет телеметрию на POST /api/edge/heartbeat и получает актуальный конфиг."""
         url = "/api/edge/heartbeat"
         try:
-            with self._create_client() as client:
-                resp = client.post(
-                    url,
-                    content=telemetry.model_dump_json(),
-                    headers={"Content-Type": "application/json"},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    logger.debug(f"Heartbeat успешно доставлен: {data}")
-                    return HeartbeatResponse.model_validate(data)
-                logger.warning(
-                    f"Heartbeat вернул статус {resp.status_code}: {resp.text}"
-                )
-                return None
+            resp = self._get_client().post(
+                url,
+                content=telemetry.model_dump_json(),
+                headers={"Content-Type": "application/json"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                logger.debug(f"Heartbeat успешно доставлен: {data}")
+                return HeartbeatResponse.model_validate(data)
+            logger.warning(f"Heartbeat вернул статус {resp.status_code}: {resp.text}")
+            return None
         except httpx.RequestError as exc:
             logger.warning(f"Ошибка сети при отправке Heartbeat: {exc}")
             return None
@@ -79,15 +104,14 @@ class EdgeAPIClient:
         """Забирает одну ожидающую команду из очереди: POST /api/edge/commands/claim."""
         url = "/api/edge/commands/claim"
         try:
-            with self._create_client() as client:
-                resp = client.post(url)
-                if resp.status_code == 200:
-                    raw_items = resp.json()
-                    if isinstance(raw_items, list):
-                        return [CommandItem.model_validate(item) for item in raw_items]
-                    return []
-                logger.warning(f"Claim вернул статус {resp.status_code}: {resp.text}")
+            resp = self._get_client().post(url)
+            if resp.status_code == 200:
+                raw_items = resp.json()
+                if isinstance(raw_items, list):
+                    return [CommandItem.model_validate(item) for item in raw_items]
                 return []
+            logger.warning(f"Claim вернул статус {resp.status_code}: {resp.text}")
+            return []
         except httpx.RequestError as exc:
             logger.debug(f"Ошибка сети при опросе claim: {exc}")
             return []
@@ -111,26 +135,25 @@ class EdgeAPIClient:
 
         for attempt in range(1, max_retries + 1):
             try:
-                with self._create_client() as client:
-                    resp = client.post(
-                        url,
-                        content=payload_json,
-                        headers={"Content-Type": "application/json"},
+                resp = self._get_client().post(
+                    url,
+                    content=payload_json,
+                    headers={"Content-Type": "application/json"},
+                )
+                if resp.status_code == 200:
+                    logger.info(
+                        f"Отчет по команде #{command_id} успешно доставлен: {result.status}"
                     )
-                    if resp.status_code == 200:
-                        logger.info(
-                            f"Отчет по команде #{command_id} успешно доставлен: {result.status}"
-                        )
-                        return True
-                    if resp.status_code == 409:
-                        logger.warning(
-                            f"Команда #{command_id} уже не running (409 Conflict, возможно timeout). Отчет отброшен."
-                        )
-                        return False
+                    return True
+                if resp.status_code == 409:
                     logger.warning(
-                        f"Отправка результата #{command_id} вернула {resp.status_code}: {resp.text}"
+                        f"Команда #{command_id} уже не running (409 Conflict, возможно timeout). Отчет отброшен."
                     )
                     return False
+                logger.warning(
+                    f"Отправка результата #{command_id} вернула {resp.status_code}: {resp.text}"
+                )
+                return False
             except httpx.RequestError as exc:
                 logger.warning(
                     f"Ошибка сети при отправке результата #{command_id} (попытка {attempt}/{max_retries}): {exc}"
@@ -165,13 +188,14 @@ class EdgeAPIClient:
         }
         try:
             # Используем upload_timeout (60 с)
-            with self._create_client(timeout=self.upload_timeout) as client:
-                resp = client.post(url, data=data, files=files)
-                try:
-                    resp_json = resp.json()
-                except Exception:  # noqa: BLE001
-                    resp_json = {"raw": resp.text}
-                return resp.status_code, resp_json
+            resp = self._get_client().post(
+                url, data=data, files=files, timeout=self.upload_timeout
+            )
+            try:
+                resp_json = resp.json()
+            except Exception:  # noqa: BLE001
+                resp_json = {"raw": resp.text}
+            return resp.status_code, resp_json
         except httpx.RequestError as exc:
             logger.warning(f"Ошибка соединения при выгрузке кадра: {exc}")
             return 0, {"error": str(exc)}
@@ -181,9 +205,10 @@ class EdgeAPIClient:
 
     def _get_live_client(self) -> httpx.Client:
         """Возвращает переиспользуемый HTTP-клиент для частой отправки live-кадров."""
-        if self._live_http_client is None or self._live_http_client.is_closed:
-            self._live_http_client = self._create_client(timeout=2.0)
-        return self._live_http_client
+        with self._client_lock:
+            if self._live_http_client is None or self._live_http_client.is_closed:
+                self._live_http_client = self._create_client(timeout=2.0)
+            return self._live_http_client
 
     def send_live_frame(
         self,
@@ -222,10 +247,11 @@ class EdgeAPIClient:
             if resp.status_code == 200:
                 return resp.json()
         except Exception:  # noqa: BLE001
-            with contextlib.suppress(Exception):
-                if self._live_http_client is not None:
-                    self._live_http_client.close()
-            self._live_http_client = None
+            with self._client_lock:
+                with contextlib.suppress(Exception):
+                    if self._live_http_client is not None:
+                        self._live_http_client.close()
+                self._live_http_client = None
         return None
 
     def send_camera_controls_state(
@@ -247,11 +273,8 @@ class EdgeAPIClient:
         if current_resolution:
             payload["current_resolution"] = current_resolution
 
-        with (
-            contextlib.suppress(Exception),
-            self._create_client(timeout=5.0) as client,
-        ):
-            resp = client.post(url, json=payload)
+        with contextlib.suppress(Exception):
+            resp = self._get_client().post(url, json=payload, timeout=5.0)
             return resp.status_code == 200
         return False
 
@@ -261,11 +284,8 @@ class EdgeAPIClient:
         """Запрашивает настройки камер (RGB и segmentation_mode): GET /api/edge/camera-settings."""
         url = "/api/edge/camera-settings"
         params = {"hardware_id": hardware_id} if hardware_id else None
-        with (
-            contextlib.suppress(Exception),
-            self._create_client(timeout=5.0) as client,
-        ):
-            resp = client.get(url, params=params)
+        with contextlib.suppress(Exception):
+            resp = self._get_client().get(url, params=params, timeout=5.0)
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, dict):

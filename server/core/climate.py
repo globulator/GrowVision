@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
+from server.api.deps import format_utc_z
 from server.db.models import (
     ClimateSensorReading,
     PeripheralLog,
@@ -163,12 +164,6 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt.astimezone(UTC)
 
 
-def format_utc_iso(dt: datetime | None) -> str | None:
-    if dt is None:
-        return None
-    return _ensure_utc(dt).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def parse_utc_iso(raw: str | None) -> datetime | None:
     if not raw or not raw.strip():
         return None
@@ -208,7 +203,7 @@ def _get_positive_int(db: Session, key: str, default: int) -> int:
 def touch_esp_seen(db: Session, now: datetime | None = None) -> datetime:
     """Обновляет метку последней активности ESP в SQLite."""
     ts = _ensure_utc(now or datetime.now(UTC))
-    _set_setting(db, KEY_ESP_LAST_SEEN, format_utc_iso(ts) or "")
+    _set_setting(db, KEY_ESP_LAST_SEEN, format_utc_z(ts) or "")
     return ts
 
 
@@ -368,7 +363,7 @@ def confirm_esp_command(
 
     _set_setting(db, state_key, cmd.action)
     if cmd.action == "on":
-        _set_setting(db, start_key, format_utc_iso(ts) or "")
+        _set_setting(db, start_key, format_utc_z(ts) or "")
 
     db.add(
         PeripheralLog(
@@ -437,7 +432,7 @@ def run_climate_scheduler_step(
             )
             if should_start and not esp_queue.has_pending(device, "on"):
                 cmd = esp_queue.enqueue(device, "on", source="auto", now=ts)
-                _set_setting(db, start_key, format_utc_iso(ts) or "")
+                _set_setting(db, start_key, format_utc_z(ts) or "")
                 db_changed = True
                 enqueued.append(cmd)
 
@@ -472,16 +467,16 @@ def get_climate_summary(
 
     return {
         "esp_online": is_esp_online(db, now=ts),
-        "esp_last_seen": format_utc_iso(last_seen),
+        "esp_last_seen": format_utc_z(last_seen),
         "queue_size": esp_queue.size(),
         "mode": settings["mode"],
         "temperature": latest_sensor.temperature if latest_sensor else None,
         "humidity": latest_sensor.humidity if latest_sensor else None,
         "sensors_updated_at": (
-            format_utc_iso(latest_sensor.recorded_at) if latest_sensor else None
+            format_utc_z(latest_sensor.recorded_at) if latest_sensor else None
         ),
         "ph": latest_ph.level if latest_ph else None,
-        "ph_updated_at": (format_utc_iso(latest_ph.recorded_at) if latest_ph else None),
+        "ph_updated_at": (format_utc_z(latest_ph.recorded_at) if latest_ph else None),
         "water_state": settings["water_state"],
         "fan_state": settings["fan_state"],
         "water_pending": esp_queue.has_pending("water"),
@@ -529,20 +524,20 @@ def get_climate_history(
     return {
         "period": period,
         "temperature": [
-            {"timestamp": format_utc_iso(r.recorded_at), "value": r.temperature}
+            {"timestamp": format_utc_z(r.recorded_at), "value": r.temperature}
             for r in sensors
         ],
         "humidity": [
-            {"timestamp": format_utc_iso(r.recorded_at), "value": r.humidity}
+            {"timestamp": format_utc_z(r.recorded_at), "value": r.humidity}
             for r in sensors
         ],
         "ph": [
-            {"timestamp": format_utc_iso(r.recorded_at), "value": r.level}
+            {"timestamp": format_utc_z(r.recorded_at), "value": r.level}
             for r in ph_rows
         ],
         "water": [
             {
-                "timestamp": format_utc_iso(r.recorded_at),
+                "timestamp": format_utc_z(r.recorded_at),
                 "state": r.state,
                 "value": 1 if r.state == "on" else 0,
                 "source": r.source,
@@ -552,7 +547,7 @@ def get_climate_history(
         ],
         "fan": [
             {
-                "timestamp": format_utc_iso(r.recorded_at),
+                "timestamp": format_utc_z(r.recorded_at),
                 "state": r.state,
                 "value": 1 if r.state == "on" else 0,
                 "source": r.source,

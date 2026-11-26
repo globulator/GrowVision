@@ -1,6 +1,8 @@
 import sys
 from typing import Literal
 
+import httpx
+
 from clients.cli.client import APIClient
 from clients.cli.formatting import print_error
 
@@ -83,3 +85,21 @@ def resolve_camera_target(
         hint="Проверьте список зарегистрированных камер через команду camera list.",
     )
     sys.exit(1)
+
+
+def get_bulk_command_timeout(target: int | str, client: APIClient) -> float:
+    """Вычисляет таймаут по CLI_SPEC.md разд. 2.4."""
+    if target == "all":
+        # Узнаем количество активных установок
+        try:
+            items = client.request(
+                method="GET",
+                url="/api/installations",
+                context="get active count",
+                params={"include_archived": False},
+            )
+            n = len(items) if isinstance(items, list) else 1
+        except (httpx.HTTPError, SystemExit):
+            n = 1
+        return float(30 + 10 * n)
+    return 30.0

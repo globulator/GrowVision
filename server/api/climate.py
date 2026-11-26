@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from server.api.deps import (
     ClientUser,
+    format_utc_z,
     get_current_user_optional,
     get_db,
     require_role,
@@ -19,7 +20,6 @@ from server.core.climate import (
     confirm_esp_command,
     enqueue_manual_command,
     esp_queue,
-    format_utc_iso,
     get_climate_history,
     get_climate_summary,
     record_ph_reading,
@@ -136,7 +136,7 @@ def esp_post_sensors(
     return {
         "status": "ok",
         "id": reading.id,
-        "recorded_at": format_utc_iso(reading.recorded_at),
+        "recorded_at": format_utc_z(reading.recorded_at),
         "temperature": reading.temperature,
         "humidity": reading.humidity,
     }
@@ -265,5 +265,5 @@ def climate_add_ph(
         "status": "ok",
         "id": reading.id,
         "level": reading.level,
-        "recorded_at": format_utc_iso(reading.recorded_at),
+        "recorded_at": format_utc_z(reading.recorded_at),
     }

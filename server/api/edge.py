@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import json
 import time
@@ -36,6 +37,7 @@ from server.core.rgb import (
 )
 from server.core.state import app_state
 from server.core.timeouts import expire_stale_commands
+from server.db.database import upsert_system_setting
 from server.db.models import (
     Camera,
     Capture,
@@ -425,7 +427,9 @@ def edge_command_result(
                 and isinstance(body.data.get("rgb"), dict)
             ):
                 clamped_rgb = clamp_rgb_dict(body.data["rgb"])
-                _upsert_setting(db, f"camera_rgb_{hw_id}", json.dumps(clamped_rgb), now)
+                upsert_system_setting(
+                    db, f"camera_rgb_{hw_id}", json.dumps(clamped_rgb), now
+                )
             if "formats" in body.data or "controls" in body.data:
                 _save_camera_controls_state(
                     db=db,
@@ -438,16 +442,6 @@ def edge_command_result(
     db.commit()
 
     return {"ok": True}
-
-
-def _upsert_setting(db: Session, key: str, value: str, now: datetime) -> None:
-    """Создаёт или обновляет SystemSetting по ключу."""
-    existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
-    if existing:
-        existing.value = value
-        existing.updated_at = now
-    else:
-        db.add(SystemSetting(key=key, value=value, updated_at=now))
 
 
 def _upsert_non_empty_json_list(
@@ -466,7 +460,7 @@ def _upsert_non_empty_json_list(
             return
         # Не записываем пустой [] как кэш, чтобы не блокировать повторный опрос камеры
         return
-    _upsert_setting(db, key, json.dumps(items), now)
+    upsert_system_setting(db, key, json.dumps(items), now)
 
 
 def _save_camera_controls_state(
@@ -483,9 +477,9 @@ def _save_camera_controls_state(
     _upsert_non_empty_json_list(db, f"camera_formats_{hardware_id}", formats, ts)
     _upsert_non_empty_json_list(db, f"camera_ctrls_{hardware_id}", controls, ts)
     if current_format:
-        _upsert_setting(db, f"camera_format_{hardware_id}", current_format, ts)
+        upsert_system_setting(db, f"camera_format_{hardware_id}", current_format, ts)
     if current_resolution:
-        _upsert_setting(db, f"camera_res_{hardware_id}", current_resolution, ts)
+        upsert_system_setting(db, f"camera_res_{hardware_id}", current_resolution, ts)
 
 
 @router.post(
@@ -611,10 +605,8 @@ def _load_installation_camera_rgb(
     return rgb_map
 
 
-def _apply_saved_camera_rgb(
-    db: Session, hardware_id: str, raw_bytes: bytes
-) -> tuple[bytes, bool]:
-    """Применяет сохранённый RGB-профиль камеры к JPEG-байтам в памяти."""
+def _get_saved_camera_rgb(db: Session, hardware_id: str) -> dict[str, float] | None:
+    """Читает сохранённый не-единичный RGB-профиль камеры из БД (или None)."""
     rgb_setting = (
         db.query(SystemSetting)
         .filter(SystemSetting.key == f"camera_rgb_{hardware_id}")
@@ -624,14 +616,51 @@ def _apply_saved_camera_rgb(
         with contextlib.suppress(Exception):
             rgb_vals = clamp_rgb_dict(json.loads(rgb_setting.value))
             if not is_identity_rgb(rgb_vals):
-                filtered = apply_rgb_to_jpeg_bytes(
-                    raw_bytes,
-                    r=rgb_vals["r"],
-                    g=rgb_vals["g"],
-                    b=rgb_vals["b"],
-                )
-                return filtered, True
+                return rgb_vals
+    return None
+
+
+def _apply_rgb_values_to_bytes(
+    raw_bytes: bytes, rgb_vals: dict[str, float] | None
+) -> tuple[bytes, bool]:
+    """Применяет заранее загруженные RGB-коэффициенты к JPEG-байтам в памяти."""
+    if rgb_vals is not None:
+        with contextlib.suppress(Exception):
+            filtered = apply_rgb_to_jpeg_bytes(
+                raw_bytes,
+                r=rgb_vals["r"],
+                g=rgb_vals["g"],
+                b=rgb_vals["b"],
+            )
+            return filtered, True
     return raw_bytes, False
+
+
+def _apply_saved_camera_rgb(
+    db: Session, hardware_id: str, raw_bytes: bytes
+) -> tuple[bytes, bool]:
+    """Применяет сохранённый RGB-профиль камеры к JPEG-байтам в памяти."""
+    rgb_vals = _get_saved_camera_rgb(db, hardware_id)
+    return _apply_rgb_values_to_bytes(raw_bytes, rgb_vals)
+
+
+def _write_capture_files_sync(
+    media_dir: Path,
+    raw_path: Path,
+    raw_bytes: bytes,
+    ann_path: Path,
+    ann_bytes: bytes,
+    rgb_abs: Path | None = None,
+    rgb_vals: dict[str, float] | None = None,
+) -> None:
+    """Синхронно записывает файлы кадра и RGB-копию на диск (для запуска в asyncio.to_thread)."""
+    media_dir.mkdir(parents=True, exist_ok=True)
+    raw_path.write_bytes(raw_bytes)
+    ann_path.write_bytes(ann_bytes)
+    if rgb_abs is not None and rgb_vals is not None:
+        filtered_bytes, has_rgb = _apply_rgb_values_to_bytes(raw_bytes, rgb_vals)
+        if has_rgb:
+            rgb_abs.write_bytes(filtered_bytes)
 
 
 @router.post(
@@ -696,9 +725,13 @@ async def edge_upload_capture(
         if meta.rgb_applied:
             raw_display_bytes = raw_bytes
         else:
-            raw_display_bytes, _ = _apply_saved_camera_rgb(
-                db, camera.hardware_id, raw_bytes
-            )
+            rgb_vals = _get_saved_camera_rgb(db, camera.hardware_id)
+            if rgb_vals is not None:
+                raw_display_bytes, _ = await asyncio.to_thread(
+                    _apply_rgb_values_to_bytes, raw_bytes, rgb_vals
+                )
+            else:
+                raw_display_bytes = raw_bytes
         meas0 = next((m for m in meta.measurements if m.plant_index == 0), None)
         area_display = calculate_area_display(
             meas0.area_px if meas0 else None,
@@ -766,8 +799,8 @@ async def edge_upload_capture(
     db.flush()
 
     # Сохранение файлов на диск
-    media_dir = get_media_dir() / str(meta.installation_id)
-    media_dir.mkdir(parents=True, exist_ok=True)
+    base_media_dir = get_media_dir()
+    media_dir = base_media_dir / str(meta.installation_id)
 
     raw_filename = f"raw_{capture.id}.jpg"
     ann_filename = f"ann_{capture.id}.jpg"
@@ -775,23 +808,30 @@ async def edge_upload_capture(
     ann_path = media_dir / ann_filename
 
     raw_bytes = await raw_image.read()
-    raw_path.write_bytes(raw_bytes)
-
     ann_bytes = await annotated_image.read()
-    ann_path.write_bytes(ann_bytes)
 
     capture.raw_image_path = f"media/{meta.installation_id}/{raw_filename}"
     capture.annotated_image_path = f"media/{meta.installation_id}/{ann_filename}"
 
     # При наличии сохранённого RGB-профиля камеры (и если edge_agent ещё не применял RGB) создаём отфильтрованную копию
-    if not meta.rgb_applied:
-        filtered_bytes, has_rgb = _apply_saved_camera_rgb(
-            db, camera.hardware_id, raw_bytes
-        )
-        if has_rgb:
-            rgb_rel = get_rgb_variant_rel_path(capture.raw_image_path)
-            rgb_abs = resolve_media_abs_path(rgb_rel, get_media_dir())
-            rgb_abs.write_bytes(filtered_bytes)
+    rgb_vals = (
+        None if meta.rgb_applied else _get_saved_camera_rgb(db, camera.hardware_id)
+    )
+    rgb_abs: Path | None = None
+    if rgb_vals is not None:
+        rgb_rel = get_rgb_variant_rel_path(capture.raw_image_path)
+        rgb_abs = resolve_media_abs_path(rgb_rel, base_media_dir)
+
+    await asyncio.to_thread(
+        _write_capture_files_sync,
+        media_dir,
+        raw_path,
+        raw_bytes,
+        ann_path,
+        ann_bytes,
+        rgb_abs,
+        rgb_vals,
+    )
 
     # Сохранение замеров растений
     for m in meta.measurements:

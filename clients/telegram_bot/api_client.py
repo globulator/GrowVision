@@ -72,7 +72,7 @@ class GrowVisionApiClient:
                 timeout=timeout,
                 **kwargs,
             )
-            get_debug_logger().log_event(
+            await get_debug_logger().alog_event(
                 "api_call",
                 user_id=int(user_id) if str(user_id).isdigit() else None,
                 method=method,
@@ -81,7 +81,7 @@ class GrowVisionApiClient:
             )
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             logger.warning(f"Сетевая ошибка при запросе {method} {path}: {exc}")
-            get_debug_logger().log_event(
+            await get_debug_logger().alog_event(
                 "api_error",
                 user_id=int(user_id) if str(user_id).isdigit() else None,
                 method=method,

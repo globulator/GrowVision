@@ -23,6 +23,7 @@ from server.api.deps import (
 )
 from server.core.area import calculate_area_display
 from server.core.light_state import (
+    build_single_installation_light_payload,
     compute_active_pin_states,
     delete_installation_light_settings,
     get_installation_channel_pins,
@@ -302,10 +303,6 @@ def check_pin_conflicts_and_warnings(
     return warnings
 
 
-# Для обратной совместимости вызовов
-validate_pin_uniqueness = check_pin_conflicts_and_warnings
-
-
 def validate_name_uniqueness(
     name: str, db: Session, exclude_id: int | None = None
 ) -> None:
@@ -538,16 +535,7 @@ def patch_installation(
                 before_pins.get(p) != snap["light_state"] for p in snap["light_pins"]
             )
             if changed and is_rpi_online(db)[0]:
-                cmd_payload = {
-                    "state": snap["light_state"],
-                    "individual_state": snap["individual_light_state"],
-                    "mode": snap["global_light_mode"],
-                    "pins": snap["light_pins"],
-                    "color": snap["light_color"],
-                    "pin_states": {
-                        str(p): snap["light_state"] for p in snap["light_pins"]
-                    },
-                }
+                cmd_payload = build_single_installation_light_payload(snap)
                 db.add(
                     EdgeCommand(
                         command_type="LIGHT_MAIN",

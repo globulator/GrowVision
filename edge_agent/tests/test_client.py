@@ -169,3 +169,26 @@ def test_edge_client_trust_env_false():
     client = EdgeAPIClient("http://test", "secret-key")
     with client._create_client() as h_client:
         assert h_client.trust_env is False
+
+
+def test_edge_client_reuses_session_and_closes():
+    """Проверка переиспользования одного httpx.Client и закрытия через close() / context manager."""
+    transport = httpx.MockTransport(lambda _req: httpx.Response(200, json=[]))
+    with EdgeAPIClient("http://test", "secret-key", transport=transport) as client:
+        assert client.claim_command() == []
+        first_http_client = client._http_client
+        assert first_http_client is not None
+        assert not first_http_client.is_closed
+
+        assert client.claim_command() == []
+        assert client._http_client is first_http_client
+
+        client.send_live_frame("cam-1", b"\xff\xd8\xff\xd9")
+        live_client = client._live_http_client
+        assert live_client is not None
+        assert not live_client.is_closed
+
+    assert first_http_client.is_closed
+    assert live_client.is_closed
+    assert client._http_client is None
+    assert client._live_http_client is None

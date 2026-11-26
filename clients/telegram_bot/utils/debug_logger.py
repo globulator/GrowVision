@@ -1,8 +1,12 @@
+import asyncio
+import contextlib
 import json
 import logging
 import re
+import threading
 import time
 from collections import deque
+from collections.abc import Coroutine
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -77,15 +81,59 @@ class DebugLogger:
         self.enabled = enabled
         self._buffer: deque[dict[str, Any]] = deque(maxlen=20)
         self._bug_counter = 0
+        self._io_lock = threading.Lock()
+        self._pending_tasks: set[asyncio.Task[Any]] = set()
+        self._initialized = False
 
-        with contextlib_suppress_all():
+        loop = self._get_running_loop()
+        if loop is None:
+            with contextlib.suppress(Exception):
+                self._startup_io_sync()
+        else:
+            self._schedule_async_task(loop, asyncio.to_thread(self._startup_io_sync))
+
+    @staticmethod
+    def _get_running_loop() -> asyncio.AbstractEventLoop | None:
+        """Возвращает текущий event loop или None, если вызывается вне async-контекста."""
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+
+    def _schedule_async_task(
+        self, loop: asyncio.AbstractEventLoop, coro: Coroutine[Any, Any, Any]
+    ) -> None:
+        """Планирует фоновую корутину в event loop с отслеживанием ссылки до завершения."""
+        task = loop.create_task(coro)
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+
+    def _startup_io_sync(self) -> None:
+        """Синхронная первичная инициализация каталога логов, счётчика багов и ротация."""
+        with self._io_lock:
+            if self._initialized:
+                return
             if self.enabled:
                 self.log_dir.mkdir(parents=True, exist_ok=True)
             if self.log_dir.exists():
-                self._init_bug_counter()
-                self.cleanup_old_logs(max_days=7)
+                self._init_bug_counter_unlocked()
+                self._cleanup_old_logs_unlocked(max_days=7)
+            self._initialized = True
+
+    def _ensure_bug_counter_unlocked(self) -> None:
+        """Лениво инициализирует счётчик багов под блокировкой, если старт был отложен."""
+        if self._initialized:
+            return
+        if self.log_dir.exists():
+            self._init_bug_counter_unlocked()
+        self._initialized = True
 
     def _init_bug_counter(self) -> None:
+        """Определяет стартовый номер баг-репорта по существующим записям."""
+        with self._io_lock:
+            self._init_bug_counter_unlocked()
+
+    def _init_bug_counter_unlocked(self) -> None:
         """Определяет стартовый номер баг-репорта по существующим записям."""
         notes_file = self.log_dir / "bug_notes.jsonl"
         if not notes_file.exists():
@@ -112,6 +160,15 @@ class DebugLogger:
 
     def cleanup_old_logs(self, max_days: int = 7) -> None:
         """Удаляет JSONL-файлы логов старше max_days дней."""
+        with self._io_lock:
+            self._cleanup_old_logs_unlocked(max_days=max_days)
+
+    async def acleanup_old_logs(self, max_days: int = 7) -> None:
+        """Асинхронно удаляет JSONL-файлы логов старше max_days дней в отдельном потоке."""
+        await asyncio.to_thread(self.cleanup_old_logs, max_days)
+
+    def _cleanup_old_logs_unlocked(self, max_days: int = 7) -> None:
+        """Удаляет JSONL-файлы логов старше max_days дней (вызывать под _io_lock)."""
         now = time.time()
         max_age_sec = max_days * 86400
         if not self.log_dir.exists():
@@ -131,14 +188,14 @@ class DebugLogger:
         today_str = datetime.now(UTC).strftime("%Y-%m-%d")
         return self.log_dir / f"events_{today_str}.jsonl"
 
-    def log_event(
+    def _build_event_record(
         self,
         event_type: str,
-        user_id: int | None = None,
-        state: str | None = None,
-        **data: Any,
+        user_id: int | None,
+        state: str | None,
+        data: dict[str, Any],
     ) -> dict[str, Any]:
-        """Логирует событие в кольцевой буфер и на диск (если enabled=True)."""
+        """Маскирует данные, формирует запись события и добавляет её в буфер."""
         clean_data = mask_sensitive_data(data)
         if state and "password" in state.lower():
             if "text" in clean_data:
@@ -155,16 +212,137 @@ class DebugLogger:
         }
 
         self._buffer.append(event_record)
+        return event_record
+
+    def _write_event_sync(self, event_record: dict[str, Any]) -> None:
+        """Синхронно дописывает одно событие в суточный JSONL-файл под блокировкой."""
+        with self._io_lock:
+            self._write_event_unlocked(event_record)
+
+    def _write_event_unlocked(self, event_record: dict[str, Any]) -> None:
+        """Дописывает одно событие в суточный JSONL-файл (вызывать под _io_lock)."""
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            with open(self._get_today_log_path(), "a", encoding="utf-8") as f:
+                f.write(json.dumps(event_record, ensure_ascii=False) + "\n")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Не удалось записать событие в лог: {exc}")
+
+    def log_event(
+        self,
+        event_type: str,
+        user_id: int | None = None,
+        state: str | None = None,
+        **data: Any,
+    ) -> dict[str, Any]:
+        """Логирует событие в кольцевой буфер и на диск (если enabled=True)."""
+        event_record = self._build_event_record(event_type, user_id, state, data)
 
         if self.enabled:
-            try:
-                self.log_dir.mkdir(parents=True, exist_ok=True)
-                with open(self._get_today_log_path(), "a", encoding="utf-8") as f:
-                    f.write(json.dumps(event_record, ensure_ascii=False) + "\n")
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"Не удалось записать событие в лог: {exc}")
+            loop = self._get_running_loop()
+            if loop is None:
+                self._write_event_sync(event_record)
+            else:
+                self._schedule_async_task(
+                    loop, asyncio.to_thread(self._write_event_sync, event_record)
+                )
 
         return event_record
+
+    async def alog_event(
+        self,
+        event_type: str,
+        user_id: int | None = None,
+        state: str | None = None,
+        **data: Any,
+    ) -> dict[str, Any]:
+        """Логирует событие в буфер и неблокирующе записывает на диск через asyncio.to_thread."""
+        event_record = self._build_event_record(event_type, user_id, state, data)
+
+        if self.enabled:
+            await asyncio.to_thread(self._write_event_sync, event_record)
+
+        return event_record
+
+    def _prepare_bug_context(
+        self,
+        note: str,
+        state: str | None,
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        """Готовит снимок буфера и маскированную заметку до записи баг-репорта."""
+        # Делаем снимок событий из буфера до текущего репорта
+        recent = list(self._buffer)
+
+        if state and "password" in state.lower():
+            clean_note: Any = "***"
+        else:
+            clean_note = mask_sensitive_data(note)
+
+        return clean_note, recent
+
+    def _persist_bug_records_sync(
+        self,
+        bug_record: dict[str, Any],
+        event_record: dict[str, Any],
+    ) -> None:
+        """Записывает сформированные записи бага и события на диск под блокировкой."""
+        with self._io_lock:
+            if self.enabled:
+                self._write_event_unlocked(event_record)
+            try:
+                self.log_dir.mkdir(parents=True, exist_ok=True)
+                with open(self.log_dir / "bug_notes.jsonl", "a", encoding="utf-8") as f:
+                    f.write(json.dumps(bug_record, ensure_ascii=False) + "\n")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"Не удалось сохранить баг-заметку: {exc}")
+
+    def _write_bug_sync(
+        self,
+        clean_note: Any,
+        user_id: int | None,
+        state: str | None,
+        recent: list[dict[str, Any]],
+    ) -> int:
+        """Выделяет bug_id, обновляет буфер и синхронно сохраняет баг-заметку на диск."""
+        with self._io_lock:
+            self._ensure_bug_counter_unlocked()
+            self._bug_counter += 1
+            bug_id = self._bug_counter
+            bug_tag = f"BUG-LOG-{bug_id}"
+
+            bug_record = {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "event_type": "bug_report",
+                "bug_id": bug_id,
+                "bug_tag": bug_tag,
+                "user_id": user_id,
+                "state": state,
+                "note": clean_note,
+                "recent_events": recent,
+            }
+
+            # Фиксируем само событие репорта в буфере
+            event_record = self._build_event_record(
+                event_type="bug_report_created",
+                user_id=user_id,
+                state=state,
+                data={
+                    "bug_id": bug_id,
+                    "bug_tag": bug_tag,
+                    "note": clean_note,
+                },
+            )
+            if self.enabled:
+                self._write_event_unlocked(event_record)
+
+            try:
+                self.log_dir.mkdir(parents=True, exist_ok=True)
+                with open(self.log_dir / "bug_notes.jsonl", "a", encoding="utf-8") as f:
+                    f.write(json.dumps(bug_record, ensure_ascii=False) + "\n")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"Не удалось сохранить баг-заметку: {exc}")
+
+            return bug_id
 
     def record_bug(
         self,
@@ -173,17 +351,15 @@ class DebugLogger:
         state: str | None = None,
     ) -> int:
         """Записывает заметку о баге (сообщение на *) с контекстом последних 20 событий."""
+        clean_note, recent = self._prepare_bug_context(note, state)
+        loop = self._get_running_loop()
+        if loop is None:
+            return self._write_bug_sync(clean_note, user_id, state, recent)
+
+        # В async-контексте не выполняем синхронный I/O в потоке event loop
         self._bug_counter += 1
         bug_id = self._bug_counter
         bug_tag = f"BUG-LOG-{bug_id}"
-
-        # Делаем снимок событий из буфера до текущего репорта
-        recent = list(self._buffer)
-
-        if state and "password" in state.lower():
-            clean_note = "***"
-        else:
-            clean_note = mask_sensitive_data(note)
 
         bug_record = {
             "timestamp": datetime.now(UTC).isoformat(),
@@ -197,37 +373,54 @@ class DebugLogger:
         }
 
         # Фиксируем само событие репорта в буфере
-        self.log_event(
+        event_record = self._build_event_record(
             event_type="bug_report_created",
             user_id=user_id,
             state=state,
-            bug_id=bug_id,
-            bug_tag=bug_tag,
-            note=clean_note,
+            data={
+                "bug_id": bug_id,
+                "bug_tag": bug_tag,
+                "note": clean_note,
+            },
+        )
+        self._schedule_async_task(
+            loop,
+            asyncio.to_thread(self._persist_bug_records_sync, bug_record, event_record),
+        )
+        return bug_id
+
+    async def arecord_bug(
+        self,
+        note: str,
+        user_id: int | None = None,
+        state: str | None = None,
+    ) -> int:
+        """Неблокирующе записывает заметку о баге через asyncio.to_thread."""
+        await self.aflush()
+        clean_note, recent = self._prepare_bug_context(note, state)
+        return await asyncio.to_thread(
+            self._write_bug_sync, clean_note, user_id, state, recent
         )
 
-        try:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            with open(self.log_dir / "bug_notes.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps(bug_record, ensure_ascii=False) + "\n")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"Не удалось сохранить баг-заметку: {exc}")
-
-        return bug_id
+    async def aflush(self) -> None:
+        """Дожидается завершения всех отложенных фоновых задач записи и ротации."""
+        current_loop = asyncio.get_running_loop()
+        while True:
+            tasks = [
+                task
+                for task in list(self._pending_tasks)
+                if not task.done() and task.get_loop() is current_loop
+            ]
+            if not tasks:
+                for task in list(self._pending_tasks):
+                    if task.done():
+                        self._pending_tasks.discard(task)
+                break
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def get_recent_events(self) -> list[dict[str, Any]]:
         """Возвращает текущие события из кольцевого буфера."""
         return list(self._buffer)
-
-
-class contextlib_suppress_all:
-    """Вспомогательный контекстный менеджер для подавления ошибок при инициализации."""
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        return True
 
 
 # Глобальный синглтон логгера для всего бота

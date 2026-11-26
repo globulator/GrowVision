@@ -1,8 +1,10 @@
 import logging
 
 from edge_agent.hardware import MOCK_JPEG_FRAME
+from edge_agent.vision import VisionPipeline
 
 logger = logging.getLogger("edge_agent.synthetic")
+_VISION_PIPELINE: VisionPipeline | None = None
 
 CV2_AVAILABLE = False
 try:
@@ -135,53 +137,22 @@ def generate_synthetic_frame(
         return MOCK_JPEG_FRAME
 
 
+def _get_vision_pipeline() -> VisionPipeline:
+    """Возвращает общий экземпляр VisionPipeline в HSV/mock-режиме для синтетических кадров."""
+    global _VISION_PIPELINE
+    if _VISION_PIPELINE is None:
+        _VISION_PIPELINE = VisionPipeline(mock_mode=True)
+    return _VISION_PIPELINE
+
+
 def compute_green_area_px(image_bytes: bytes) -> float:
-    """Вычисляет суммарную площадь зелёных пикселей методом цветового порога HSV."""
-    if not CV2_AVAILABLE:
-        return 0.0
-
-    try:
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is None:
-            return 0.0
-
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        lower_green = np.array([35, 40, 40], dtype=np.uint8)
-        upper_green = np.array([85, 255, 255], dtype=np.uint8)
-        mask = cv2.inRange(hsv, lower_green, upper_green)
-
-        green_px = float(cv2.countNonZero(mask))
-        return round(green_px, 1)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"Ошибка вычисления зеленой площади HSV: {exc}")
-        return 0.0
+    """Вычисляет суммарную площадь зелёных пикселей методом цветового порога HSV через VisionPipeline."""
+    _, measurements = _get_vision_pipeline().segment_plants(
+        image_bytes, segmentation_mode="hsv"
+    )
+    return round(sum(float(m.area_px) for m in measurements), 1)
 
 
 def detect_aruco_area_px(image_bytes: bytes) -> float | None:
-    """Обнаруживает маркер ArUco DICT_4X4_50 и вычисляет его площадь в пикселях."""
-    if not CV2_AVAILABLE:
-        return None
-
-    try:
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is None:
-            return None
-
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-
-        if hasattr(cv2.aruco, "ArucoDetector"):
-            detector = cv2.aruco.ArucoDetector(aruco_dict)
-            corners, ids, _ = detector.detectMarkers(gray)
-        else:
-            corners, ids, _ = cv2.aruco.detectMarkers(gray, aruco_dict)
-
-        if ids is not None and len(corners) > 0:
-            area = float(cv2.contourArea(corners[0][0]))
-            return round(area, 1)
-        return None
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"Ошибка при детекции ArUco маркера: {exc}")
-        return None
+    """Обнаруживает маркер ArUco DICT_4X4_50 и вычисляет его площадь в пикселях через VisionPipeline."""
+    return _get_vision_pipeline().detect_aruco(image_bytes)

@@ -1771,36 +1771,6 @@ class VisionPipeline:
             logger.warning(f"Ошибка при HSV-сегментации: {exc}")
             return image_bytes, []
 
-    def _generate_fallback_annotated(self, image_bytes: bytes) -> bytes:
-        """Создает аннотированное изображение исключительно в mock-режиме."""
-        if not CV2_AVAILABLE:
-            return image_bytes
-
-        try:
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if img is None:
-                return image_bytes
-
-            h, w = img.shape[:2]
-            center = (w // 2, h // 2)
-            axes = (max(2, w // 4), max(2, h // 4))
-            cv2.ellipse(img, center, axes, 30, 0, 360, (0, 255, 0), 2)
-            cv2.putText(
-                img,
-                "Plant [Mock]",
-                (max(10, center[0] - 50), max(20, center[1])),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 255, 0),
-                1,
-            )
-
-            success, enc = cv2.imencode(".jpg", img)
-            return enc.tobytes() if success else image_bytes
-        except Exception:  # noqa: BLE001
-            return image_bytes
-
     def process_capture(
         self,
         image_bytes: bytes,

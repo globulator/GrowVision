@@ -13,6 +13,7 @@ from server.core.area import calculate_area_display
 from server.core.light_state import (
     LightMode,
     build_light_main_command_payload,
+    build_single_installation_light_payload,
     compute_active_pin_states,
     compute_effective_main_light_state,
     compute_effective_state,
@@ -30,8 +31,8 @@ from server.core.light_state import (
 from server.core.rgb import resolve_capture_display_rel_path
 from server.core.state import EphemeralSnapshot, app_state
 from server.core.system_status import (
+    build_debug_info,
     check_rpi_online,
-    is_debug_mode,
     validate_target_value,
 )
 from server.db.models import Capture, EdgeCommand, Installation, SystemSetting, User
@@ -206,31 +207,6 @@ async def wait_command_result(
         status_code=status.HTTP_504_GATEWAY_TIMEOUT,
         detail="Превышено время ожидания ответа Raspberry Pi",
     )
-
-
-def build_debug_info(
-    cmd: EdgeCommand, user: User, db: Session
-) -> dict[str, Any] | None:
-    """Формирует debug_info для Developer при debug_mode=True."""
-    if user.role != "developer" or not is_debug_mode(db):
-        return None
-
-    payload_data = None
-    if cmd.payload:
-        try:
-            payload_data = json.loads(cmd.payload)
-        except (json.JSONDecodeError, TypeError):
-            payload_data = cmd.payload
-
-    return {
-        "command": {
-            "id": cmd.id,
-            "command_type": cmd.command_type,
-            "target": "all" if cmd.is_global else cmd.installation_id,
-            "payload": payload_data,
-        },
-        "log_line": cmd.debug_log or "",
-    }
 
 
 def _serialize_ephemeral_snapshot(snap: EphemeralSnapshot) -> dict[str, Any]:
@@ -611,14 +587,13 @@ async def _execute_light_control(
     check_rpi_online(db)
     target_pin_states = {p: eff_state for p in channel_pins}
 
-    cmd_payload = {
-        "state": eff_state,
-        "individual_state": next_ind_state,
-        "mode": global_mode,
-        "pins": channel_pins,
-        "color": next_color,
-        "pin_states": {str(p): eff_state for p in channel_pins},
-    }
+    cmd_payload = build_single_installation_light_payload(
+        state=eff_state,
+        individual_state=next_ind_state,
+        mode=global_mode,
+        pins=channel_pins,
+        color=next_color,
+    )
     cmd = EdgeCommand(
         command_type=command_type,
         installation_id=inst_id,
@@ -891,16 +866,7 @@ def apply_day_night_settings(
     delivery_status = "unchanged"
     if changed:
         if _is_control_rpi_online(db):
-            cmd_payload = {
-                "state": snap["light_state"],
-                "individual_state": snap["individual_light_state"],
-                "mode": snap["global_light_mode"],
-                "pins": snap["light_pins"],
-                "color": snap["light_color"],
-                "pin_states": {
-                    p_str: snap["light_state"] for p_str in map(str, snap["light_pins"])
-                },
-            }
+            cmd_payload = build_single_installation_light_payload(snap)
             cmd = EdgeCommand(
                 command_type="LIGHT_MAIN",
                 installation_id=inst.id,

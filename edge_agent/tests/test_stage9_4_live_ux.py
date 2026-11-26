@@ -223,3 +223,58 @@ def test_live_stream_rgb_gains_supports_zero():
     assert np.all(out[:, :, 2] == 0)
     assert np.all(out[:, :, 1] == 100)
     assert np.all(out[:, :, 0] == 200)
+
+
+def test_ustreamer_local_requests_bypass_system_proxy(monkeypatch):
+    """Запросы к локальному ustreamer используют ProxyHandler({}) и игнорируют http_proxy/ALL_PROXY."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    jpeg_snap = _make_jpeg_bytes((10, 180, 30))
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/state":
+                body = json.dumps(
+                    {"ok": True, "result": {"source": {"online": True}}}
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+            elif self.path == "/snapshot":
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.end_headers()
+                self.wfile.write(jpeg_snap)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, *_args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        # Несуществующий прокси не должен блокировать запросы к 127.0.0.1
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+        monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
+
+        mgr = LiveStreamManager(mode="mock", mock_cameras=False, client=MagicMock())
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = None
+        mgr.is_running = True
+        mgr.active_camera_id = "cam-proxy-test"
+        mgr.process = fake_proc
+        mgr.current_port = port
+
+        assert (
+            mgr.capture_ustreamer_snapshot("cam-proxy-test", timeout=2.0) == jpeg_snap
+        )
+    finally:
+        server.shutdown()
+        server.server_close()

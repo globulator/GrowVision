@@ -8,27 +8,14 @@ from rich.table import Table
 
 from clients.cli.client import APIClient
 from clients.cli.formatting import console, err_console, print_debug_info
-from clients.cli.resolver import resolve_installation_target
+from clients.cli.resolver import (
+    get_bulk_command_timeout,
+    resolve_installation_target,
+)
 
 snap_app = typer.Typer(
     name="snap", help="Ручная съёмка и экспорт таймлапса", no_args_is_help=True
 )
-
-
-def _get_timeout(target: int | str, client: APIClient) -> float:
-    if target == "all":
-        try:
-            items = client.request(
-                method="GET",
-                url="/api/installations",
-                context="get active count",
-                params={"include_archived": False},
-            )
-            n = len(items) if isinstance(items, list) else 1
-        except (httpx.HTTPError, SystemExit):
-            n = 1
-        return float(30 + 10 * n)
-    return 30.0
 
 
 @snap_app.command(name="info")
@@ -70,7 +57,7 @@ def snap_take(
         include_archived=False,
     )
 
-    timeout = _get_timeout(unit_target, client)
+    timeout = get_bulk_command_timeout(unit_target, client)
     target_str = (
         f"установки #{unit_target}"
         if isinstance(unit_target, int)
