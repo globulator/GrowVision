@@ -596,15 +596,37 @@ async def handle_video_camera_selected(
     )
 
 
-async def _prompt_video_duration(
-    callback: CallbackQuery,
-    api_client: GrowVisionApiClient,
-    inst_id: int,
-    inst_name: str,
-    camera_id: int | None,
+async def _deliver_panel(
+    text: str,
+    kb: InlineKeyboardMarkup,
+    *,
+    callback: CallbackQuery | None = None,
+    message: Message | None = None,
 ) -> None:
-    """Шаг выбора длительности видео перед запуском сборки."""
-    user_id = callback.from_user.id if callback.from_user else 0
+    """Унифицированно отображает карточку/экран через edit_text (если есть callback) или answer."""
+    if callback and callback.message and isinstance(callback.message, Message):
+        if callback.message.photo:
+            with contextlib.suppress(Exception):
+                await callback.message.delete()
+            await callback.message.answer(text, reply_markup=kb)
+        else:
+            try:
+                await callback.message.edit_text(text, reply_markup=kb)
+            except Exception:  # noqa: BLE001
+                await callback.message.answer(text, reply_markup=kb)
+    elif message:
+        await message.answer(text, reply_markup=kb)
+
+
+async def _fetch_frames_count(
+    api_client: GrowVisionApiClient,
+    user_id: int,
+    inst_id: int,
+    camera_id: int | None,
+    *,
+    fallback: int | None = 20,
+) -> int | None:
+    """Возвращает количество плановых кадров для установки/камеры или fallback при ошибке."""
     try:
         frames_resp = await api_client.get_timelapse_frames(
             user_id, inst_id, camera_id=camera_id
@@ -614,8 +636,239 @@ async def _prompt_video_duration(
             if isinstance(frames_resp, dict)
             else frames_resp
         )
-        total_frames = len(frames_list)
+        return len(frames_list)
     except Exception:  # noqa: BLE001
+        return fallback
+
+
+def _render_video_params_card(
+    step: str,
+    *,
+    inst_id: int,
+    inst_name: str,
+    camera_id: int | None,
+    total_frames: int,
+    duration_sec: float | None = None,
+    fps: int | None = None,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Единый рендер карточки параметров сборки таймлапса (шаги: duration, fps, summary)."""
+    cam_part = str(camera_id) if camera_id is not None else "none"
+    escaped_name = html.escape(inst_name)
+
+    if step == "duration":
+        # Динамический расчет длительности и FPS согласованно с Web SPA (Этап 8.9)
+        calc_duration = max(1, round(total_frames / 15))
+        actual_fps = min(30, max(1, round(total_frames / calc_duration)))
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=f"▶️ Собрать видео ({actual_fps} FPS)",
+                        callback_data=f"vid_confirm:{inst_id}:{cam_part}:{calc_duration}:{actual_fps}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Отмена",
+                        callback_data=f"inst:view:{inst_id}",
+                    )
+                ],
+            ]
+        )
+        fps_note = ""
+        if total_frames / calc_duration > 30:
+            fps_note = (
+                "\n⚠️ Частота ограничена до 30 FPS (с автоматическим прореживанием)\n"
+            )
+        text = (
+            f"🎬 <b>Сборка таймлапса</b>\n\n"
+            f"Установка: <b>{escaped_name}</b>\n"
+            f"Кадров для сборки: <b>{total_frames}</b>\n"
+            f"Частота: <b>{actual_fps} FPS</b>\n"
+            f"Расчётная длительность: <b>{calc_duration} с</b>\n"
+            f"{fps_note}\n"
+            "Запустить сборку готового таймлапса?"
+        )
+        return text, kb
+
+    if step == "fps":
+        dur = float(duration_sec or 5.0)
+        calc_fps = max(1, round(total_frames / dur)) if dur > 0 else 10
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=f"⭐ Рассчитанный ({calc_fps} FPS)",
+                        callback_data=f"vid_fps:{inst_id}:{cam_part}:{dur}:{calc_fps}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="1 FPS",
+                        callback_data=f"vid_fps:{inst_id}:{cam_part}:{dur}:1",
+                    ),
+                    InlineKeyboardButton(
+                        text="5 FPS",
+                        callback_data=f"vid_fps:{inst_id}:{cam_part}:{dur}:5",
+                    ),
+                    InlineKeyboardButton(
+                        text="10 FPS",
+                        callback_data=f"vid_fps:{inst_id}:{cam_part}:{dur}:10",
+                    ),
+                    InlineKeyboardButton(
+                        text="25 FPS",
+                        callback_data=f"vid_fps:{inst_id}:{cam_part}:{dur}:25",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="⌨️ Ввести вручную",
+                        callback_data=f"vid_fps_manual:{inst_id}:{cam_part}:{dur}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Отмена",
+                        callback_data=f"vid_dur_cancel:{inst_id}",
+                    )
+                ],
+            ]
+        )
+        text = (
+            f"🎬 <b>Параметры сборки таймлапса</b> (Шаг 2 из 3)\n\n"
+            f"Установка: <b>{escaped_name}</b>\n"
+            f"Кадров: <b>{total_frames}</b>, Длительность: <b>{dur:.1f} с</b>\n\n"
+            f"Настройте частоту кадров (FPS ≥ 1).\n"
+            f"Расчётное значение для заданной длительности: <b>{calc_fps} FPS</b>:"
+        )
+        return text, kb
+
+    # step == "summary"
+    dur = float(duration_sec or 5.0)
+    resolved_fps = max(1, int(fps or 10))
+    cam_title = f"Камера #{camera_id}" if camera_id is not None else "Основная камера"
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Подтвердить",
+                    callback_data=f"vid_confirm:{inst_id}:{cam_part}:{dur}:{resolved_fps}",
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data=f"vid_dur_cancel:{inst_id}",
+                ),
+            ]
+        ]
+    )
+    text = (
+        f"🎬 <b>Сводка параметров таймлапса</b> (Шаг 3 из 3)\n\n"
+        f"🌱 <b>Установка:</b> {escaped_name}\n"
+        f"📷 <b>Камера:</b> {cam_title}\n"
+        f"🎞 <b>Всего кадров:</b> {total_frames}\n"
+        f"⏱ <b>Длительность:</b> {dur:.1f} с\n"
+        f"⚡ <b>Частота кадров:</b> {resolved_fps} FPS\n\n"
+        f"Запустить формирование видео?"
+    )
+    return text, kb
+
+
+def _parse_video_param_value(
+    raw_val: str,
+    *,
+    is_int: bool,
+    min_val: float,
+    max_val: float,
+    error_msg: str,
+) -> float | int:
+    """Общий валидатор числового параметра таймлапса (длительность или FPS)."""
+    cleaned = raw_val.strip()
+    if not is_int:
+        cleaned = cleaned.replace(",", ".")
+    try:
+        val: float | int = int(cleaned) if is_int else float(cleaned)
+    except ValueError as exc:
+        raise ValueError(error_msg) from exc
+    if not (min_val <= val <= max_val):
+        raise ValueError(error_msg)
+    return val
+
+
+async def _start_manual_video_param_input(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    fsm_state,
+    inst_id: int,
+    prompt_text: str,
+    state_data: dict,
+) -> None:
+    """Общий запуск FSM ручного ввода параметра таймлапса (длительность или FPS)."""
+    await state.set_state(fsm_state)
+    await state.update_data(**state_data)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data=f"vid_dur_cancel:{inst_id}",
+                )
+            ]
+        ]
+    )
+    await _deliver_panel(prompt_text, kb, callback=callback)
+
+
+async def _advance_video_param_step(
+    *,
+    step: str,
+    state: FSMContext,
+    inst_id: int,
+    inst_name: str,
+    camera_id: int | None,
+    total_frames: int,
+    duration_sec: float,
+    fps: int | None = None,
+    callback: CallbackQuery | None = None,
+    message: Message | None = None,
+) -> None:
+    """Общий переход между шагами настройки параметров таймлапса."""
+    update_fields: dict = {
+        "inst_id": inst_id,
+        "inst_name": inst_name,
+        "camera_id": camera_id,
+        "duration_sec": duration_sec,
+        "total_frames": total_frames,
+    }
+    if fps is not None:
+        update_fields["fps"] = fps
+    await state.update_data(**update_fields)
+
+    text, kb = _render_video_params_card(
+        step,
+        inst_id=inst_id,
+        inst_name=inst_name,
+        camera_id=camera_id,
+        total_frames=total_frames,
+        duration_sec=duration_sec,
+        fps=fps,
+    )
+    await _deliver_panel(text, kb, callback=callback, message=message)
+
+
+async def _prompt_video_duration(
+    callback: CallbackQuery,
+    api_client: GrowVisionApiClient,
+    inst_id: int,
+    inst_name: str,
+    camera_id: int | None,
+) -> None:
+    """Шаг выбора длительности видео перед запуском сборки."""
+    user_id = callback.from_user.id if callback.from_user else 0
+    total_frames = await _fetch_frames_count(
+        api_client, user_id, inst_id, camera_id, fallback=None
+    )
+    if total_frames is None:
         # Если эндпоинт frames недоступен (например, в минимальных фикстурах), запускаем сборку напрямую
         await _execute_video_pipeline(
             callback=callback,
@@ -628,27 +881,18 @@ async def _prompt_video_duration(
         return
 
     if total_frames == 0:
-        if callback.message and isinstance(callback.message, Message):
-            zero_text = f"В установке «{html.escape(inst_name)}» пока нет плановых кадров для сборки таймлапса."
-            back_kb = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="⬅️ Назад",
-                            callback_data=f"inst:view:{inst_id}",
-                        )
-                    ]
+        zero_text = f"В установке «{html.escape(inst_name)}» пока нет плановых кадров для сборки таймлапса."
+        back_kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Назад",
+                        callback_data=f"inst:view:{inst_id}",
+                    )
                 ]
-            )
-            if callback.message.photo:
-                with contextlib.suppress(Exception):
-                    await callback.message.delete()
-                await callback.message.answer(zero_text, reply_markup=back_kb)
-            else:
-                try:
-                    await callback.message.edit_text(zero_text, reply_markup=back_kb)
-                except Exception:  # noqa: BLE001
-                    await callback.message.answer(zero_text, reply_markup=back_kb)
+            ]
+        )
+        await _deliver_panel(zero_text, back_kb, callback=callback)
         return
 
     if total_frames == 1:
@@ -663,52 +907,14 @@ async def _prompt_video_duration(
         )
         return
 
-    # Динамический расчет длительности и FPS согласованно с Web SPA (Этап 8.9)
-    calc_duration = max(1, round(total_frames / 15))
-    actual_fps = min(30, max(1, round(total_frames / calc_duration)))
-    cam_part = str(camera_id) if camera_id is not None else "none"
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"▶️ Собрать видео ({actual_fps} FPS)",
-                    callback_data=f"vid_confirm:{inst_id}:{cam_part}:{calc_duration}:{actual_fps}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⬅️ Отмена",
-                    callback_data=f"inst:view:{inst_id}",
-                )
-            ],
-        ]
+    text, kb = _render_video_params_card(
+        "duration",
+        inst_id=inst_id,
+        inst_name=inst_name,
+        camera_id=camera_id,
+        total_frames=total_frames,
     )
-
-    fps_note = ""
-    if total_frames / calc_duration > 30:
-        fps_note = "\n⚠️ Частота ограничена до 30 FPS (с автоматическим прореживанием)\n"
-
-    text = (
-        f"🎬 <b>Сборка таймлапса</b>\n\n"
-        f"Установка: <b>{html.escape(inst_name)}</b>\n"
-        f"Кадров для сборки: <b>{total_frames}</b>\n"
-        f"Частота: <b>{actual_fps} FPS</b>\n"
-        f"Расчётная длительность: <b>{calc_duration} с</b>\n"
-        f"{fps_note}\n"
-        "Запустить сборку готового таймлапса?"
-    )
-
-    if callback.message and isinstance(callback.message, Message):
-        if callback.message.photo:
-            with contextlib.suppress(Exception):
-                await callback.message.delete()
-            await callback.message.answer(text, reply_markup=kb)
-        else:
-            try:
-                await callback.message.edit_text(text, reply_markup=kb)
-            except Exception:  # noqa: BLE001
-                await callback.message.answer(text, reply_markup=kb)
+    await _deliver_panel(text, kb, callback=callback)
 
 
 async def _prompt_video_fps(
@@ -724,63 +930,15 @@ async def _prompt_video_fps(
     message: Message | None = None,
 ) -> None:
     """Шаг 2 из 3: Настройка частоты кадров (FPS >= 1)."""
-    cam_part = str(camera_id) if camera_id is not None else "none"
-    calc_fps = max(1, round(total_frames / duration_sec)) if duration_sec > 0 else 10
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"⭐ Рассчитанный ({calc_fps} FPS)",
-                    callback_data=f"vid_fps:{inst_id}:{cam_part}:{duration_sec}:{calc_fps}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="1 FPS",
-                    callback_data=f"vid_fps:{inst_id}:{cam_part}:{duration_sec}:1",
-                ),
-                InlineKeyboardButton(
-                    text="5 FPS",
-                    callback_data=f"vid_fps:{inst_id}:{cam_part}:{duration_sec}:5",
-                ),
-                InlineKeyboardButton(
-                    text="10 FPS",
-                    callback_data=f"vid_fps:{inst_id}:{cam_part}:{duration_sec}:10",
-                ),
-                InlineKeyboardButton(
-                    text="25 FPS",
-                    callback_data=f"vid_fps:{inst_id}:{cam_part}:{duration_sec}:25",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⌨️ Ввести вручную",
-                    callback_data=f"vid_fps_manual:{inst_id}:{cam_part}:{duration_sec}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⬅️ Отмена",
-                    callback_data=f"vid_dur_cancel:{inst_id}",
-                )
-            ],
-        ]
+    text, kb = _render_video_params_card(
+        "fps",
+        inst_id=inst_id,
+        inst_name=inst_name,
+        camera_id=camera_id,
+        total_frames=total_frames,
+        duration_sec=duration_sec,
     )
-
-    text = (
-        f"🎬 <b>Параметры сборки таймлапса</b> (Шаг 2 из 3)\n\n"
-        f"Установка: <b>{html.escape(inst_name)}</b>\n"
-        f"Кадров: <b>{total_frames}</b>, Длительность: <b>{duration_sec:.1f} с</b>\n\n"
-        f"Настройте частоту кадров (FPS ≥ 1).\n"
-        f"Расчётное значение для заданной длительности: <b>{calc_fps} FPS</b>:"
-    )
-
-    if callback and callback.message and isinstance(callback.message, Message):
-        with contextlib.suppress(Exception):
-            await callback.message.edit_text(text, reply_markup=kb)
-    elif message:
-        await message.answer(text, reply_markup=kb)
+    await _deliver_panel(text, kb, callback=callback, message=message)
 
 
 async def _prompt_video_summary(
@@ -796,39 +954,16 @@ async def _prompt_video_summary(
     message: Message | None = None,
 ) -> None:
     """Шаг 3 из 3: Экран сводки параметров с подтверждением."""
-    cam_part = str(camera_id) if camera_id is not None else "none"
-    cam_title = f"Камера #{camera_id}" if camera_id is not None else "Основная камера"
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Подтвердить",
-                    callback_data=f"vid_confirm:{inst_id}:{cam_part}:{duration_sec}:{fps}",
-                ),
-                InlineKeyboardButton(
-                    text="❌ Отмена",
-                    callback_data=f"vid_dur_cancel:{inst_id}",
-                ),
-            ]
-        ]
+    text, kb = _render_video_params_card(
+        "summary",
+        inst_id=inst_id,
+        inst_name=inst_name,
+        camera_id=camera_id,
+        total_frames=total_frames,
+        duration_sec=duration_sec,
+        fps=fps,
     )
-
-    text = (
-        f"🎬 <b>Сводка параметров таймлапса</b> (Шаг 3 из 3)\n\n"
-        f"🌱 <b>Установка:</b> {html.escape(inst_name)}\n"
-        f"📷 <b>Камера:</b> {cam_title}\n"
-        f"🎞 <b>Всего кадров:</b> {total_frames}\n"
-        f"⏱ <b>Длительность:</b> {duration_sec:.1f} с\n"
-        f"⚡ <b>Частота кадров:</b> {fps} FPS\n\n"
-        f"Запустить формирование видео?"
-    )
-
-    if callback and callback.message and isinstance(callback.message, Message):
-        with contextlib.suppress(Exception):
-            await callback.message.edit_text(text, reply_markup=kb)
-    elif message:
-        await message.answer(text, reply_markup=kb)
+    await _deliver_panel(text, kb, callback=callback, message=message)
 
 
 @router.callback_query(F.data.startswith("vid_dur:"))
@@ -852,36 +987,19 @@ async def handle_video_duration_preset_selected(
 
     inst = await api_client.get_installation(user_id, inst_id)
     inst_name = inst.get("name", f"Установка #{inst_id}")
-
-    try:
-        frames_resp = await api_client.get_timelapse_frames(
-            user_id, inst_id, camera_id=cam_id
-        )
-        frames_list = (
-            frames_resp.get("frames", [])
-            if isinstance(frames_resp, dict)
-            else frames_resp
-        )
-        total_frames = len(frames_list)
-    except Exception:  # noqa: BLE001
-        total_frames = 20
-
-    await state.update_data(
-        inst_id=inst_id,
-        inst_name=inst_name,
-        camera_id=cam_id,
-        duration_sec=duration,
-        total_frames=total_frames,
+    total_frames = (
+        await _fetch_frames_count(api_client, user_id, inst_id, cam_id, fallback=20)
+        or 0
     )
 
-    await _prompt_video_fps(
-        api_client=api_client,
-        user_id=user_id,
+    await _advance_video_param_step(
+        step="fps",
+        state=state,
         inst_id=inst_id,
         inst_name=inst_name,
         camera_id=cam_id,
-        duration_sec=duration,
         total_frames=total_frames,
+        duration_sec=duration,
         callback=callback,
     )
 
@@ -901,44 +1019,24 @@ async def handle_video_duration_manual_selected(
     user_id = callback.from_user.id if callback.from_user else 0
 
     inst = await api_client.get_installation(user_id, inst_id)
-    try:
-        frames_resp = await api_client.get_timelapse_frames(
-            user_id, inst_id, camera_id=cam_id
-        )
-        frames_list = (
-            frames_resp.get("frames", [])
-            if isinstance(frames_resp, dict)
-            else frames_resp
-        )
-        total_frames = len(frames_list)
-    except Exception:  # noqa: BLE001
-        total_frames = 20
+    total_frames = (
+        await _fetch_frames_count(api_client, user_id, inst_id, cam_id, fallback=20)
+        or 0
+    )
 
-    await state.set_state(TimelapseStates.waiting_duration)
-    await state.update_data(
+    await _start_manual_video_param_input(
+        callback,
+        state,
+        fsm_state=TimelapseStates.waiting_duration,
         inst_id=inst_id,
-        inst_name=inst.get("name", f"Установка #{inst_id}"),
-        camera_id=cam_id,
-        total_frames=total_frames,
+        prompt_text="Введите длительность видео в секундах (число от 1 до 60, например: <code>5.0</code>):",
+        state_data={
+            "inst_id": inst_id,
+            "inst_name": inst.get("name", f"Установка #{inst_id}"),
+            "camera_id": cam_id,
+            "total_frames": total_frames,
+        },
     )
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="❌ Отмена",
-                    callback_data=f"vid_dur_cancel:{inst_id}",
-                )
-            ]
-        ]
-    )
-
-    if callback.message and isinstance(callback.message, Message):
-        with contextlib.suppress(Exception):
-            await callback.message.edit_text(
-                "Введите длительность видео в секундах (число от 1 до 60, например: <code>5.0</code>):",
-                reply_markup=kb,
-            )
 
 
 @router.callback_query(F.data.startswith("vid_dur_cancel:"))
@@ -950,21 +1048,17 @@ async def handle_video_duration_cancel(
     await callback.answer()
     await state.clear()
     inst_id = int(callback.data.split(":")[-1])
-    if callback.message and isinstance(callback.message, Message):
-        with contextlib.suppress(Exception):
-            await callback.message.edit_text(
-                "Сборка видео отменена.",
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="⬅️ К установке",
-                                callback_data=f"inst:view:{inst_id}",
-                            )
-                        ]
-                    ]
-                ),
-            )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⬅️ К установке",
+                    callback_data=f"inst:view:{inst_id}",
+                )
+            ]
+        ]
+    )
+    await _deliver_panel("Сборка видео отменена.", kb, callback=callback)
 
 
 @router.message(TimelapseStates.waiting_duration)
@@ -974,34 +1068,29 @@ async def process_video_duration_input(
     api_client: GrowVisionApiClient,
 ) -> None:
     """Обработка текстового ввода длительности видео в секундах."""
-    raw_val = (message.text or "").strip().replace(",", ".")
     try:
-        dur = float(raw_val)
-        if not (0.5 <= dur <= 300.0):
-            raise ValueError("Вне диапазона")
-    except ValueError:
-        await message.answer(
-            "Некорректная длительность. Введите число секунд от 1 до 60 (например: <code>5.0</code>):"
+        dur = float(
+            _parse_video_param_value(
+                message.text or "",
+                is_int=False,
+                min_val=0.5,
+                max_val=300.0,
+                error_msg="Некорректная длительность. Введите число секунд от 1 до 60 (например: <code>5.0</code>):",
+            )
         )
+    except ValueError as exc:
+        await message.answer(str(exc))
         return
 
     data = await state.get_data()
-    inst_id = data.get("inst_id")
-    inst_name = data.get("inst_name", "")
-    camera_id = data.get("camera_id")
-    total_frames = data.get("total_frames", 20)
-    user_id = message.from_user.id if message.from_user else 0
-
-    await state.update_data(duration_sec=dur)
-
-    await _prompt_video_fps(
-        api_client=api_client,
-        user_id=user_id,
-        inst_id=inst_id,
-        inst_name=inst_name,
-        camera_id=camera_id,
+    await _advance_video_param_step(
+        step="fps",
+        state=state,
+        inst_id=data.get("inst_id"),
+        inst_name=data.get("inst_name", ""),
+        camera_id=data.get("camera_id"),
+        total_frames=data.get("total_frames", 20),
         duration_sec=dur,
-        total_frames=total_frames,
         message=message,
     )
 
@@ -1019,22 +1108,17 @@ async def handle_video_fps_preset_selected(
     duration = float(parts[3])
     fps = max(1, int(parts[4]))
     cam_id = None if cam_str == "none" else int(cam_str)
-    user_id = callback.from_user.id if callback.from_user else 0
 
     data = await state.get_data()
-    inst_name = data.get("inst_name", f"Установка #{inst_id}")
-    total_frames = data.get("total_frames", 20)
-
-    await state.update_data(fps=fps)
-
-    await _prompt_video_summary(
-        user_id=user_id,
+    await _advance_video_param_step(
+        step="summary",
+        state=state,
         inst_id=inst_id,
-        inst_name=inst_name,
+        inst_name=data.get("inst_name", f"Установка #{inst_id}"),
         camera_id=cam_id,
+        total_frames=data.get("total_frames", 20),
         duration_sec=duration,
         fps=fps,
-        total_frames=total_frames,
         callback=callback,
     )
 
@@ -1052,30 +1136,18 @@ async def handle_video_fps_manual_selected(
     duration = float(parts[3])
     cam_id = None if cam_str == "none" else int(cam_str)
 
-    await state.set_state(TimelapseStates.waiting_fps)
-    await state.update_data(
+    await _start_manual_video_param_input(
+        callback,
+        state,
+        fsm_state=TimelapseStates.waiting_fps,
         inst_id=inst_id,
-        camera_id=cam_id,
-        duration_sec=duration,
+        prompt_text="Введите частоту кадров (целое число ≥ 1, например: <code>10</code>):",
+        state_data={
+            "inst_id": inst_id,
+            "camera_id": cam_id,
+            "duration_sec": duration,
+        },
     )
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="❌ Отмена",
-                    callback_data=f"vid_dur_cancel:{inst_id}",
-                )
-            ]
-        ]
-    )
-
-    if callback.message and isinstance(callback.message, Message):
-        with contextlib.suppress(Exception):
-            await callback.message.edit_text(
-                "Введите частоту кадров (целое число ≥ 1, например: <code>10</code>):",
-                reply_markup=kb,
-            )
 
 
 @router.message(TimelapseStates.waiting_fps)
@@ -1084,35 +1156,30 @@ async def process_video_fps_input(
     state: FSMContext,
 ) -> None:
     """Обработка текстового ввода FPS."""
-    raw_val = (message.text or "").strip()
     try:
-        fps = int(raw_val)
-        if fps < 1 or fps > 60:
-            raise ValueError("FPS должен быть от 1 до 60")
-    except ValueError:
-        await message.answer(
-            "Некорректная частота кадров. Введите целое число ≥ 1 (от 1 до 60, например: <code>10</code>):"
+        fps = int(
+            _parse_video_param_value(
+                message.text or "",
+                is_int=True,
+                min_val=1,
+                max_val=60,
+                error_msg="Некорректная частота кадров. Введите целое число ≥ 1 (от 1 до 60, например: <code>10</code>):",
+            )
         )
+    except ValueError as exc:
+        await message.answer(str(exc))
         return
 
     data = await state.get_data()
-    inst_id = data.get("inst_id")
-    inst_name = data.get("inst_name", "")
-    camera_id = data.get("camera_id")
-    duration_sec = data.get("duration_sec", 5.0)
-    total_frames = data.get("total_frames", 20)
-    user_id = message.from_user.id if message.from_user else 0
-
-    await state.update_data(fps=fps)
-
-    await _prompt_video_summary(
-        user_id=user_id,
-        inst_id=inst_id,
-        inst_name=inst_name,
-        camera_id=camera_id,
-        duration_sec=duration_sec,
+    await _advance_video_param_step(
+        step="summary",
+        state=state,
+        inst_id=data.get("inst_id"),
+        inst_name=data.get("inst_name", ""),
+        camera_id=data.get("camera_id"),
+        total_frames=data.get("total_frames", 20),
+        duration_sec=data.get("duration_sec", 5.0),
         fps=fps,
-        total_frames=total_frames,
         message=message,
     )
 
@@ -1149,6 +1216,31 @@ async def handle_video_confirmed(
         duration_sec=duration,
         fps=fps,
     )
+
+
+async def _send_video_and_cleanup(
+    bot,
+    chat_id: int,
+    status_msg: Message | None,
+    video_path: Path,
+    caption: str,
+) -> None:
+    """Удаляет статусное сообщение, отправляет видео-файл и удаляет временный файл с диска."""
+    if status_msg:
+        with contextlib.suppress(Exception):
+            await status_msg.delete()
+    try:
+        if bot:
+            await bot.send_video(
+                chat_id=chat_id,
+                video=FSInputFile(str(video_path)),
+                caption=caption,
+                parse_mode="HTML",
+                supports_streaming=True,
+            )
+    finally:
+        with contextlib.suppress(Exception):
+            os.unlink(video_path)
 
 
 async def _execute_video_pipeline(
@@ -1215,31 +1307,17 @@ async def _execute_video_pipeline(
 
         # Случай 2: Полное видео уложилось в лимит
         if content_type == "video/mp4" and isinstance(payload, Path):
-            if status_msg:
-                with contextlib.suppress(Exception):
-                    await status_msg.delete()
-            try:
-                caption = f"🎬 <b>Таймлапс:</b> {inst_name}"
-                if camera_id:
-                    caption += f" (камера #{camera_id})"
-                if duration_sec or fps:
-                    extra = []
-                    if duration_sec:
-                        extra.append(f"{duration_sec:.1f} с")
-                    if fps:
-                        extra.append(f"{fps} FPS")
-                    caption += f"\n<i>({', '.join(extra)})</i>"
-                if bot:
-                    await bot.send_video(
-                        chat_id=chat_id,
-                        video=FSInputFile(str(payload)),
-                        caption=caption,
-                        parse_mode="HTML",
-                        supports_streaming=True,
-                    )
-            finally:
-                with contextlib.suppress(Exception):
-                    os.unlink(payload)
+            caption = f"🎬 <b>Таймлапс:</b> {inst_name}"
+            if camera_id:
+                caption += f" (камера #{camera_id})"
+            if duration_sec or fps:
+                extra = []
+                if duration_sec:
+                    extra.append(f"{duration_sec:.1f} с")
+                if fps:
+                    extra.append(f"{fps} FPS")
+                caption += f"\n<i>({', '.join(extra)})</i>"
+            await _send_video_and_cleanup(bot, chat_id, status_msg, payload, caption)
             return
 
         # Случай 3: Видео превышает лимит 50 МБ -> запускаем цикл прореживания (до 5 попыток)
@@ -1274,27 +1352,13 @@ async def _execute_video_pipeline(
 
             if ctype == "video/mp4" and isinstance(p_path, Path):
                 # Успешно уложились в лимит!
-                if status_msg:
-                    with contextlib.suppress(Exception):
-                        await status_msg.delete()
-                try:
-                    actual_fps_val = fps or 30
-                    caption = (
-                        f"🎬 <b>Таймлапс:</b> {inst_name}.\n"
-                        f"Собрано видео с частотой {actual_fps_val} FPS (прореживание 1 из {step} для соблюдения лимита Telegram). Прореженная версия: каждый {step}-й кадр.\n"
-                        f"<i>(Полную версию можно скачать через консольный клиент: snap video {inst_id})</i>"
-                    )
-                    if bot:
-                        await bot.send_video(
-                            chat_id=chat_id,
-                            video=FSInputFile(str(p_path)),
-                            caption=caption,
-                            parse_mode="HTML",
-                            supports_streaming=True,
-                        )
-                finally:
-                    with contextlib.suppress(Exception):
-                        os.unlink(p_path)
+                actual_fps_val = fps or 30
+                caption = (
+                    f"🎬 <b>Таймлапс:</b> {inst_name}.\n"
+                    f"Собрано видео с частотой {actual_fps_val} FPS (прореживание 1 из {step} для соблюдения лимита Telegram). Прореженная версия: каждый {step}-й кадр.\n"
+                    f"<i>(Полную версию можно скачать через консольный клиент: snap video {inst_id})</i>"
+                )
+                await _send_video_and_cleanup(bot, chat_id, status_msg, p_path, caption)
                 success = True
                 break
 

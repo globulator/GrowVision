@@ -175,9 +175,6 @@ async def test_relay_toggle_switches_and_snap_layer_toggle(
     bot_config: BotConfig, mock_bot: MagicMock
 ):
     """Проверка переключателей реле (2 кнопки с отображением статуса) и переключения слоя кадра (raw/ann)."""
-    from clients.telegram_bot.handlers.control import _relay_states
-
-    _relay_states.clear()
     light_calls = []
     flash_calls = []
 

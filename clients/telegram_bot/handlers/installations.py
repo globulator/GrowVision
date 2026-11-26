@@ -1,6 +1,9 @@
 import contextlib
 import html
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -245,6 +248,94 @@ async def handle_installation_view(
             await callback.message.edit_text(f"Не удалось открыть установку:\n{err}")
 
 
+# ================== Валидаторы полей установки ==================
+
+
+def _validate_non_empty(raw: str, empty_error: str) -> str:
+    """Проверяет, что строковое поле установки не пустое."""
+    value = raw.strip()
+    if not value:
+        raise ValueError(empty_error)
+    return value
+
+
+def _validate_gpio_field(raw: str, field_label: str) -> str:
+    """Валидирует 1 пин или 3 RGB-пина и возвращает каноническую строку."""
+    pins = parse_gpio_pins(raw, field_label=field_label)
+    return format_gpio_pins(pins)
+
+
+def _validate_capture_delay(raw: str, *, allow_reset: bool = True) -> float | None:
+    """Валидирует задержку съёмки (0.0..30.0 с) или ключевое слово сброса."""
+    cleaned = raw.strip()
+    if allow_reset and cleaned.lower() in ("default", "none", "общая", "сброс"):
+        return None
+    normalized = cleaned.replace(",", ".").replace("с", "").replace("s", "").strip()
+    val = float(normalized)
+    if not (0.0 <= val <= 30.0):
+        raise ValueError("Задержка съёмки должна быть в диапазоне 0.0..30.0 с")
+    return val
+
+
+def _validate_aruco_size(raw: str) -> float:
+    """Валидирует положительный размер стороны маркера ArUco в мм."""
+    val = float(raw.strip().replace(",", "."))
+    if val <= 0:
+        raise ValueError("Размер ArUco должен быть > 0")
+    return val
+
+
+@dataclass(frozen=True, slots=True)
+class _FieldValidatorSpec:
+    """Спецификация валидации и редактирования поля установки."""
+
+    api_field: str
+    validator: Callable[[str], Any]
+    edit_prompt: str
+
+
+_INSTALLATION_FIELD_VALIDATORS: dict[str, _FieldValidatorSpec] = {
+    "name": _FieldValidatorSpec(
+        api_field="name",
+        validator=lambda raw: _validate_non_empty(raw, "Название не может быть пустым"),
+        edit_prompt="Введите новое название установки:",
+    ),
+    "crop_type": _FieldValidatorSpec(
+        api_field="culture_name",
+        validator=lambda raw: _validate_non_empty(raw, "Культура не может быть пустой"),
+        edit_prompt="Введите новое название культуры:",
+    ),
+    "light_pin": _FieldValidatorSpec(
+        api_field="light_gpio_pin",
+        validator=lambda raw: _validate_gpio_field(raw, "Пин света"),
+        edit_prompt="Введите новый GPIO-пин основного света (1 число 0..53 или 3 уникальных пина RGB через запятую):",
+    ),
+    "flash_pin": _FieldValidatorSpec(
+        api_field="flash_gpio_pin",
+        validator=lambda raw: _validate_gpio_field(raw, "Пин вспышки"),
+        edit_prompt="Введите новый GPIO-пин вспышки (1 число 0..53 или 3 уникальных пина RGB через запятую):",
+    ),
+    "delay": _FieldValidatorSpec(
+        api_field="capture_delay_sec",
+        validator=lambda raw: _validate_capture_delay(raw, allow_reset=True),
+        edit_prompt="Введите новую задержку съёмки (0.0..30.0 с или «сброс»):",
+    ),
+    "aruco": _FieldValidatorSpec(
+        api_field="aruco_size_mm",
+        validator=_validate_aruco_size,
+        edit_prompt="Введите новый размер стороны ArUco в мм (число > 0):",
+    ),
+}
+
+
+def _validate_installation_field(field: str, raw_value: str) -> tuple[str, Any]:
+    """Валидирует значение поля по таблице и возвращает (api_field, value)."""
+    spec = _INSTALLATION_FIELD_VALIDATORS.get(field)
+    if spec is None:
+        raise ValueError(f"Неизвестное поле установки: {field}")
+    return spec.api_field, spec.validator(raw_value)
+
+
 # ================== Создание установки (Developer) ==================
 
 
@@ -285,8 +376,9 @@ async def process_create_name(
     state: FSMContext,
     api_client: GrowVisionApiClient,
 ) -> None:
-    name = (message.text or "").strip()
-    if not name:
+    try:
+        name = _INSTALLATION_FIELD_VALIDATORS["name"].validator(message.text or "")
+    except ValueError:
         await message.answer(
             "Название не может быть пустым. Введите название установки:",
             reply_markup=get_cancel_inline_keyboard("inst:list"),
@@ -316,8 +408,9 @@ async def process_create_name(
 
 @router.message(InstallationCreateStates.waiting_crop)
 async def process_create_crop(message: Message, state: FSMContext) -> None:
-    crop = (message.text or "").strip()
-    if not crop:
+    try:
+        crop = _INSTALLATION_FIELD_VALIDATORS["crop_type"].validator(message.text or "")
+    except ValueError:
         await message.answer(
             "Культура не может быть пустой. Введите название культуры:",
             reply_markup=get_cancel_inline_keyboard("inst:list"),
@@ -335,16 +428,16 @@ async def process_create_crop(message: Message, state: FSMContext) -> None:
 
 @router.message(InstallationCreateStates.waiting_light_pin)
 async def process_create_light_pin(message: Message, state: FSMContext) -> None:
-    raw_pin = (message.text or "").strip()
     try:
-        light_pins = parse_gpio_pins(raw_pin, field_label="Пин света")
+        light_pin_val = _INSTALLATION_FIELD_VALIDATORS["light_pin"].validator(
+            message.text or ""
+        )
     except ValueError as exc:
         await message.answer(
             f"{exc}. Введите 1 пин от 0 до 53 (например, 17) или 3 уникальных пина RGB от 0 до 53 через запятую (например, 17,27,22):",
             reply_markup=get_cancel_inline_keyboard("inst:list"),
         )
         return
-    light_pin_val = format_gpio_pins(light_pins)
     await state.update_data(light_gpio_pin=light_pin_val)
     await state.set_state(InstallationCreateStates.waiting_flash_pin)
     await message.answer(
@@ -357,9 +450,10 @@ async def process_create_light_pin(message: Message, state: FSMContext) -> None:
 
 @router.message(InstallationCreateStates.waiting_flash_pin)
 async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
-    raw_pin = (message.text or "").strip()
     try:
-        flash_pins = parse_gpio_pins(raw_pin, field_label="Пин вспышки")
+        flash_pin_val = _INSTALLATION_FIELD_VALIDATORS["flash_pin"].validator(
+            message.text or ""
+        )
     except ValueError as exc:
         await message.answer(
             f"{exc}. Введите 1 пин от 0 до 53 (например, 27) или 3 уникальных пина RGB от 0 до 53 через запятую:",
@@ -371,6 +465,7 @@ async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
     if raw_light is not None:
         try:
             light_pins = parse_gpio_pins(raw_light, field_label="Пин света")
+            flash_pins = parse_gpio_pins(flash_pin_val, field_label="Пин вспышки")
             validate_light_flash_disjoint(light_pins, flash_pins)
         except ValueError as exc:
             await message.answer(
@@ -379,7 +474,6 @@ async def process_create_flash_pin(message: Message, state: FSMContext) -> None:
             )
             return
 
-    flash_pin_val = format_gpio_pins(flash_pins)
     await state.update_data(flash_gpio_pin=flash_pin_val)
     await state.set_state(InstallationCreateStates.waiting_aruco)
 
@@ -477,11 +571,8 @@ async def process_create_aruco_text(
     config: BotConfig,
 ) -> None:
     """Ввод размера маркера ArUco числом."""
-    raw = (message.text or "").strip().replace(",", ".")
     try:
-        val = float(raw)
-        if val <= 0:
-            raise ValueError()
+        val = _INSTALLATION_FIELD_VALIDATORS["aruco"].validator(message.text or "")
     except ValueError:
         await message.answer(
             "Размер маркера должен быть положительным числом (например, 50.0) или нажмите [ Пропустить ]:"
@@ -561,14 +652,8 @@ async def handle_edit_field_selected(
     await state.set_state(InstallationEditStates.waiting_value)
     await state.update_data(field=field, inst_id=inst_id)
 
-    prompts = {
-        "name": "Введите новое название установки:",
-        "crop_type": "Введите новое название культуры:",
-        "light_pin": "Введите новый GPIO-пин основного света (1 число 0..53 или 3 уникальных пина RGB через запятую):",
-        "flash_pin": "Введите новый GPIO-пин вспышки (1 число 0..53 или 3 уникальных пина RGB через запятую):",
-        "aruco": "Введите новый размер стороны ArUco в мм (число > 0):",
-    }
-    prompt = prompts.get(field, "Введите новое значение:")
+    spec = _INSTALLATION_FIELD_VALIDATORS.get(field)
+    prompt = spec.edit_prompt if spec else "Введите новое значение:"
     cancel_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -600,37 +685,11 @@ async def process_edit_value(
 
     patch_payload: dict = {}
     try:
-        if field == "name":
-            if not val_text:
-                raise ValueError("Название не может быть пустым")
-            patch_payload["name"] = val_text
-        elif field == "crop_type":
-            if not val_text:
-                raise ValueError("Культура не может быть пустой")
-            patch_payload["culture_name"] = val_text
-        elif field == "light_pin":
-            pins = parse_gpio_pins(val_text, field_label="Пин света")
-            patch_payload["light_gpio_pin"] = format_gpio_pins(pins)
-        elif field == "flash_pin":
-            pins = parse_gpio_pins(val_text, field_label="Пин вспышки")
-            patch_payload["flash_gpio_pin"] = format_gpio_pins(pins)
-        elif field == "delay":
-            if val_text.lower() in ("default", "none", "общая", "сброс"):
-                patch_payload["capture_delay_sec"] = None
-            else:
-                v = float(
-                    val_text.replace(",", ".").replace("с", "").replace("s", "").strip()
-                )
-                if not (0.0 <= v <= 30.0):
-                    raise ValueError(
-                        "Задержка съёмки должна быть в диапазоне 0.0..30.0 с"
-                    )
-                patch_payload["capture_delay_sec"] = v
-        elif field == "aruco":
-            v = float(val_text.replace(",", "."))
-            if v <= 0:
-                raise ValueError("Размер ArUco должен быть > 0")
-            patch_payload["aruco_size_mm"] = v
+        if field is not None:
+            api_field, validated_val = _validate_installation_field(
+                str(field), val_text
+            )
+            patch_payload[api_field] = validated_val
     except ValueError as ve:
         await message.answer(
             f"Ошибка ввода: {ve}. Повторите ввод или нажмите «Отмена»:",
@@ -1121,12 +1180,9 @@ async def process_capture_delay_input(
     is_inst = data.get("is_installation", False)
     user_id = message.from_user.id if message.from_user else 0
 
-    # Парсим значение
-    val_clean = raw_text.replace(",", ".").replace("с", "").replace("s", "").strip()
+    # Парсим значение через единый валидатор задержки
     try:
-        val_sec = float(val_clean)
-        if not (0.0 <= val_sec <= 30.0):
-            raise ValueError("Число вне диапазона")
+        val_sec = _validate_capture_delay(raw_text, allow_reset=False)
     except ValueError:
         kb = get_capture_delay_keyboard(target=target, is_installation=is_inst)
         await message.answer(

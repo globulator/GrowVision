@@ -40,14 +40,50 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="control")
 
-# Локальное состояние реле: target -> {"light": bool, "flash": bool}
-_relay_states: dict[str, dict[str, bool]] = {}
-# Состояние реле по GPIO-пинам: pin -> bool
-_pin_states: dict[int, bool] = {}
-# Привязка установок к пинам: target -> {"light": pin, "flash": pin}
-_target_pins: dict[str, dict[str, int]] = {}
-# RGB-метаданные каналов установки: target -> {"light_is_rgb", "flash_is_rgb", "light_color", "flash_color", ...}
-_target_meta: dict[str, dict[str, Any]] = {}
+_CTRL_CACHE_KEY = "ctrl_cache"
+
+
+def _empty_ctrl_cache() -> dict[str, Any]:
+    """Создаёт пустую структуру FSM-кэша состояния реле и метаданных целей."""
+    return {
+        "relay_states": {},
+        "pin_states": {},
+        "target_pins": {},
+        "target_meta": {},
+    }
+
+
+async def _load_ctrl_cache(state: FSMContext) -> dict[str, Any]:
+    """Читает кэш состояния реле из FSMContext (без глобального состояния)."""
+    data = await state.get_data()
+    raw = data.get(_CTRL_CACHE_KEY)
+    if not isinstance(raw, dict):
+        return _empty_ctrl_cache()
+    return {
+        "relay_states": {
+            str(k): dict(v)
+            for k, v in (raw.get("relay_states") or {}).items()
+            if isinstance(v, dict)
+        },
+        "pin_states": {
+            str(k): bool(v) for k, v in (raw.get("pin_states") or {}).items()
+        },
+        "target_pins": {
+            str(k): dict(v)
+            for k, v in (raw.get("target_pins") or {}).items()
+            if isinstance(v, dict)
+        },
+        "target_meta": {
+            str(k): dict(v)
+            for k, v in (raw.get("target_meta") or {}).items()
+            if isinstance(v, dict)
+        },
+    }
+
+
+async def _save_ctrl_cache(state: FSMContext, cache: dict[str, Any]) -> None:
+    """Сохраняет кэш состояния реле и метаданных в FSMContext."""
+    await state.update_data({_CTRL_CACHE_KEY: cache})
 
 
 def _extract_pins_list(raw_list: Any, raw_pin: Any) -> list[int]:
@@ -61,17 +97,24 @@ def _extract_pins_list(raw_list: Any, raw_pin: Any) -> list[int]:
     return []
 
 
-def _store_installation_meta(target: str, inst: dict[str, Any]) -> None:
+def _store_installation_meta(
+    cache: dict[str, Any], target: str, inst: dict[str, Any]
+) -> None:
+    target_pins = cache["target_pins"]
+    target_meta = cache["target_meta"]
+    relay_states = cache["relay_states"]
+    pin_states = cache["pin_states"]
+
     l_pins = _extract_pins_list(inst.get("light_pins"), inst.get("light_gpio_pin"))
     f_pins = _extract_pins_list(inst.get("flash_pins"), inst.get("flash_gpio_pin"))
     if l_pins and f_pins:
-        _target_pins[target] = {"light": l_pins[0], "flash": f_pins[0]}
+        target_pins[target] = {"light": l_pins[0], "flash": f_pins[0]}
     elif (
         inst.get("light_gpio_pin") is not None
         and inst.get("flash_gpio_pin") is not None
     ):
         with contextlib.suppress(TypeError, ValueError):
-            _target_pins[target] = {
+            target_pins[target] = {
                 "light": int(inst["light_gpio_pin"]),
                 "flash": int(inst["flash_gpio_pin"]),
             }
@@ -84,12 +127,13 @@ def _store_installation_meta(target: str, inst: dict[str, Any]) -> None:
     flash_color = normalize_hex_color(
         inst.get("flash_color"), default=DEFAULT_COLOR_HEX
     )
-    _target_meta[target] = {
-        "name": inst.get("name") or f"Установка #{target}",
+    prev_meta = target_meta.get(target, {})
+    target_meta[target] = {
+        "name": inst.get("name") or prev_meta.get("name") or f"Установка #{target}",
         "light_pins": l_pins,
         "flash_pins": f_pins,
-        "light_gpio_pin": inst.get("light_gpio_pin"),
-        "flash_gpio_pin": inst.get("flash_gpio_pin"),
+        "light_gpio_pin": inst.get("light_gpio_pin", prev_meta.get("light_gpio_pin")),
+        "flash_gpio_pin": inst.get("flash_gpio_pin", prev_meta.get("flash_gpio_pin")),
         "light_is_rgb": light_is_rgb,
         "flash_is_rgb": flash_is_rgb,
         "light_color": light_color,
@@ -109,20 +153,21 @@ def _store_installation_meta(target: str, inst: dict[str, Any]) -> None:
         "global_light_locked": bool(inst.get("global_light_locked", False)),
     }
     if "global_day_night_enabled" in inst or "global_light_mode" in inst:
-        _store_global_meta(inst)
+        _store_global_meta(cache, inst)
     if "light_state" in inst:
-        _relay_states.setdefault(target, {})["light"] = bool(inst["light_state"])
+        relay_states.setdefault(target, {})["light"] = bool(inst["light_state"])
         for p in l_pins:
-            _pin_states[p] = bool(inst["light_state"])
+            pin_states[str(p)] = bool(inst["light_state"])
     if "flash_state" in inst:
-        _relay_states.setdefault(target, {})["flash"] = bool(inst["flash_state"])
+        relay_states.setdefault(target, {})["flash"] = bool(inst["flash_state"])
         for p in f_pins:
-            _pin_states[p] = bool(inst["flash_state"])
+            pin_states[str(p)] = bool(inst["flash_state"])
 
 
-def _store_global_meta(payload: dict[str, Any]) -> None:
-    prev = _target_meta.get("all", {})
-    _target_meta["all"] = {
+def _store_global_meta(cache: dict[str, Any], payload: dict[str, Any]) -> None:
+    target_meta = cache["target_meta"]
+    prev = target_meta.get("all", {})
+    target_meta["all"] = {
         "name": "Все активные установки",
         "global_light_mode": payload.get(
             "global_light_mode", prev.get("global_light_mode", "default")
@@ -147,10 +192,23 @@ def _store_global_meta(payload: dict[str, Any]) -> None:
     }
 
 
-def _get_target_rgb_kwargs(target: str) -> dict[str, Any]:
+def _apply_relays_snapshot(cache: dict[str, Any], relays: dict[str, Any]) -> None:
+    """Применяет ответ GET /api/control/relays к FSM-кэшу."""
+    raw_pins = relays.get("pin_states") or relays.get("pins")
+    if isinstance(raw_pins, dict):
+        for p_str, val in raw_pins.items():
+            if str(p_str).isdigit():
+                cache["pin_states"][str(p_str)] = bool(val)
+    _store_global_meta(cache, relays)
+    for item in relays.get("installations") or []:
+        if isinstance(item, dict) and item.get("installation_id") is not None:
+            _store_installation_meta(cache, str(item["installation_id"]), item)
+
+
+def _get_target_rgb_kwargs(cache: dict[str, Any], target: str) -> dict[str, Any]:
     if target == "all":
         return {}
-    meta = _target_meta.get(target, {})
+    meta = cache["target_meta"].get(target, {})
     return {
         "light_is_rgb": bool(meta.get("light_is_rgb", False)),
         "flash_is_rgb": bool(meta.get("flash_is_rgb", False)),
@@ -160,44 +218,54 @@ def _get_target_rgb_kwargs(target: str) -> dict[str, Any]:
 
 
 async def _sync_pins_for_target(
-    api_client: GrowVisionApiClient, user_id: int, target: str
-) -> None:
+    api_client: GrowVisionApiClient,
+    state: FSMContext,
+    user_id: int,
+    target: str,
+) -> dict[str, Any]:
     """Синхронизирует номера пинов, RGB-флаги, цвета, цикл дня/ночи и состояния реле с сервером."""
+    cache = await _load_ctrl_cache(state)
     if target == "all":
         with contextlib.suppress(Exception):
             insts = await api_client.get_installations(user_id, include_archived=False)
             for item in insts:
-                _store_installation_meta(str(item.get("id")), item)
+                _store_installation_meta(cache, str(item.get("id")), item)
         with contextlib.suppress(Exception):
             relays = await api_client.get_relays_status(user_id)
             if isinstance(relays, dict):
-                _store_global_meta(relays)
-                for item in relays.get("installations") or []:
-                    if (
-                        isinstance(item, dict)
-                        and item.get("installation_id") is not None
-                    ):
-                        _store_installation_meta(str(item["installation_id"]), item)
+                _apply_relays_snapshot(cache, relays)
     else:
         with contextlib.suppress(Exception):
             inst = await api_client.get_installation(user_id, int(target))
-            _store_installation_meta(target, inst)
+            _store_installation_meta(cache, target, inst)
+        with contextlib.suppress(Exception):
+            inst_relays = await api_client.get_installation_relays(user_id, int(target))
+            if isinstance(inst_relays, dict):
+                _store_installation_meta(cache, target, inst_relays)
+        with contextlib.suppress(Exception):
+            relays = await api_client.get_relays_status(user_id)
+            if isinstance(relays, dict):
+                _apply_relays_snapshot(cache, relays)
+
+    await _save_ctrl_cache(state, cache)
+    return cache
 
 
-def _get_target_relay_states(target: str) -> tuple[bool, bool]:
+def _get_target_relay_states(cache: dict[str, Any], target: str) -> tuple[bool, bool]:
     """Возвращает (light_state, flash_state) для target с учётом пинов."""
-    pins = _target_pins.get(target)
-    st = _relay_states.get(target, {})
+    pins = cache["target_pins"].get(target)
+    st = cache["relay_states"].get(target, {})
+    pin_states = cache["pin_states"]
     if pins:
         light_pin = pins.get("light")
         flash_pin = pins.get("flash")
         light_state = (
-            _pin_states.get(light_pin, st.get("light", False))
+            pin_states.get(str(light_pin), st.get("light", False))
             if light_pin is not None
             else st.get("light", False)
         )
         flash_state = (
-            _pin_states.get(flash_pin, st.get("flash", False))
+            pin_states.get(str(flash_pin), st.get("flash", False))
             if flash_pin is not None
             else st.get("flash", False)
         )
@@ -206,35 +274,55 @@ def _get_target_relay_states(target: str) -> tuple[bool, bool]:
 
 
 def _update_relay_pin_state(
+    cache: dict[str, Any],
     target: str,
     is_flash: bool,
     state_bool: bool,
     pin_states_from_api: dict[str, Any] | None = None,
 ) -> None:
-    """Обновляет состояние пина и синхронизирует все связанные установки."""
+    """Обновляет состояние пина в FSM-кэше и синхронизирует все связанные установки."""
     key = "flash" if is_flash else "light"
+    pin_states = cache["pin_states"]
+    relay_states = cache["relay_states"]
+    target_pins = cache["target_pins"]
 
     if pin_states_from_api:
         for p_str, val in pin_states_from_api.items():
             if str(p_str).isdigit():
-                _pin_states[int(p_str)] = bool(val)
+                pin_states[str(p_str)] = bool(val)
 
     if target == "all":
-        _relay_states.setdefault("all", {})[key] = state_bool
-        for t, pins in _target_pins.items():
+        relay_states.setdefault("all", {})[key] = state_bool
+        for t, pins in target_pins.items():
             pin = pins.get(key)
             if pin is not None:
-                _pin_states[pin] = state_bool
-            _relay_states.setdefault(t, {})[key] = state_bool
+                pin_states[str(pin)] = state_bool
+            relay_states.setdefault(t, {})[key] = state_bool
     else:
-        _relay_states.setdefault(target, {})[key] = state_bool
-        pins = _target_pins.get(target)
+        relay_states.setdefault(target, {})[key] = state_bool
+        pins = target_pins.get(target)
         if pins and pins.get(key) is not None:
             pin = pins[key]
-            _pin_states[pin] = state_bool
-            for other_t, other_pins in _target_pins.items():
+            pin_states[str(pin)] = state_bool
+            for other_t, other_pins in target_pins.items():
                 if other_pins.get(key) == pin:
-                    _relay_states.setdefault(other_t, {})[key] = state_bool
+                    relay_states.setdefault(other_t, {})[key] = state_bool
+
+
+def _build_control_target_picker_keyboard(active_insts: list[dict[str, Any]]):
+    """Строит клавиатуру выбора установки для управления реле."""
+    return build_paginator_keyboard(
+        items=active_insts,
+        page=0,
+        page_size=5,
+        entity="ctrl_pick",
+        item_callback_prefix="ctrl:target",
+        item_text_func=lambda i: f"🌱 {i.get('name')} (#{i.get('id')})",
+        item_id_func=lambda i: i.get("id"),
+        include_all_button=True,
+        all_button_callback="ctrl:target:all",
+        all_button_text="🌐 Все активные установки",
+    )
 
 
 # ================== Свет и реле (Developer) ==================
@@ -262,18 +350,7 @@ async def handle_control_menu(
             await message.answer("Нет активных установок для управления светом.")
             return
 
-        kb = build_paginator_keyboard(
-            items=active_insts,
-            page=0,
-            page_size=5,
-            entity="ctrl_pick",
-            item_callback_prefix="ctrl:target",
-            item_text_func=lambda i: f"🌱 {i.get('name')} (#{i.get('id')})",
-            item_id_func=lambda i: i.get("id"),
-            include_all_button=True,
-            all_button_callback="ctrl:target:all",
-            all_button_text="🌐 Все активные установки",
-        )
+        kb = _build_control_target_picker_keyboard(active_insts)
         await message.answer(
             "💡 <b>Управление светом и реле</b>\n\nВыберите целевую установку или все активные:",
             reply_markup=kb,
@@ -295,18 +372,7 @@ async def handle_control_back_to_menu(
         active_insts = await api_client.get_installations(
             user_id, include_archived=False
         )
-        kb = build_paginator_keyboard(
-            items=active_insts,
-            page=0,
-            page_size=5,
-            entity="ctrl_pick",
-            item_callback_prefix="ctrl:target",
-            item_text_func=lambda i: f"🌱 {i.get('name')} (#{i.get('id')})",
-            item_id_func=lambda i: i.get("id"),
-            include_all_button=True,
-            all_button_callback="ctrl:target:all",
-            all_button_text="🌐 Все активные установки",
-        )
+        kb = _build_control_target_picker_keyboard(active_insts)
         if callback.message and isinstance(callback.message, Message):
             with contextlib.suppress(Exception):
                 await callback.message.edit_text(
@@ -321,6 +387,7 @@ async def handle_control_back_to_menu(
 async def handle_control_direct_from_card(
     callback: CallbackQuery,
     api_client: GrowVisionApiClient,
+    state: FSMContext,
 ) -> None:
     """Переход в управление реле прямо из карточки конкретной установки."""
     await callback.answer()
@@ -333,13 +400,15 @@ async def handle_control_direct_from_card(
         inst = await api_client.get_installation(user_id, int(inst_id))
         inst_name = f"«{inst.get('name')}»"
 
-    await _sync_pins_for_target(api_client, user_id, inst_id)
-    light_st, flash_st = _get_target_relay_states(inst_id)
+    await state.set_state(None)
+    await state.update_data(selected_target=inst_id)
+    cache = await _sync_pins_for_target(api_client, state, user_id, inst_id)
+    light_st, flash_st = _get_target_relay_states(cache, inst_id)
     kb = get_control_panel_keyboard(
         target=inst_id,
         light_state=light_st,
         flash_state=flash_st,
-        **_get_target_rgb_kwargs(inst_id),
+        **_get_target_rgb_kwargs(cache, inst_id),
     )
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
@@ -357,10 +426,11 @@ async def handle_control_target_selected(
 ) -> None:
     """Выбор цели (all или ID) и показ панели кнопок света."""
     await callback.answer()
-    await state.clear()
+    await state.set_state(None)
     parts = callback.data.split(":")
     target = parts[2]
     user_id = callback.from_user.id if callback.from_user else 0
+    await state.update_data(selected_target=target)
 
     if target == "all":
         target_title = "всеми активными установками"
@@ -370,15 +440,15 @@ async def handle_control_target_selected(
             inst = await api_client.get_installation(user_id, int(target))
             target_title = f"«{inst.get('name')}»"
 
-    await _sync_pins_for_target(api_client, user_id, target)
-    light_st, flash_st = _get_target_relay_states(target)
+    cache = await _sync_pins_for_target(api_client, state, user_id, target)
+    light_st, flash_st = _get_target_relay_states(cache, target)
     kb = get_control_panel_keyboard(
         target=target,
         light_state=light_st,
         flash_state=flash_st,
-        **_get_target_rgb_kwargs(target),
+        **_get_target_rgb_kwargs(cache, target),
     )
-    lock_note = _format_control_lock_note(target)
+    lock_note = _format_control_lock_note(cache, target)
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
             await callback.message.edit_text(
@@ -387,9 +457,9 @@ async def handle_control_target_selected(
             )
 
 
-def _format_control_lock_note(target: str) -> str:
+def _format_control_lock_note(cache: dict[str, Any], target: str) -> str:
     """Возвращает короткую подпись о блокировке или активном цикле для шапки панели реле."""
-    meta = _target_meta.get(target, {})
+    meta = cache["target_meta"].get(target, {})
     if target == "all":
         if meta.get("global_day_night_enabled"):
             phase_ru = (
@@ -407,9 +477,11 @@ def _format_control_lock_note(target: str) -> str:
     return ""
 
 
-def _format_day_night_menu_text(target: str, note: str = "") -> str:
+def _format_day_night_menu_text(
+    cache: dict[str, Any], target: str, note: str = ""
+) -> str:
     """Форматирует текст подменю настройки цикла дня и ночи."""
-    meta = _target_meta.get(target, {})
+    meta = cache["target_meta"].get(target, {})
     prefix = f"{note}\n\n" if note else ""
 
     if target == "all":
@@ -462,21 +534,23 @@ def _format_day_night_menu_text(target: str, note: str = "") -> str:
     )
 
 
-def _get_day_night_enabled_flag(target: str) -> bool:
-    meta = _target_meta.get(target, {})
+def _get_day_night_enabled_flag(cache: dict[str, Any], target: str) -> bool:
+    meta = cache["target_meta"].get(target, {})
     if target == "all":
         return bool(meta.get("global_day_night_enabled", False))
     return bool(meta.get("day_night_enabled", False))
 
 
-def _update_meta_from_day_night_response(target: str, resp: dict[str, Any]) -> None:
+def _update_meta_from_day_night_response(
+    cache: dict[str, Any], target: str, resp: dict[str, Any]
+) -> None:
     if target == "all":
-        _store_global_meta(resp)
+        _store_global_meta(cache, resp)
         for item in resp.get("installations") or []:
             if isinstance(item, dict) and item.get("installation_id") is not None:
-                _store_installation_meta(str(item["installation_id"]), item)
+                _store_installation_meta(cache, str(item["installation_id"]), item)
     else:
-        _store_installation_meta(target, resp)
+        _store_installation_meta(cache, target, resp)
 
 
 @router.callback_query(F.data.startswith("ctrl:dn:menu:"))
@@ -487,17 +561,17 @@ async def handle_control_day_night_menu(
 ) -> None:
     """Открывает подменю светового дня для всех или конкретной установки."""
     await callback.answer()
-    await state.clear()
+    await state.set_state(None)
     target = callback.data.split(":")[3]
     user_id = callback.from_user.id if callback.from_user else 0
 
-    await _sync_pins_for_target(api_client, user_id, target)
-    enabled = _get_day_night_enabled_flag(target)
+    cache = await _sync_pins_for_target(api_client, state, user_id, target)
+    enabled = _get_day_night_enabled_flag(cache, target)
     kb = get_day_night_menu_keyboard(target, enabled)
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
             await callback.message.edit_text(
-                _format_day_night_menu_text(target),
+                _format_day_night_menu_text(cache, target),
                 reply_markup=kb,
             )
 
@@ -506,6 +580,7 @@ async def handle_control_day_night_menu(
 async def handle_control_day_night_toggle(
     callback: CallbackQuery,
     api_client: GrowVisionApiClient,
+    state: FSMContext,
 ) -> None:
     """Включает или выключает цикл дня и ночи для target."""
     await callback.answer()
@@ -513,21 +588,25 @@ async def handle_control_day_night_toggle(
     next_enabled = parts[3] in ("1", "on", "true")
     target = parts[4]
     user_id = callback.from_user.id if callback.from_user else 0
+    cache = await _load_ctrl_cache(state)
 
     try:
         resp = await api_client.control_day_night(user_id, target, enabled=next_enabled)
-        _update_meta_from_day_night_response(target, resp)
-        enabled = _get_day_night_enabled_flag(target)
+        _update_meta_from_day_night_response(cache, target, resp)
+        await _save_ctrl_cache(state, cache)
+        enabled = _get_day_night_enabled_flag(cache, target)
         kb = get_day_night_menu_keyboard(target, enabled)
         note = "✅ Световой день включён" if enabled else "⚪️ Световой день выключен"
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
-                _format_day_night_menu_text(target, note=note),
+                _format_day_night_menu_text(cache, target, note=note),
                 reply_markup=kb,
             )
     except ApiError as exc:
         err = format_api_error(exc, is_control=True)
-        kb = get_day_night_menu_keyboard(target, _get_day_night_enabled_flag(target))
+        kb = get_day_night_menu_keyboard(
+            target, _get_day_night_enabled_flag(cache, target)
+        )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
                 f"❌ Ошибка настройки светового дня:\n{err}",
@@ -545,12 +624,16 @@ async def handle_control_day_night_interval_start(
     target = callback.data.split(":")[3]
     await state.set_state(ControlDayNightStates.waiting_interval)
     await state.update_data(target=target)
+    cache = await _load_ctrl_cache(state)
 
     title = (
         "всех установок"
         if target == "all"
         else html.escape(
-            str(_target_meta.get(target, {}).get("name") or f"установки #{target}")
+            str(
+                cache["target_meta"].get(target, {}).get("name")
+                or f"установки #{target}"
+            )
         )
     )
     if callback.message and isinstance(callback.message, Message):
@@ -582,16 +665,21 @@ async def process_control_day_night_interval_input(
         return
 
     user_id = message.from_user.id if message.from_user else 0
+    cache = await _load_ctrl_cache(state)
     try:
         resp = await api_client.control_day_night(
             user_id, target, day_start=day_start, day_end=day_end
         )
-        _update_meta_from_day_night_response(target, resp)
-        await state.clear()
-        await _sync_pins_for_target(api_client, user_id, target)
-        kb = get_day_night_menu_keyboard(target, _get_day_night_enabled_flag(target))
+        _update_meta_from_day_night_response(cache, target, resp)
+        await _save_ctrl_cache(state, cache)
+        await state.set_state(None)
+        cache = await _sync_pins_for_target(api_client, state, user_id, target)
+        kb = get_day_night_menu_keyboard(
+            target, _get_day_night_enabled_flag(cache, target)
+        )
         await message.answer(
             _format_day_night_menu_text(
+                cache,
                 target,
                 note=f"✅ Интервал обновлён: <code>{day_start}–{day_end}</code>",
             ),
@@ -605,10 +693,12 @@ async def process_control_day_night_interval_input(
         )
 
 
-def _format_rgb_submenu_text(target: str, channel: str, note: str = "") -> str:
-    meta = _target_meta.get(target, {})
+def _format_rgb_submenu_text(
+    cache: dict[str, Any], target: str, channel: str, note: str = ""
+) -> str:
+    meta = cache["target_meta"].get(target, {})
     inst_name = html.escape(str(meta.get("name") or f"Установка #{target}"))
-    light_st, flash_st = _get_target_relay_states(target)
+    light_st, flash_st = _get_target_relay_states(cache, target)
     is_flash = channel == "flash"
     st = flash_st if is_flash else light_st
     color = meta.get("flash_color" if is_flash else "light_color", DEFAULT_COLOR_HEX)
@@ -632,24 +722,24 @@ async def handle_control_rgb_submenu(
 ) -> None:
     """Открывает подменю RGB-лампы конкретной установки."""
     await callback.answer()
-    await state.clear()
+    await state.set_state(None)
     parts = callback.data.split(":")
     channel = parts[2]
     target = parts[3]
     user_id = callback.from_user.id if callback.from_user else 0
 
-    await _sync_pins_for_target(api_client, user_id, target)
-    light_st, flash_st = _get_target_relay_states(target)
+    cache = await _sync_pins_for_target(api_client, state, user_id, target)
+    light_st, flash_st = _get_target_relay_states(cache, target)
     is_flash = channel == "flash"
     st = flash_st if is_flash else light_st
-    meta = _target_meta.get(target, {})
+    meta = cache["target_meta"].get(target, {})
     color = meta.get("flash_color" if is_flash else "light_color", DEFAULT_COLOR_HEX)
 
     kb = get_rgb_channel_menu_keyboard(target, channel, st, color)
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
             await callback.message.edit_text(
-                _format_rgb_submenu_text(target, channel),
+                _format_rgb_submenu_text(cache, target, channel),
                 reply_markup=kb,
             )
 
@@ -658,6 +748,7 @@ async def handle_control_rgb_submenu(
 async def handle_control_rgb_toggle(
     callback: CallbackQuery,
     api_client: GrowVisionApiClient,
+    state: FSMContext,
 ) -> None:
     """Вкл/Выкл RGB-лампы с сохранением запомненного HEX-цвета."""
     await callback.answer()
@@ -667,6 +758,7 @@ async def handle_control_rgb_toggle(
     target = parts[4]
     is_flash = channel == "flash"
     user_id = callback.from_user.id if callback.from_user else 0
+    cache = await _load_ctrl_cache(state)
 
     try:
         resp = (
@@ -675,34 +767,40 @@ async def handle_control_rgb_toggle(
             else await api_client.control_light_main(user_id, target, state_bool)
         )
         _update_relay_pin_state(
+            cache,
             target,
             is_flash=is_flash,
             state_bool=state_bool,
             pin_states_from_api=resp.get("pin_states"),
         )
         if resp.get("color"):
-            _target_meta.setdefault(target, {})[
+            cache["target_meta"].setdefault(target, {})[
                 "flash_color" if is_flash else "light_color"
             ] = resp["color"]
+        await _save_ctrl_cache(state, cache)
 
-        light_st, flash_st = _get_target_relay_states(target)
+        light_st, flash_st = _get_target_relay_states(cache, target)
         st = flash_st if is_flash else light_st
-        color = _target_meta.get(target, {}).get(
-            "flash_color" if is_flash else "light_color", DEFAULT_COLOR_HEX
+        color = (
+            cache["target_meta"]
+            .get(target, {})
+            .get("flash_color" if is_flash else "light_color", DEFAULT_COLOR_HEX)
         )
         kb = get_rgb_channel_menu_keyboard(target, channel, st, color)
         res_msg = resp.get("result_message", "Готово")
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
-                _format_rgb_submenu_text(target, channel, note=f"✅ {res_msg}"),
+                _format_rgb_submenu_text(cache, target, channel, note=f"✅ {res_msg}"),
                 reply_markup=kb,
             )
     except ApiError as exc:
         err = format_api_error(exc, is_control=True)
-        light_st, flash_st = _get_target_relay_states(target)
+        light_st, flash_st = _get_target_relay_states(cache, target)
         st = flash_st if is_flash else light_st
-        color = _target_meta.get(target, {}).get(
-            "flash_color" if is_flash else "light_color", DEFAULT_COLOR_HEX
+        color = (
+            cache["target_meta"]
+            .get(target, {})
+            .get("flash_color" if is_flash else "light_color", DEFAULT_COLOR_HEX)
         )
         kb = get_rgb_channel_menu_keyboard(target, channel, st, color)
         if callback.message and isinstance(callback.message, Message):
@@ -758,6 +856,7 @@ async def process_control_rgb_hex_input(
         return
 
     user_id = message.from_user.id if message.from_user else 0
+    cache = await _load_ctrl_cache(state)
     try:
         resp = (
             await api_client.control_light_flash(
@@ -769,16 +868,18 @@ async def process_control_rgb_hex_input(
             )
         )
         applied_hex = resp.get("color") or norm_hex
-        _target_meta.setdefault(target, {})[
+        cache["target_meta"].setdefault(target, {})[
             "flash_color" if is_flash else "light_color"
         ] = applied_hex
-        await state.clear()
-        await _sync_pins_for_target(api_client, user_id, target)
-        light_st, flash_st = _get_target_relay_states(target)
+        await _save_ctrl_cache(state, cache)
+        await state.set_state(None)
+        cache = await _sync_pins_for_target(api_client, state, user_id, target)
+        light_st, flash_st = _get_target_relay_states(cache, target)
         st = flash_st if is_flash else light_st
         kb = get_rgb_channel_menu_keyboard(target, channel, st, applied_hex)
         await message.answer(
             _format_rgb_submenu_text(
+                cache,
                 target,
                 channel,
                 note=f"🎨 Цвет обновлён: <code>{applied_hex}</code>",
@@ -793,15 +894,17 @@ async def process_control_rgb_hex_input(
         )
 
 
-@router.callback_query(F.data.startswith("ctrl:light:"))
-async def handle_control_light_action(
+async def _handle_relay_toggle(
     callback: CallbackQuery,
     api_client: GrowVisionApiClient,
+    state: FSMContext,
+    *,
+    is_flash: bool,
 ) -> None:
-    """Включение/выключение основного света."""
+    """Общий обработчик включения/выключения основного света или вспышки."""
     await callback.answer()
     parts = callback.data.split(":")
-    # Поддерживаем форматы ctrl:light:<1|0>:<target> и ctrl:light:<target>:<on|off>
+    # Поддерживаем форматы ctrl:<light|flash>:<1|0>:<target> и ctrl:<light|flash>:<target>:<on|off>
     p1 = parts[2]
     p2 = parts[3] if len(parts) > 3 else "1"
     if p1.lower() in ("1", "0", "on", "off", "true", "false"):
@@ -812,21 +915,49 @@ async def handle_control_light_action(
         target = p1
     user_id = callback.from_user.id if callback.from_user else 0
 
+    channel_label = "вспышки" if is_flash else "основного света"
+    debug_endpoint = (
+        "POST /api/control/light/flash" if is_flash else "POST /api/control/light/main"
+    )
+    result_icon = "⚡" if is_flash else "💡"
+    error_label = "вспышкой" if is_flash else "светом"
+
     state_text = "включение" if state_bool else "выключение"
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
             await callback.message.edit_text(
-                f"⏳ Выполняется {state_text} основного света..."
+                f"⏳ Выполняется {state_text} {channel_label}..."
             )
 
+    cache = await _load_ctrl_cache(state)
+    await state.update_data(selected_target=target)
+
     try:
-        resp = await api_client.control_light_main(user_id, target, state_bool)
-        _update_relay_pin_state(
-            target,
-            is_flash=False,
-            state_bool=state_bool,
-            pin_states_from_api=resp.get("pin_states"),
+        resp = (
+            await api_client.control_light_flash(user_id, target, state_bool)
+            if is_flash
+            else await api_client.control_light_main(user_id, target, state_bool)
         )
+        pin_states_from_api = resp.get("pin_states")
+        effective_state = (
+            bool(resp["effective_state"])
+            if resp.get("effective_state") is not None
+            else state_bool
+        )
+        _update_relay_pin_state(
+            cache,
+            target,
+            is_flash=is_flash,
+            state_bool=effective_state,
+            pin_states_from_api=pin_states_from_api,
+        )
+        if not pin_states_from_api:
+            with contextlib.suppress(Exception):
+                relays = await api_client.get_relays_status(user_id)
+                if isinstance(relays, dict):
+                    _apply_relays_snapshot(cache, relays)
+        await _save_ctrl_cache(state, cache)
+
         res_msg = resp.get("result_message", "Успешно")
         debug_info = resp.get("debug_info")
         debug_log = (
@@ -840,128 +971,68 @@ async def handle_control_light_action(
         debug_on = sys_status.get("settings", {}).get("debug_mode", False) or bool(
             debug_info
         )
-        debug_str = (
-            format_debug_block("POST /api/control/light/main", debug_log)
-            if debug_on
-            else ""
-        )
+        debug_str = format_debug_block(debug_endpoint, debug_log) if debug_on else ""
 
-        light_st, flash_st = _get_target_relay_states(target)
+        light_st, flash_st = _get_target_relay_states(cache, target)
         kb = get_control_panel_keyboard(
             target=target,
             light_state=light_st,
             flash_state=flash_st,
-            **_get_target_rgb_kwargs(target),
+            **_get_target_rgb_kwargs(cache, target),
         )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
-                f"💡 <b>Результат:</b> {res_msg}{debug_str}",
+                f"{result_icon} <b>Результат:</b> {res_msg}{debug_str}",
                 reply_markup=kb,
             )
     except ApiError as exc:
         err = format_api_error(exc, is_control=True)
-        light_st, flash_st = _get_target_relay_states(target)
+        light_st, flash_st = _get_target_relay_states(cache, target)
         kb = get_control_panel_keyboard(
             target=target,
             light_state=light_st,
             flash_state=flash_st,
-            **_get_target_rgb_kwargs(target),
+            **_get_target_rgb_kwargs(cache, target),
         )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
-                f"❌ Ошибка управления светом:\n{err}",
+                f"❌ Ошибка управления {error_label}:\n{err}",
                 reply_markup=kb,
             )
+
+
+@router.callback_query(F.data.startswith("ctrl:light:"))
+async def handle_control_light_action(
+    callback: CallbackQuery,
+    api_client: GrowVisionApiClient,
+    state: FSMContext,
+) -> None:
+    """Включение/выключение основного света."""
+    await _handle_relay_toggle(callback, api_client, state, is_flash=False)
 
 
 @router.callback_query(F.data.startswith("ctrl:flash:"))
 async def handle_control_flash_action(
     callback: CallbackQuery,
     api_client: GrowVisionApiClient,
+    state: FSMContext,
 ) -> None:
     """Включение/выключение вспышки."""
-    await callback.answer()
-    parts = callback.data.split(":")
-    # Поддерживаем форматы ctrl:flash:<1|0>:<target> и ctrl:flash:<target>:<on|off>
-    p1 = parts[2]
-    p2 = parts[3] if len(parts) > 3 else "1"
-    if p1.lower() in ("1", "0", "on", "off", "true", "false"):
-        state_bool = p1.lower() in ("1", "on", "true")
-        target = p2
-    else:
-        state_bool = p2.lower() in ("1", "on", "true")
-        target = p1
-    user_id = callback.from_user.id if callback.from_user else 0
-
-    state_text = "включение" if state_bool else "выключение"
-    if callback.message and isinstance(callback.message, Message):
-        with contextlib.suppress(Exception):
-            await callback.message.edit_text(f"⏳ Выполняется {state_text} вспышки...")
-
-    try:
-        resp = await api_client.control_light_flash(user_id, target, state_bool)
-        _update_relay_pin_state(
-            target,
-            is_flash=True,
-            state_bool=state_bool,
-            pin_states_from_api=resp.get("pin_states"),
-        )
-        res_msg = resp.get("result_message", "Успешно")
-        debug_info = resp.get("debug_info")
-        debug_log = (
-            debug_info.get("log_line")
-            if isinstance(debug_info, dict)
-            else resp.get("debug_log_line")
-        )
-
-        sys_status = await api_client.get_system_status(user_id)
-        debug_on = sys_status.get("settings", {}).get("debug_mode", False) or bool(
-            debug_info
-        )
-        debug_str = (
-            format_debug_block("POST /api/control/light/flash", debug_log)
-            if debug_on
-            else ""
-        )
-
-        light_st, flash_st = _get_target_relay_states(target)
-        kb = get_control_panel_keyboard(
-            target=target,
-            light_state=light_st,
-            flash_state=flash_st,
-            **_get_target_rgb_kwargs(target),
-        )
-        if callback.message and isinstance(callback.message, Message):
-            await callback.message.edit_text(
-                f"⚡ <b>Результат:</b> {res_msg}{debug_str}",
-                reply_markup=kb,
-            )
-    except ApiError as exc:
-        err = format_api_error(exc, is_control=True)
-        light_st, flash_st = _get_target_relay_states(target)
-        kb = get_control_panel_keyboard(
-            target=target,
-            light_state=light_st,
-            flash_state=flash_st,
-            **_get_target_rgb_kwargs(target),
-        )
-        if callback.message and isinstance(callback.message, Message):
-            await callback.message.edit_text(
-                f"❌ Ошибка управления вспышкой:\n{err}",
-                reply_markup=kb,
-            )
+    await _handle_relay_toggle(callback, api_client, state, is_flash=True)
 
 
 @router.callback_query(F.data.startswith("ctrl:relay:"))
 async def handle_control_relay_test(
     callback: CallbackQuery,
     api_client: GrowVisionApiClient,
+    state: FSMContext,
 ) -> None:
     """Кратковременный тест реле (3 секунды)."""
     await callback.answer()
     parts = callback.data.split(":")
     target = parts[2]
     user_id = callback.from_user.id if callback.from_user else 0
+    cache = await _load_ctrl_cache(state)
 
     if callback.message and isinstance(callback.message, Message):
         with contextlib.suppress(Exception):
@@ -971,6 +1042,18 @@ async def handle_control_relay_test(
 
     try:
         resp = await api_client.control_relay_test(user_id, target)
+        pin_states_from_api = resp.get("pin_states")
+        if isinstance(pin_states_from_api, dict):
+            for p_str, val in pin_states_from_api.items():
+                if str(p_str).isdigit():
+                    cache["pin_states"][str(p_str)] = bool(val)
+        else:
+            with contextlib.suppress(Exception):
+                relays = await api_client.get_relays_status(user_id)
+                if isinstance(relays, dict):
+                    _apply_relays_snapshot(cache, relays)
+        await _save_ctrl_cache(state, cache)
+
         res_msg = resp.get("result_message", "Тест реле завершен")
         debug_info = resp.get("debug_info")
         debug_log = (
@@ -989,12 +1072,12 @@ async def handle_control_relay_test(
             else ""
         )
 
-        light_st, flash_st = _get_target_relay_states(target)
+        light_st, flash_st = _get_target_relay_states(cache, target)
         kb = get_control_panel_keyboard(
             target=target,
             light_state=light_st,
             flash_state=flash_st,
-            **_get_target_rgb_kwargs(target),
+            **_get_target_rgb_kwargs(cache, target),
         )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(
@@ -1003,12 +1086,12 @@ async def handle_control_relay_test(
             )
     except ApiError as exc:
         err = format_api_error(exc, is_control=True)
-        light_st, flash_st = _get_target_relay_states(target)
+        light_st, flash_st = _get_target_relay_states(cache, target)
         kb = get_control_panel_keyboard(
             target=target,
             light_state=light_st,
             flash_state=flash_st,
-            **_get_target_rgb_kwargs(target),
+            **_get_target_rgb_kwargs(cache, target),
         )
         if callback.message and isinstance(callback.message, Message):
             await callback.message.edit_text(

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import threading
 import time
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -256,95 +257,58 @@ def apply_power_line_frequency_50hz(dev_path: str) -> bool:
         return False
 
 
-class HardwareManager:
-    """Менеджер аппаратного обеспечения (GPIO, камеры, телеметрия)."""
+class GpioBackend(ABC):
+    """Абстрактный бэкенд управления GPIO-пинами и ШИМ."""
 
-    def __init__(
-        self,
-        mode: str = "mock",
-        relay_active_high: bool = True,
-        v4l_by_id_dir: Path | None = None,
-        sys_dir: Path | None = None,
-        mock_overlay_aruco: bool = True,
-        mock_cameras: bool = False,
-    ):
-        self.mode = mode.lower()
-        if self.mode not in ("rpi", "mock"):
-            raise ValueError(
-                f"Недопустимый режим HARDWARE_MODE='{self.mode}'. Допустимы только 'rpi' или 'mock'."
-            )
+    @abstractmethod
+    def set_pin(self, pin: int, state: bool) -> None:
+        """Устанавливает дискретное состояние GPIO-пина."""
 
+    @abstractmethod
+    def set_pwm(self, pin: int, duty: float) -> None:
+        """Устанавливает коэффициент ШИМ (0.0..1.0) для GPIO-пина."""
+
+    @abstractmethod
+    def get_pin_state(self, pin: int, default: bool | None = False) -> bool | None:
+        """Возвращает текущее состояние пина или default, если пин не инициализирован."""
+
+    @abstractmethod
+    def has_pin(self, pin: int) -> bool:
+        """Проверяет, инициализирован ли пин в данном бэкенде."""
+
+    @abstractmethod
+    def known_pins(self) -> set[int]:
+        """Возвращает множество номеров пинов, известных бэкенду."""
+
+    @abstractmethod
+    def turn_off_pin(self, pin: int) -> None:
+        """Безопасно переводит пин в выключенное состояние без закрытия устройства."""
+
+    @abstractmethod
+    def get_pwm_duty(self, pin: int, default: float = 0.0) -> float:
+        """Возвращает текущий коэффициент ШИМ (0.0..1.0) для пина."""
+
+    @abstractmethod
+    def cleanup(self) -> None:
+        """Освобождает и очищает ресурсы пинов и устройств."""
+
+
+class RpiGpioBackend(GpioBackend):
+    """Аппаратный GPIO-бэкенд для Raspberry Pi на базе gpiozero."""
+
+    def __init__(self, relay_active_high: bool = True) -> None:
         self.relay_active_high = relay_active_high
-        self.v4l_by_id_dir = v4l_by_id_dir or Path("/dev/v4l/by-id")
-        self.sys_dir = sys_dir or Path("/sys")
-        self.mock_overlay_aruco = mock_overlay_aruco
-        self.mock_cameras = bool(mock_cameras)
-
-        self.lock = threading.Lock()
-        self._light_state_lock = threading.RLock()
         self._gpio_devices: dict[int, Any] = {}
         self._pwm_devices: dict[int, Any] = {}
-        self._mock_pins: dict[int, bool] = {}
-        self._mock_pwm: dict[int, float] = {}
-        self._pin_states: dict[int, bool] = {}
-        self._desired_pin_states: dict[int, bool] = {}
-        self._desired_channel_colors: dict[tuple[int, ...], str] = {}
-        self._channel_colors: dict[tuple[int, ...], str] = {}
-        self._capturing_pins: dict[int, int] = {}
-        self._pin_roles: dict[int, str] = {}
-        self._pin_active_since: dict[int, float] = {}
-        self._mock_frame_counter: int = 0
-        self._camera_profiles: dict[str, CameraProfile] = {}
+        try:
+            import gpiozero  # noqa: F401
 
-        if self.mode == "rpi":
-            try:
-                import gpiozero  # noqa: F401
-
-                logger.info("Инициализирован аппаратный режим RPi (gpiozero доступен)")
-            except ImportError as exc:
-                # Строго без тихого отката в mock!
-                raise RuntimeError(
-                    "В режиме HARDWARE_MODE=rpi необходима библиотека gpiozero (python3-gpiozero / python3-lgpio)."
-                ) from exc
-
-    def acquire_lock(self, blocking: bool = True, timeout: float = -1.0) -> bool:
-        """Захватывает аппаратный мьютекс."""
-        return self.lock.acquire(blocking=blocking, timeout=timeout)
-
-    def release_lock(self) -> None:
-        """Освобождает аппаратный мьютекс."""
-        if self.lock.locked():
-            self.lock.release()
-
-    def get_pin_state(self, pin: int, default: bool = False) -> bool:
-        """Возвращает логическое состояние пина (True = включено, False = выключено).
-
-        Не инициализирует неизвестный RPi-пин с initial_value=False до чтения,
-        чтобы не перебить фактическое состояние реле.
-        """
-        if self.mode == "rpi":
-            pwm_dev = self._pwm_devices.get(pin)
-            if pwm_dev is not None:
-                return float(getattr(pwm_dev, "value", 0.0)) > 0.0
-            dev = self._gpio_devices.get(pin)
-            if dev is not None:
-                if hasattr(dev, "is_active"):
-                    return bool(dev.is_active)
-                return bool(dev.value)
-            if pin in self._pin_states:
-                return bool(self._pin_states[pin])
-            return bool(default)
-        if pin in self._mock_pwm:
-            return float(self._mock_pwm[pin]) > 0.0
-        if pin in self._mock_pins:
-            return bool(self._mock_pins[pin])
-        if pin in self._pin_states:
-            return bool(self._pin_states[pin])
-        return bool(default)
-
-    def get_mock_pwm(self, pin: int, default: float = 0.0) -> float:
-        """Возвращает текущий коэффициент ШИМ (0.0..1.0) для пина в mock-режиме."""
-        return float(self._mock_pwm.get(pin, default))
+            logger.info("Инициализирован аппаратный режим RPi (gpiozero доступен)")
+        except ImportError as exc:
+            # Строго без тихого отката в mock!
+            raise RuntimeError(
+                "В режиме HARDWARE_MODE=rpi необходима библиотека gpiozero (python3-gpiozero / python3-lgpio)."
+            ) from exc
 
     def _get_gpio_device(self, pin: int, initial_value: bool = False) -> Any:
         """Получает или создает объект OutputDevice для указанного пина с учетом полярности."""
@@ -388,6 +352,201 @@ class HardwareManager:
                 logger.error(f"Ошибка инициализации PWM GPIO пина {pin}: {e}")
                 raise
         return self._pwm_devices[pin]
+
+    def set_pin(self, pin: int, state: bool) -> None:
+        """Устанавливает логическое состояние GPIO-пина через OutputDevice."""
+        dev = self._get_gpio_device(pin, initial_value=state)
+        if dev:
+            if state:
+                dev.on()
+            else:
+                dev.off()
+
+    def set_pwm(self, pin: int, duty: float) -> None:
+        """Устанавливает коэффициент ШИМ для GPIO-пина через PWMOutputDevice."""
+        dev = self._get_pwm_device(pin, initial_value=duty)
+        if dev:
+            dev.value = duty
+
+    def get_pin_state(self, pin: int, default: bool | None = False) -> bool | None:
+        """Читает состояние известного OutputDevice/PWMOutputDevice без создания нового объекта."""
+        pwm_dev = self._pwm_devices.get(pin)
+        if pwm_dev is not None:
+            return float(getattr(pwm_dev, "value", 0.0)) > 0.0
+        dev = self._gpio_devices.get(pin)
+        if dev is not None:
+            if hasattr(dev, "is_active"):
+                return bool(dev.is_active)
+            return bool(dev.value)
+        return default
+
+    def has_pin(self, pin: int) -> bool:
+        """Проверяет наличие инициализированного OutputDevice или PWMOutputDevice для пина."""
+        return pin in self._gpio_devices or pin in self._pwm_devices
+
+    def known_pins(self) -> set[int]:
+        """Возвращает множество пинов, для которых созданы GPIO/PWM устройства."""
+        return set(self._gpio_devices.keys()) | set(self._pwm_devices.keys())
+
+    def turn_off_pin(self, pin: int) -> None:
+        """Выключает устройство на пине при завершении работы."""
+        dev = self._pwm_devices.get(pin) or self._gpio_devices.get(pin)
+        if dev is not None:
+            with contextlib.suppress(Exception):
+                dev.off()
+
+    def get_pwm_duty(self, pin: int, default: float = 0.0) -> float:
+        """Возвращает текущий коэффициент ШИМ для PWMOutputDevice или default."""
+        pwm_dev = self._pwm_devices.get(pin)
+        if pwm_dev is not None:
+            return float(getattr(pwm_dev, "value", default))
+        return float(default)
+
+    def cleanup(self) -> None:
+        """Закрывает и очищает все созданные GPIO и PWM устройства."""
+        for dev in list(self._gpio_devices.values()) + list(self._pwm_devices.values()):
+            with contextlib.suppress(Exception):
+                dev.close()
+        self._gpio_devices.clear()
+        self._pwm_devices.clear()
+
+
+class MockGpioBackend(GpioBackend):
+    """Программная заглушка GPIO/PWM-бэкенда для отладки и тестирования."""
+
+    def __init__(self) -> None:
+        self._mock_pins: dict[int, bool] = {}
+        self._mock_pwm: dict[int, float] = {}
+
+    def set_pin(self, pin: int, state: bool) -> None:
+        """Сохраняет дискретное состояние пина и сбрасывает его PWM-значение."""
+        self._mock_pwm.pop(pin, None)
+        self._mock_pins[pin] = bool(state)
+
+    def set_pwm(self, pin: int, duty: float) -> None:
+        """Сохраняет коэффициент ШИМ и соответствующее логическое состояние пина."""
+        self._mock_pwm[pin] = duty
+        self._mock_pins[pin] = duty > 0.0
+
+    def get_pin_state(self, pin: int, default: bool | None = False) -> bool | None:
+        """Возвращает состояние пина из mock-словарей или default."""
+        if pin in self._mock_pwm:
+            return float(self._mock_pwm[pin]) > 0.0
+        if pin in self._mock_pins:
+            return bool(self._mock_pins[pin])
+        return default
+
+    def has_pin(self, pin: int) -> bool:
+        """Проверяет наличие пина в mock-словарях."""
+        return pin in self._mock_pins or pin in self._mock_pwm
+
+    def known_pins(self) -> set[int]:
+        """Возвращает множество пинов из mock-словарей."""
+        return set(self._mock_pins.keys()) | set(self._mock_pwm.keys())
+
+    def turn_off_pin(self, pin: int) -> None:
+        """Переводит пин в выключенное состояние в mock-словарях."""
+        self._mock_pins[pin] = False
+        if pin in self._mock_pwm:
+            self._mock_pwm[pin] = 0.0
+
+    def get_pwm_duty(self, pin: int, default: float = 0.0) -> float:
+        """Возвращает текущий коэффициент ШИМ (0.0..1.0) для пина в mock-режиме."""
+        return float(self._mock_pwm.get(pin, default))
+
+    def cleanup(self) -> None:
+        """Очищает mock-словари состояний пинов и ШИМ."""
+        self._mock_pins.clear()
+        self._mock_pwm.clear()
+
+
+class HardwareManager:
+    """Менеджер аппаратного обеспечения (GPIO, камеры, телеметрия)."""
+
+    def __init__(
+        self,
+        mode: str = "mock",
+        relay_active_high: bool = True,
+        v4l_by_id_dir: Path | None = None,
+        sys_dir: Path | None = None,
+        mock_overlay_aruco: bool = True,
+        mock_cameras: bool = False,
+    ):
+        self.mode = mode.lower()
+        if self.mode not in ("rpi", "mock"):
+            raise ValueError(
+                f"Недопустимый режим HARDWARE_MODE='{self.mode}'. Допустимы только 'rpi' или 'mock'."
+            )
+
+        self.relay_active_high = relay_active_high
+        self.v4l_by_id_dir = v4l_by_id_dir or Path("/dev/v4l/by-id")
+        self.sys_dir = sys_dir or Path("/sys")
+        self.mock_overlay_aruco = mock_overlay_aruco
+        self.mock_cameras = bool(mock_cameras)
+
+        self.lock = threading.Lock()
+        self._light_state_lock = threading.RLock()
+        self._pin_states: dict[int, bool] = {}
+        self._desired_pin_states: dict[int, bool] = {}
+        self._desired_channel_colors: dict[tuple[int, ...], str] = {}
+        self._channel_colors: dict[tuple[int, ...], str] = {}
+        self._capturing_pins: dict[int, int] = {}
+        self._pin_roles: dict[int, str] = {}
+        self._pin_active_since: dict[int, float] = {}
+        self._mock_frame_counter: int = 0
+        self._camera_profiles: dict[str, CameraProfile] = {}
+
+        self._gpio_backend: GpioBackend = (
+            RpiGpioBackend(relay_active_high=self.relay_active_high)
+            if self.mode == "rpi"
+            else MockGpioBackend()
+        )
+
+    @property
+    def _gpio_devices(self) -> dict[int, Any]:
+        """Совместимый доступ к словарю GPIO-устройств бэкенда."""
+        return getattr(self._gpio_backend, "_gpio_devices", {})
+
+    @property
+    def _pwm_devices(self) -> dict[int, Any]:
+        """Совместимый доступ к словарю PWM-устройств бэкенда."""
+        return getattr(self._gpio_backend, "_pwm_devices", {})
+
+    @property
+    def _mock_pins(self) -> dict[int, bool]:
+        """Совместимый доступ к mock-словарю пинов бэкенда."""
+        return getattr(self._gpio_backend, "_mock_pins", {})
+
+    @property
+    def _mock_pwm(self) -> dict[int, float]:
+        """Совместимый доступ к mock-словарю ШИМ бэкенда."""
+        return getattr(self._gpio_backend, "_mock_pwm", {})
+
+    def acquire_lock(self, blocking: bool = True, timeout: float = -1.0) -> bool:
+        """Захватывает аппаратный мьютекс."""
+        return self.lock.acquire(blocking=blocking, timeout=timeout)
+
+    def release_lock(self) -> None:
+        """Освобождает аппаратный мьютекс."""
+        if self.lock.locked():
+            self.lock.release()
+
+    def get_pin_state(self, pin: int, default: bool = False) -> bool:
+        """Возвращает логическое состояние пина (True = включено, False = выключено).
+
+        Не инициализирует неизвестный RPi-пин с initial_value=False до чтения,
+        чтобы не перебить фактическое состояние реле.
+        """
+        backend_state = self._gpio_backend.get_pin_state(pin, default=None)
+        if backend_state is not None:
+            return bool(backend_state)
+        if pin in self._pin_states:
+            return bool(self._pin_states[pin])
+        return bool(default)
+
+    def get_mock_pwm(self, pin: int, default: float = 0.0) -> float:
+        """Возвращает текущий коэффициент ШИМ (0.0..1.0) для пина в mock-режиме."""
+        return self._gpio_backend.get_pwm_duty(pin, default=default)
 
     def _physical_level_label(self, state: bool) -> str:
         """Возвращает физический уровень сигнала (HIGH/LOW) с учётом полярности реле."""
@@ -436,16 +595,7 @@ class HardwareManager:
         old_state = self._pin_states.get(pin)
         old_label = ("ON" if old_state else "OFF") if was_initialized else "UNINIT"
 
-        if self.mode == "rpi":
-            dev = self._get_gpio_device(pin, initial_value=norm_state)
-            if dev:
-                if norm_state:
-                    dev.on()
-                else:
-                    dev.off()
-        else:
-            self._mock_pwm.pop(pin, None)
-            self._mock_pins[pin] = norm_state
+        self._gpio_backend.set_pin(pin, norm_state)
 
         now_m = time.monotonic()
         if norm_state:
@@ -486,13 +636,7 @@ class HardwareManager:
             self._pin_roles.setdefault(pin, "gpio")
 
         old_state = self._pin_states.get(pin)
-        if self.mode == "rpi":
-            dev = self._get_pwm_device(pin, initial_value=norm_duty)
-            if dev:
-                dev.value = norm_duty
-        else:
-            self._mock_pwm[pin] = norm_duty
-            self._mock_pins[pin] = norm_state
+        self._gpio_backend.set_pwm(pin, norm_duty)
 
         now_m = time.monotonic()
         if norm_state:
@@ -837,12 +981,7 @@ class HardwareManager:
                     prev_states[pin] = bool(self._desired_pin_states[pin])
                 elif pin in self._pin_states:
                     prev_states[pin] = bool(self._pin_states[pin])
-                elif (
-                    self.mode == "rpi"
-                    and (pin in self._gpio_devices or pin in self._pwm_devices)
-                    or self.mode == "mock"
-                    and (pin in self._mock_pins or pin in self._mock_pwm)
-                ):
+                elif self._gpio_backend.has_pin(pin):
                     prev_states[pin] = self.get_pin_state(pin)
                 elif initial_states is not None and pin in initial_states:
                     prev_states[pin] = bool(initial_states[pin])
@@ -1323,33 +1462,15 @@ class HardwareManager:
     def cleanup(self) -> None:
         """Безопасный сброс и очистка используемых ресурсов GPIO и PWM."""
         all_pins = sorted(
-            set(self._pin_states.keys())
-            | set(self._gpio_devices.keys())
-            | set(self._pwm_devices.keys())
-            | set(self._mock_pins.keys())
-            | set(self._mock_pwm.keys())
+            set(self._pin_states.keys()) | self._gpio_backend.known_pins()
         )
         now_m = time.monotonic()
         for pin in all_pins:
-            dev = self._pwm_devices.get(pin) or self._gpio_devices.get(pin)
             old_state = self._pin_states.get(pin)
             if old_state is None:
-                if dev is not None:
-                    old_state = bool(
-                        getattr(dev, "is_active", getattr(dev, "value", False))
-                    )
-                elif pin in self._mock_pwm:
-                    old_state = float(self._mock_pwm[pin]) > 0.0
-                else:
-                    old_state = bool(self._mock_pins.get(pin, False))
+                old_state = bool(self._gpio_backend.get_pin_state(pin, default=False))
 
-            if self.mode == "rpi" and dev is not None:
-                with contextlib.suppress(Exception):
-                    dev.off()
-            elif self.mode == "mock":
-                self._mock_pins[pin] = False
-                if pin in self._mock_pwm:
-                    self._mock_pwm[pin] = 0.0
+            self._gpio_backend.turn_off_pin(pin)
 
             if old_state:
                 active_since = self._pin_active_since.pop(pin, None)
@@ -1371,13 +1492,7 @@ class HardwareManager:
                 duration_sec=duration_sec,
             )
 
-        for dev in list(self._gpio_devices.values()) + list(self._pwm_devices.values()):
-            with contextlib.suppress(Exception):
-                dev.close()
-        self._gpio_devices.clear()
-        self._pwm_devices.clear()
-        self._mock_pins.clear()
-        self._mock_pwm.clear()
+        self._gpio_backend.cleanup()
         self._pin_states.clear()
         self._desired_pin_states.clear()
         self._desired_channel_colors.clear()

@@ -4,6 +4,7 @@ import os
 import platform
 import threading
 import time
+from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,6 +26,126 @@ from shared.schemas import (
 from shared.version import get_app_version
 
 logger = logging.getLogger("edge_agent.orchestrator")
+
+
+class BaseCommandHandler(ABC):
+    """Базовый обработчик команды оркестратора со стандартизированной обвязкой."""
+
+    requires_lock: bool = True
+
+    def execute(self, orchestrator: "EdgeOrchestrator", cmd: CommandItem) -> None:
+        """Выполняет команду с захватом аппаратного мьютекса (при необходимости) и обработкой ошибок."""
+        if self.requires_lock:
+            # Захват аппаратного мьютекса (с ожиданием до 10.0 с на случай плановой съёмки)
+            acquired = orchestrator.hardware.acquire_lock(blocking=True, timeout=10.0)
+            if not acquired:
+                logger.warning(
+                    f"Аппаратный мьютекс занят. Отклонение команды #{cmd.id}"
+                )
+                orchestrator.client.send_command_result(
+                    cmd.id,
+                    CommandResult(
+                        status="error",
+                        result_message="Камера недоступна, попробуйте позже",
+                    ),
+                )
+                return
+
+        try:
+            self._run(orchestrator, cmd)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Ошибка при выполнении команды #{cmd.id}: {exc}")
+            orchestrator.client.send_command_result(
+                cmd.id,
+                CommandResult(
+                    status="error",
+                    result_message=f"Внутренняя ошибка выполнения: {exc}",
+                ),
+            )
+        finally:
+            if self.requires_lock:
+                orchestrator.hardware.release_lock()
+
+    @abstractmethod
+    def _run(self, orchestrator: "EdgeOrchestrator", cmd: CommandItem) -> None:
+        """Непосредственное выполнение логики конкретной команды."""
+
+
+class LightCommandHandler(BaseCommandHandler):
+    """Обработчик команд управления светом и вспышкой без ожидания мьютекса съёмки."""
+
+    # Команды управления светом/вспышкой не ждут аппаратного мьютекса съёмки:
+    # они обновляют целевые состояния под _light_state_lock и пропускают снимаемые пины.
+    requires_lock = False
+
+    def __init__(self, is_flash: bool) -> None:
+        self.is_flash = is_flash
+
+    def _run(self, orchestrator: "EdgeOrchestrator", cmd: CommandItem) -> None:
+        orchestrator._handle_light(cmd, is_flash=self.is_flash)
+
+
+class RelayTestCommandHandler(BaseCommandHandler):
+    """Обработчик команды тестирования реле и RGB-подсветки."""
+
+    def _run(self, orchestrator: "EdgeOrchestrator", cmd: CommandItem) -> None:
+        orchestrator._handle_relay_test(cmd)
+
+
+class ScanCamerasCommandHandler(BaseCommandHandler):
+    """Обработчик команды сканирования подключённых камер."""
+
+    def _run(self, orchestrator: "EdgeOrchestrator", cmd: CommandItem) -> None:
+        orchestrator._handle_scan_cameras(cmd)
+
+
+class AutocalibrateCameraCommandHandler(BaseCommandHandler):
+    """Обработчик команды автокалибровки камеры."""
+
+    def _run(self, orchestrator: "EdgeOrchestrator", cmd: CommandItem) -> None:
+        orchestrator._handle_autocalibrate_camera(cmd)
+
+
+class SnapCommandHandler(BaseCommandHandler):
+    """Обработчик команд одиночного и тестового снимка (SNAP / CAPTURE_TEST)."""
+
+    def _run(self, orchestrator: "EdgeOrchestrator", cmd: CommandItem) -> None:
+        orchestrator._handle_snap(cmd)
+
+
+class StartLiveCommandHandler(BaseCommandHandler):
+    """Обработчик команды запуска live-трансляции."""
+
+    def _run(self, orchestrator: "EdgeOrchestrator", cmd: CommandItem) -> None:
+        orchestrator._handle_start_live(cmd)
+
+
+class StopLiveCommandHandler(BaseCommandHandler):
+    """Обработчик команды остановки live-трансляции."""
+
+    def _run(self, orchestrator: "EdgeOrchestrator", cmd: CommandItem) -> None:
+        orchestrator._handle_stop_live(cmd)
+
+
+class GetCameraControlsCommandHandler(BaseCommandHandler):
+    """Обработчик команды чтения UVC-настроек камеры."""
+
+    def _run(self, orchestrator: "EdgeOrchestrator", cmd: CommandItem) -> None:
+        orchestrator._handle_get_camera_controls(cmd)
+
+
+class SetCameraControlsCommandHandler(BaseCommandHandler):
+    """Обработчик команды применения UVC-настроек камеры."""
+
+    def _run(self, orchestrator: "EdgeOrchestrator", cmd: CommandItem) -> None:
+        orchestrator._handle_set_camera_controls(cmd)
+
+
+class AutoColorCalibrateCommandHandler(BaseCommandHandler):
+    """Обработчик команды автокалибровки цвета по цветовому маркеру."""
+
+    def _run(self, orchestrator: "EdgeOrchestrator", cmd: CommandItem) -> None:
+        orchestrator._handle_auto_color_calibrate(cmd)
 
 
 class EdgeOrchestrator:
@@ -88,6 +209,21 @@ class EdgeOrchestrator:
         self._last_server_segmentation_modes: dict[str, str] = {}
         self._last_server_light_states: dict[int, tuple[bool, bool, str, str]] = {}
         self._last_server_global_light_modes: tuple[str, str] | None = None
+        snap_handler = SnapCommandHandler()
+        self._command_handlers: dict[str, BaseCommandHandler] = {
+            "LIGHT_MAIN": LightCommandHandler(is_flash=False),
+            "LIGHT_FLASH": LightCommandHandler(is_flash=True),
+            "RELAY_TEST": RelayTestCommandHandler(),
+            "SCAN_CAMERAS": ScanCamerasCommandHandler(),
+            "AUTOCALIBRATE_CAMERA": AutocalibrateCameraCommandHandler(),
+            "SNAP": snap_handler,
+            "CAPTURE_TEST": snap_handler,
+            "START_LIVE": StartLiveCommandHandler(),
+            "STOP_LIVE": StopLiveCommandHandler(),
+            "GET_CAMERA_CONTROLS": GetCameraControlsCommandHandler(),
+            "SET_CAMERA_CONTROLS": SetCameraControlsCommandHandler(),
+            "AUTO_COLOR_CALIBRATE": AutoColorCalibrateCommandHandler(),
+        }
 
     def start(self) -> None:
         """Запускает фоновые потоки оркестратора."""
@@ -407,73 +543,18 @@ class EdgeOrchestrator:
         logger.info(f"Получена команда #{cmd.id}: {cmd.command_type}")
         cmd_type = cmd.command_type.upper()
 
-        # Команды управления светом/вспышкой не ждут аппаратного мьютекса съёмки:
-        # они обновляют целевые состояния под _light_state_lock и пропускают снимаемые пины.
-        if cmd_type in ("LIGHT_MAIN", "LIGHT_FLASH"):
-            try:
-                self._handle_light(cmd, is_flash=(cmd_type == "LIGHT_FLASH"))
-            except Exception as exc:  # noqa: BLE001
-                logger.error(f"Ошибка при выполнении команды #{cmd.id}: {exc}")
-                self.client.send_command_result(
-                    cmd.id,
-                    CommandResult(
-                        status="error",
-                        result_message=f"Внутренняя ошибка выполнения: {exc}",
-                    ),
-                )
-            return
-
-        # Захват аппаратного мьютекса (с ожиданием до 10.0 с на случай плановой съёмки)
-        acquired = self.hardware.acquire_lock(blocking=True, timeout=10.0)
-        if not acquired:
-            logger.warning(f"Аппаратный мьютекс занят. Отклонение команды #{cmd.id}")
+        handler = self._command_handlers.get(cmd_type)
+        if handler is None:
             self.client.send_command_result(
                 cmd.id,
                 CommandResult(
                     status="error",
-                    result_message="Камера недоступна, попробуйте позже",
+                    result_message=f"Неизвестная команда: {cmd.command_type}",
                 ),
             )
             return
 
-        try:
-            if cmd_type == "RELAY_TEST":
-                self._handle_relay_test(cmd)
-            elif cmd_type == "SCAN_CAMERAS":
-                self._handle_scan_cameras(cmd)
-            elif cmd_type == "AUTOCALIBRATE_CAMERA":
-                self._handle_autocalibrate_camera(cmd)
-            elif cmd_type in ("SNAP", "CAPTURE_TEST"):
-                self._handle_snap(cmd)
-            elif cmd_type == "START_LIVE":
-                self._handle_start_live(cmd)
-            elif cmd_type == "STOP_LIVE":
-                self._handle_stop_live(cmd)
-            elif cmd_type == "GET_CAMERA_CONTROLS":
-                self._handle_get_camera_controls(cmd)
-            elif cmd_type == "SET_CAMERA_CONTROLS":
-                self._handle_set_camera_controls(cmd)
-            elif cmd_type == "AUTO_COLOR_CALIBRATE":
-                self._handle_auto_color_calibrate(cmd)
-            else:
-                self.client.send_command_result(
-                    cmd.id,
-                    CommandResult(
-                        status="error",
-                        result_message=f"Неизвестная команда: {cmd.command_type}",
-                    ),
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"Ошибка при выполнении команды #{cmd.id}: {exc}")
-            self.client.send_command_result(
-                cmd.id,
-                CommandResult(
-                    status="error",
-                    result_message=f"Внутренняя ошибка выполнения: {exc}",
-                ),
-            )
-        finally:
-            self.hardware.release_lock()
+        handler.execute(self, cmd)
 
     def _handle_light(self, cmd: CommandItem, is_flash: bool) -> None:
         """Обработка команд LIGHT_MAIN и LIGHT_FLASH без блокировки на захвате кадра."""
