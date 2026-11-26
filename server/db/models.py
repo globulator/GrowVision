@@ -356,3 +356,75 @@ class WebVerificationCode(Base):
     is_delivered = Column(Boolean, nullable=False, default=False)
     delivered_at = Column(DateTime(timezone=True), nullable=True)
     delivery_error = Column(String(255), nullable=True)
+
+
+class ClimateSensorReading(Base):
+    """3.11. climate_sensors — Показания датчика температуры и влажности (ESP SHT31)."""
+
+    __tablename__ = "climate_sensors"
+    __table_args__ = (
+        Index("idx_climate_sensors_recorded_at", "recorded_at"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    recorded_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    temperature = Column(Float, nullable=False)
+    humidity = Column(Float, nullable=False)
+
+
+class PhReading(Base):
+    """3.12. ph_readings — Замеры уровня кислотности pH (ручной ввод)."""
+
+    __tablename__ = "ph_readings"
+    __table_args__ = (
+        CheckConstraint(
+            "level >= 0 AND level <= 14",
+            name="ck_ph_readings_level_range",
+        ),
+        Index("idx_ph_readings_recorded_at", "recorded_at"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    recorded_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    level = Column(Float, nullable=False)
+
+
+class PeripheralLog(Base):
+    """3.13. peripheral_logs — Журнал подтверждённых переключений полива и вентиляции ESP."""
+
+    __tablename__ = "peripheral_logs"
+    __table_args__ = (
+        CheckConstraint(
+            "device IN ('water', 'fan')",
+            name="ck_peripheral_logs_device",
+        ),
+        CheckConstraint(
+            "state IN ('on', 'off')",
+            name="ck_peripheral_logs_state",
+        ),
+        Index("idx_peripheral_logs_device_time", "device", "recorded_at"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    recorded_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    device = Column(String(20), nullable=False)
+    state = Column(String(10), nullable=False)
+    source = Column(String(20), nullable=False, default="manual")

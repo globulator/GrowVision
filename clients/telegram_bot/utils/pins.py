@@ -37,12 +37,12 @@ def parse_gpio_pins(value: Any, *, field_label: str = "GPIO пин") -> list[int
         for part in parts:
             if not _INT_STR_RE.match(part):
                 raise ValueError(
-                    f"{field_label}: '{part}' не является целым числом от 0 до 53"
+                    f"{field_label}: '{part}' — некорректное значение. Ожидается целое число от 0 до 53 или последовательность из 3 чисел от 0 до 53"
                 )
             num = int(part)
             if not (0 <= num <= 53):
                 raise ValueError(
-                    f"{field_label}: пин {num} должен быть в диапазоне от 0 до 53"
+                    f"{field_label}: пин {num} вне диапазона. Ожидается целое число от 0 до 53 или последовательность из 3 чисел от 0 до 53"
                 )
             pins.append(num)
         if len(pins) == 3 and len(set(pins)) != 3:

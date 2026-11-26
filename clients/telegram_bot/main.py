@@ -19,6 +19,7 @@ from clients.telegram_bot.config import (
 )
 from clients.telegram_bot.handlers import (
     cameras,
+    climate,
     common,
     control,
     installations,
@@ -80,6 +81,7 @@ def build_dispatcher(config: BotConfig, api_client: GrowVisionApiClient) -> Disp
         installations.router,
         cameras.router,
         control.router,
+        climate.router,
         timelapse.router,
         system.router,
         sessions.router,

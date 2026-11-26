@@ -84,3 +84,11 @@ class ControlDayNightStates(StatesGroup):
     """FSM-состояния задания интервала светового дня (HH:MM-HH:MM)."""
 
     waiting_interval = State()
+
+
+class ClimateStates(StatesGroup):
+    """FSM-состояния настройки расписания полива/обдува и ввода pH."""
+
+    waiting_water_schedule = State()
+    waiting_fan_schedule = State()
+    waiting_ph = State()

@@ -110,10 +110,13 @@ def _mark_rpi_online(db: Session) -> None:
 def _patch_now_time(monkeypatch: pytest.MonkeyPatch, target_time: time) -> None:
     class _FixedDatetime:
         @staticmethod
-        def now():
+        def now(tz=None):
+            if tz is not None:
+                return datetime.now(tz)
             return datetime.combine(datetime(2026, 11, 25).date(), target_time)
 
     monkeypatch.setattr("shared.light_cycle.datetime", _FixedDatetime)
+    monkeypatch.setattr("server.api.edge.datetime", _FixedDatetime)
 
 
 def test_light_cycle_validation_and_phase_calculation():

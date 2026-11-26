@@ -25,6 +25,11 @@ class Settings(BaseModel):
     mock_mode: bool = Field(default=False, alias="MOCK_MODE")
     bot_username: str | None = Field(default=None, alias="BOT_USERNAME")
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
+    esp_adapter_enabled: bool = Field(default=False, alias="ESP_ADAPTER_ENABLED")
+    esp_adapter_host: str = Field(default="0.0.0.0", alias="ESP_ADAPTER_HOST")
+    esp_adapter_port: int = Field(
+        default=8080, ge=1, le=65535, alias="ESP_ADAPTER_PORT"
+    )
 
 
 def load_settings(env_path: Path | str | None = None) -> Settings:

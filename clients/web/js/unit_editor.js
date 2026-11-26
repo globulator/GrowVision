@@ -42,11 +42,11 @@ export function parseGpioPinsInput(rawValue, label = 'GPIO пин') {
   const pins = [];
   for (const part of parts) {
     if (!/^-?\d+$/.test(part)) {
-      return { error: `${label}: '${part}' не является целым числом от 0 до 53` };
+      return { error: `${label}: '${part}' — некорректное значение. Ожидается целое число от 0 до 53 или последовательность из 3 чисел от 0 до 53` };
     }
     const num = Number(part);
     if (!Number.isInteger(num) || num < 0 || num > 53) {
-      return { error: `${label} должен быть целым числом от 0 до 53` };
+      return { error: `${label}: пин ${num} вне диапазона. Ожидается целое число от 0 до 53 или последовательность из 3 чисел от 0 до 53` };
     }
     pins.push(num);
   }

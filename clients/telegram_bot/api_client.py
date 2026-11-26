@@ -751,3 +751,75 @@ class GrowVisionApiClient:
             user_id=0,
             timeout=10.0,
         )
+
+    # ------------------ 9. Климат, полив и вентиляция (ESP) ------------------
+
+    async def get_climate_summary(self, user_id: int) -> dict[str, Any]:
+        """Сводка состояния ESP, датчиков, pH, полива, вентиляции и расписания."""
+        return await self._request(
+            "GET",
+            "/api/climate/summary",
+            user_id=user_id,
+            timeout=15.0,
+            is_public_endpoint=True,
+        )
+
+    async def set_climate_mode(self, user_id: int, mode: str) -> dict[str, Any]:
+        """Переключает режим климата (auto / manual)."""
+        return await self._request(
+            "POST",
+            "/api/climate/mode",
+            user_id=user_id,
+            json={"mode": mode},
+            timeout=15.0,
+        )
+
+    async def control_climate(
+        self, user_id: int, device: str, action: str
+    ) -> dict[str, Any]:
+        """Ручное управление поливом или вентиляцией (water / fan)."""
+        return await self._request(
+            "POST",
+            "/api/climate/control",
+            user_id=user_id,
+            json={"device": device, "action": action},
+            timeout=15.0,
+            is_control_command=True,
+        )
+
+    async def update_climate_schedule(
+        self,
+        user_id: int,
+        *,
+        water_interval_hours: int | None = None,
+        water_duration_minutes: int | None = None,
+        fan_interval_hours: int | None = None,
+        fan_duration_minutes: int | None = None,
+    ) -> dict[str, Any]:
+        """Обновляет расписание полива и вентиляции."""
+        payload: dict[str, int] = {}
+        if water_interval_hours is not None:
+            payload["water_interval_hours"] = water_interval_hours
+        if water_duration_minutes is not None:
+            payload["water_duration_minutes"] = water_duration_minutes
+        if fan_interval_hours is not None:
+            payload["fan_interval_hours"] = fan_interval_hours
+        if fan_duration_minutes is not None:
+            payload["fan_duration_minutes"] = fan_duration_minutes
+        return await self._request(
+            "POST",
+            "/api/climate/schedule",
+            user_id=user_id,
+            json=payload,
+            timeout=15.0,
+        )
+
+    async def add_ph_reading(self, user_id: int, level: float) -> dict[str, Any]:
+        """Добавляет ручной замер уровня pH (0..14)."""
+        return await self._request(
+            "POST",
+            "/api/climate/ph",
+            user_id=user_id,
+            json={"level": float(level)},
+            timeout=15.0,
+        )

@@ -73,6 +73,14 @@
         </button>
       </div>
 
+      <!-- Кнопка «Климат и полив» (ESP) -->
+      <button id="btn-climate-menu" class="btn-icon btn-climate-badge" title="Климат и полив" aria-label="Климат и полив">
+        <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+        </svg>
+        <span id="esp-status-dot" class="status-dot offline" title="ESP офлайн"></span>
+      </button>
+
       <!-- Кнопка «Камеры» для авторизованных пользователей -->
       <button id="btn-cameras-menu" class="btn-icon btn-cameras-badge hidden" title="Камеры" aria-label="Камеры">
         <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
@@ -1300,6 +1308,169 @@
       <div class="modal-body">
         <div id="sessions-error" class="form-error-inline hidden"></div>
         <div id="sessions-list" class="sessions-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модалка: Климат и полив (ESP) -->
+  <div id="modal-climate" class="modal-backdrop hidden">
+    <div class="modal-window modal-window-large glass-panel">
+      <div class="modal-header">
+        <div class="modal-header-with-icon">
+          <svg class="icon-svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+          </svg>
+          <h3 class="modal-title">Климат и полив</h3>
+        </div>
+        <div class="climate-header-actions">
+          <button type="button" id="climate-refresh-btn" class="btn-icon" title="Обновить данные" aria-label="Обновить данные">
+            <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"/>
+              <polyline points="1 20 1 14 7 14"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+          </button>
+          <button id="modal-climate-close" class="btn-icon modal-close" title="Закрыть" aria-label="Закрыть">
+            <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="modal-body climate-body">
+        <div class="climate-status-bar">
+          <div class="climate-esp-indicator">
+            <span id="climate-esp-dot" class="status-dot offline"></span>
+            <span id="climate-esp-badge" class="climate-esp-badge">ESP: Офлайн</span>
+          </div>
+          <span id="climate-esp-last-seen" class="climate-last-seen">Последний отклик: нет данных</span>
+        </div>
+
+        <div class="climate-metrics-grid">
+          <div class="climate-metric-card">
+            <span class="climate-metric-label">Температура</span>
+            <strong id="climate-temp-val" class="climate-metric-value">&mdash;</strong>
+            <span id="climate-temp-time" class="climate-metric-sub">Датчик SHT31</span>
+          </div>
+          <div class="climate-metric-card">
+            <span class="climate-metric-label">Влажность</span>
+            <strong id="climate-hum-val" class="climate-metric-value">&mdash;</strong>
+            <span id="climate-hum-time" class="climate-metric-sub">Датчик SHT31</span>
+          </div>
+          <div class="climate-metric-card">
+            <span class="climate-metric-label">Кислотность pH</span>
+            <strong id="climate-ph-val" class="climate-metric-value">&mdash;</strong>
+            <span id="climate-ph-time" class="climate-metric-sub">Ручной замер</span>
+          </div>
+        </div>
+
+        <div class="climate-mode-row">
+          <div class="climate-mode-info">
+            <span class="climate-section-label">Режим работы полива и вентиляции</span>
+            <span id="climate-role-hint" class="climate-role-hint hidden">Войдите как биолог или разработчик для управления</span>
+          </div>
+          <div id="climate-mode-control" class="segmented-control" role="group" aria-label="Режим полива и вентиляции">
+            <button type="button" class="seg-btn" data-climate-mode="auto">Авто</button>
+            <button type="button" class="seg-btn active" data-climate-mode="manual">Ручной</button>
+          </div>
+        </div>
+
+        <div class="climate-devices-grid">
+          <div class="climate-device-card">
+            <div class="climate-device-info">
+              <div class="climate-device-title-row">
+                <span class="climate-device-title">Полив</span>
+                <span id="climate-water-lock" class="climate-lock-badge hidden">Авто</span>
+              </div>
+              <span id="climate-water-status" class="climate-device-status">ВЫКЛ</span>
+            </div>
+            <label class="toggle-switch" aria-label="Управление поливом">
+              <input type="checkbox" id="climate-water-toggle">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="climate-device-card">
+            <div class="climate-device-info">
+              <div class="climate-device-title-row">
+                <span class="climate-device-title">Вентиляция</span>
+                <span id="climate-fan-lock" class="climate-lock-badge hidden">Авто</span>
+              </div>
+              <span id="climate-fan-status" class="climate-device-status">ВЫКЛ</span>
+            </div>
+            <label class="toggle-switch" aria-label="Управление вентиляцией">
+              <input type="checkbox" id="climate-fan-toggle">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="climate-forms-grid">
+          <form id="climate-schedule-form" class="climate-card-form">
+            <div class="climate-section-label">Расписание (авторежим)</div>
+            <div class="climate-schedule-fields">
+              <label class="climate-field">
+                <span>Полив: интервал, ч</span>
+                <input type="number" id="climate-water-interval" class="form-input" min="1" step="1" value="10" required>
+              </label>
+              <label class="climate-field">
+                <span>Полив: длит., мин</span>
+                <input type="number" id="climate-water-duration" class="form-input" min="1" step="1" value="1" required>
+              </label>
+              <label class="climate-field">
+                <span>Обдув: интервал, ч</span>
+                <input type="number" id="climate-fan-interval" class="form-input" min="1" step="1" value="5" required>
+              </label>
+              <label class="climate-field">
+                <span>Обдув: длит., мин</span>
+                <input type="number" id="climate-fan-duration" class="form-input" min="1" step="1" value="1" required>
+              </label>
+            </div>
+            <button type="submit" id="climate-schedule-save-btn" class="btn btn-primary btn-compact">Сохранить расписание</button>
+          </form>
+
+          <form id="climate-ph-form" class="climate-card-form">
+            <div class="climate-section-label">Внести замер pH</div>
+            <div class="climate-ph-row">
+              <input type="number" id="climate-ph-input" class="form-input" min="0" max="14" step="0.1" placeholder="Например, 6.2" required>
+              <button type="submit" id="climate-ph-save-btn" class="btn btn-secondary">Добавить</button>
+            </div>
+            <span class="form-hint">Допустимый диапазон: 0.0 – 14.0</span>
+          </form>
+        </div>
+
+        <div id="climate-error" class="form-error-inline hidden"></div>
+
+        <div class="climate-history-section">
+          <div class="climate-history-header">
+            <span class="climate-section-label">История показаний и срабатываний</span>
+            <div id="climate-period-control" class="segmented-control" role="group" aria-label="Период истории">
+              <button type="button" class="seg-btn active" data-climate-period="24h">24 ч</button>
+              <button type="button" class="seg-btn" data-climate-period="7d">7 дн</button>
+            </div>
+          </div>
+
+          <div class="climate-charts-grid">
+            <div class="climate-chart-card">
+              <div class="climate-chart-title">Температура (°C)</div>
+              <svg id="climate-chart-temp" class="climate-chart-svg" viewBox="0 0 360 120"></svg>
+            </div>
+            <div class="climate-chart-card">
+              <div class="climate-chart-title">Влажность (%)</div>
+              <svg id="climate-chart-hum" class="climate-chart-svg" viewBox="0 0 360 120"></svg>
+            </div>
+            <div class="climate-chart-card">
+              <div class="climate-chart-title">Кислотность pH</div>
+              <svg id="climate-chart-ph" class="climate-chart-svg" viewBox="0 0 360 120"></svg>
+            </div>
+            <div class="climate-chart-card">
+              <div class="climate-chart-title">Полив и вентиляция</div>
+              <svg id="climate-chart-activity" class="climate-chart-svg" viewBox="0 0 360 120"></svg>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
