@@ -5,7 +5,7 @@ def get_guest_reply_keyboard() -> ReplyKeyboardMarkup:
     """Нижнее меню для неавторизованного пользователя (Гость)."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🌱 Установки")],
+            [KeyboardButton(text="🌱 Установки"), KeyboardButton(text="💧 Климат и полив")],
             [KeyboardButton(text="🔑 Войти"), KeyboardButton(text="ℹ️ Справка")],
         ],
         resize_keyboard=True,
@@ -20,6 +20,7 @@ def get_biologist_reply_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="🌱 Установки"),
                 KeyboardButton(text="📸 Сделать снимок"),
             ],
+            [KeyboardButton(text="💧 Климат и полив")],
             [
                 KeyboardButton(text="👤 Профиль / Выход"),
                 KeyboardButton(text="ℹ️ Справка"),
@@ -45,6 +46,7 @@ def get_developer_reply_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="👥 Сессии"),
                 KeyboardButton(text="⚙️ Система"),
             ],
+            [KeyboardButton(text="💧 Климат и полив")],
             [
                 KeyboardButton(text="👤 Профиль / Выход"),
                 KeyboardButton(text="ℹ️ Справка"),

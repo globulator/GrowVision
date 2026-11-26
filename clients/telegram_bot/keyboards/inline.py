@@ -1,3 +1,5 @@
+from typing import Any
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
@@ -398,3 +400,75 @@ def get_quick_interval_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="❌ Отмена", callback_data="sys:status")],
         ]
     )
+
+
+def get_climate_menu_keyboard(
+    summary: dict[str, Any],
+    *,
+    can_control: bool = False,
+) -> InlineKeyboardMarkup:
+    """Клавиатура панели «Климат и полив» (ESP)."""
+    buttons: list[list[InlineKeyboardButton]] = []
+    mode = "auto" if summary.get("mode") == "auto" else "manual"
+    water_on = summary.get("water_state") == "on"
+    fan_on = summary.get("fan_state") == "on"
+
+    if can_control:
+        if mode == "auto":
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text="🖐 Переключить на Ручной",
+                        callback_data="clm:mode:manual",
+                    )
+                ]
+            )
+        else:
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text="🤖 Переключить на Авто",
+                        callback_data="clm:mode:auto",
+                    )
+                ]
+            )
+            water_next = "off" if water_on else "on"
+            fan_next = "off" if fan_on else "on"
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"💧 Полив: {'🟢 ВКЛ' if water_on else '⚪️ ВЫКЛ'}",
+                        callback_data=f"clm:ctrl:water:{water_next}",
+                    ),
+                    InlineKeyboardButton(
+                        text=f"🌬 Обдув: {'🟢 ВКЛ' if fan_on else '⚪️ ВЫКЛ'}",
+                        callback_data=f"clm:ctrl:fan:{fan_next}",
+                    ),
+                ]
+            )
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text="⏱ Расписание полива",
+                    callback_data="clm:sched:water",
+                ),
+                InlineKeyboardButton(
+                    text="⏱ Расписание обдува",
+                    callback_data="clm:sched:fan",
+                ),
+            ]
+        )
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text="🧪 Внести замер pH",
+                    callback_data="clm:ph",
+                )
+            ]
+        )
+
+    buttons.append(
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="clm:refresh")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)

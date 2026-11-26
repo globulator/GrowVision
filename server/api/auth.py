@@ -359,7 +359,7 @@ def auth_login(
             )
         if not body.login or not body.login.strip():
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Для входа через CLI необходимо указать login",
             )
     else:
