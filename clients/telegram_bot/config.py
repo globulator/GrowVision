@@ -21,6 +21,18 @@ def mask_proxy_url(proxy_url: str | None) -> str | None:
     return res
 
 
+def normalize_proxy_url(proxy_url: str | None) -> str | None:
+    """Нормализует URL прокси: преобразует socks:// в socks5://, сохраняя остальные схемы."""
+    if not proxy_url:
+        return None
+    cleaned = proxy_url.strip()
+    if not cleaned:
+        return None
+    if cleaned.lower().startswith("socks://"):
+        return "socks5://" + cleaned[len("socks://") :]
+    return cleaned
+
+
 @dataclass(frozen=True)
 class BotConfig:
     """Конфигурация Telegram-бота GrowVision."""
@@ -103,7 +115,7 @@ def load_config(env_path: Path | str | None = None) -> BotConfig:
     # Нормализуем URL (без слэша на конце)
     server_url_clean = server_url.rstrip("/")
     web_public_clean = web_public_url_raw.rstrip("/") if web_public_url_raw else None
-    telegram_proxy_clean = telegram_proxy_raw.strip() if telegram_proxy_raw else None
+    telegram_proxy_clean = normalize_proxy_url(telegram_proxy_raw)
 
     return BotConfig(
         bot_token=bot_token,
