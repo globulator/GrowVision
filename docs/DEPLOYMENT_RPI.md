@@ -2,6 +2,16 @@
 
 В данном руководстве описан процесс установки, настройки и запуска Edge-агента системы **GrowVision** на микрокомпьютере Raspberry Pi под управлением Raspberry Pi OS (Debian 12 Bookworm, 64-bit).
 
+> [!TIP]
+> Вы можете автоматизировать создание `edge_agent/.venv` (с `--system-site-packages` для `gpiozero`/`lgpio`), проверку камер/GPIO, настройку `edge_agent/.env` и генерацию `growvision-edge.service` с помощью единого мастера [`install.sh`](../install.sh):
+> ```bash
+> # Интерактивная установка Edge-агента (профиль 3):
+> ./install.sh --profile 3 --topology B --output-systemd deploy/systemd
+> # Только диагностика железа, камер, GPIO и доступности сервера:
+> ./install.sh --check --non-interactive --profile 3 --topology B --server-url http://<SERVER_IP>:8000
+> ```
+> При распределённом развёртывании (топологии **B** и **C**) рекомендуется связывать RPi и сервер через **NetBird** или **Tailscale** — мастер автоматически обнаруживает VPN-интерфейс и проверяет `/health` сервера.
+
 ---
 
 ## 1. Системные требования и поддерживаемые платформы
