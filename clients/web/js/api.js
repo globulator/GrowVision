@@ -284,4 +284,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ preview: Boolean(options && options.preview) }),
     }),
+
+  // Климат, полив, вентиляция и pH (ESP)
+  getClimateSummary: () => request('/api/climate/summary'),
+  getClimateHistory: (period = '24h') =>
+    request(`/api/climate/history?period=${encodeURIComponent(period)}`),
+  setClimateMode: (mode) =>
+    request('/api/climate/mode', {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    }),
+  controlClimate: (device, action) =>
+    request('/api/climate/control', {
+      method: 'POST',
+      body: JSON.stringify({ device, action }),
+    }),
+  updateClimateSchedule: (payload) =>
+    request('/api/climate/schedule', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  addPhReading: (level) =>
+    request('/api/climate/ph', {
+      method: 'POST',
+      body: JSON.stringify({ level: Number(level) }),
+    }),
 };

@@ -30,6 +30,7 @@ import {
   setTestSnapRole,
 } from './test_snap.js';
 import { initRpiSetup, updateRpiRole } from './rpi_setup.js';
+import { closeClimateModal, initClimate, updateClimateRole } from './climate.js';
 import {
   closeLightControlModal,
   initLightControl,
@@ -119,6 +120,7 @@ function applyRole(role) {
   updateRpiRole(role);
   updateLightRole(role);
   updateCamerasRole(role);
+  updateClimateRole(role);
   setProfileUser(currentUser);
   updateHeaderUi();
 }
@@ -132,6 +134,7 @@ function closeAllModals() {
   closeLightControlModal();
   closeProfileModal();
   closeSessionsModal();
+  closeClimateModal();
 }
 
 // Показ компактного inline-подтверждения выхода в шапке
@@ -288,6 +291,7 @@ async function bootstrap() {
     await loadAndRenderUnits({ bustCache: true });
   });
   initCameras();
+  initClimate();
   setUnitSavedHandler(async () => {
     await loadAndRenderUnits({ bustCache: true });
   });
