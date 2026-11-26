@@ -348,7 +348,7 @@ def test_qa_db_pragmas_and_tables(qa_isolated_db):
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
 
-    assert len(tables) == 10
+    assert len(tables) == 13
     assert tables == {
         "installations",
         "cameras",
@@ -360,6 +360,9 @@ def test_qa_db_pragmas_and_tables(qa_isolated_db):
         "invite_codes",
         "telegram_contacts",
         "web_verification_codes",
+        "climate_sensors",
+        "ph_readings",
+        "peripheral_logs",
     }
 
     with engine.connect() as conn:

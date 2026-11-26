@@ -425,10 +425,11 @@ def run_climate_scheduler_step(
                 if last_start is not None
                 else float(duration_minutes * 60)
             )
-            if elapsed_sec >= duration_minutes * 60:
-                if not esp_queue.has_pending(device, "off"):
-                    cmd = esp_queue.enqueue(device, "off", source="auto", now=ts)
-                    enqueued.append(cmd)
+            if elapsed_sec >= duration_minutes * 60 and not esp_queue.has_pending(
+                device, "off"
+            ):
+                cmd = esp_queue.enqueue(device, "off", source="auto", now=ts)
+                enqueued.append(cmd)
         else:
             should_start = (
                 last_start is None
@@ -458,7 +459,9 @@ def get_climate_summary(
 
     latest_sensor = (
         db.query(ClimateSensorReading)
-        .order_by(ClimateSensorReading.recorded_at.desc(), ClimateSensorReading.id.desc())
+        .order_by(
+            ClimateSensorReading.recorded_at.desc(), ClimateSensorReading.id.desc()
+        )
         .first()
     )
     latest_ph = (
@@ -478,9 +481,7 @@ def get_climate_summary(
             format_utc_iso(latest_sensor.recorded_at) if latest_sensor else None
         ),
         "ph": latest_ph.level if latest_ph else None,
-        "ph_updated_at": (
-            format_utc_iso(latest_ph.recorded_at) if latest_ph else None
-        ),
+        "ph_updated_at": (format_utc_iso(latest_ph.recorded_at) if latest_ph else None),
         "water_state": settings["water_state"],
         "fan_state": settings["fan_state"],
         "water_pending": esp_queue.has_pending("water"),

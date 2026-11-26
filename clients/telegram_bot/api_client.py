@@ -752,7 +752,6 @@ class GrowVisionApiClient:
             timeout=10.0,
         )
 
-
     # ------------------ 9. Климат, полив и вентиляция (ESP) ------------------
 
     async def get_climate_summary(self, user_id: int) -> dict[str, Any]:

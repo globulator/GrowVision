@@ -12,7 +12,7 @@ import argparse
 import socket
 import struct
 
-MAGIC = b"\xDE\xAD\xBE\xEF"
+MAGIC = b"\xde\xad\xbe\xef"
 
 
 def build_config_packet(

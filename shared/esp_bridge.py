@@ -104,7 +104,9 @@ class EspTcpBridge:
 
                 while True:
                     try:
-                        hdr_line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+                        hdr_line = await asyncio.wait_for(
+                            reader.readline(), timeout=5.0
+                        )
                     except TimeoutError:
                         bad_headers = True
                         break

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import threading
 import urllib.error
 import urllib.request
@@ -117,10 +118,8 @@ class EdgeEspBridgeRunner:
             self._start_error = exc
             self._ready.set()
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 loop.run_until_complete(bridge.stop())
-            except Exception:  # noqa: BLE001
-                pass
             loop.close()
             self._loop = None
 

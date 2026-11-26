@@ -15,19 +15,13 @@ from sqlalchemy.exc import IntegrityError
 
 from server.api.auth import router as auth_router
 from server.api.cameras import router as cameras_router
+from server.api.climate import climate_router, esp_router
 from server.api.control import router as control_router
 from server.api.edge import router as edge_router
 from server.api.edge_setup import router as edge_setup_router
 from server.api.installations import router as installations_router
 from server.api.system import router as system_router
-from server.api.climate import climate_router, esp_router
 from server.api.timelapse import router as timelapse_router
-from server.core.light_state import (
-    compute_active_pin_states,
-    sync_app_state_pins,
-    sync_day_night_phases_step,
-)
-from server.core.live_manager import live_manager
 from server.config import get_settings
 from server.core.climate import (
     confirm_esp_command,
@@ -36,6 +30,12 @@ from server.core.climate import (
     run_climate_scheduler_step,
     touch_esp_seen,
 )
+from server.core.light_state import (
+    compute_active_pin_states,
+    sync_app_state_pins,
+    sync_day_night_phases_step,
+)
+from server.core.live_manager import live_manager
 from server.core.timeouts import expire_stale_commands
 from server.db.database import SessionLocal, init_db
 from shared.esp_bridge import EspTcpBridge
@@ -171,19 +171,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     esp_adapter: EspTcpBridge | None = None
     server_settings = get_settings()
     if server_settings.esp_adapter_enabled:
+
         async def _adapter_forward(
             method: str, path: str, body: bytes
         ) -> tuple[int, bytes]:
             return await asyncio.to_thread(
                 _handle_esp_adapter_request_sync, method, path, body
             )
+
         esp_adapter = EspTcpBridge(
             host=server_settings.esp_adapter_host,
             port=server_settings.esp_adapter_port,
             forward_fn=_adapter_forward,
         )
         await esp_adapter.start()
-        logger.info("Встроенный ESP TCP-адаптер запущен на %s:%s", server_settings.esp_adapter_host, esp_adapter.bound_port)
+        logger.info(
+            "Встроенный ESP TCP-адаптер запущен на %s:%s",
+            server_settings.esp_adapter_host,
+            esp_adapter.bound_port,
+        )
     try:
         yield
     finally:

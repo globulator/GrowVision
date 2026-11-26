@@ -46,10 +46,10 @@ def test_esp_bridge_raw_firmware_protocol_over_keepalive():
     received: list[tuple[str, str, bytes]] = []
 
     class FakeServerHandler(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):  # noqa: A002
+        def log_message(self, format, *args):
             return
 
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             received.append(("GET", self.path, b""))
             if self.path == "/ping":
                 body = b'{"status":"ok"}'
@@ -67,7 +67,7 @@ def test_esp_bridge_raw_firmware_protocol_over_keepalive():
             self.end_headers()
             self.wfile.write(body)
 
-        def do_POST(self):  # noqa: N802
+        def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length) if length > 0 else b""
             received.append(("POST", self.path, body))

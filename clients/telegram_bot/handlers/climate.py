@@ -142,7 +142,9 @@ async def handle_climate_mode_switch(
     mode = callback.data.split(":")[2]
     me = await api_client.get_me(user_id)
     if not _can_control_role(me):
-        await callback.answer("Управление доступно Биологу и Разработчику.", show_alert=True)
+        await callback.answer(
+            "Управление доступно Биологу и Разработчику.", show_alert=True
+        )
         return
 
     await callback.answer()
@@ -177,7 +179,9 @@ async def handle_climate_manual_control(
     device, action = parts[2], parts[3]
     me = await api_client.get_me(user_id)
     if not _can_control_role(me):
-        await callback.answer("Управление доступно Биологу и Разработчику.", show_alert=True)
+        await callback.answer(
+            "Управление доступно Биологу и Разработчику.", show_alert=True
+        )
         return
 
     await callback.answer()
@@ -217,7 +221,9 @@ async def handle_climate_schedule_start(
     user_id = callback.from_user.id if callback.from_user else 0
     me = await api_client.get_me(user_id)
     if not _can_control_role(me):
-        await callback.answer("Управление доступно Биологу и Разработчику.", show_alert=True)
+        await callback.answer(
+            "Управление доступно Биологу и Разработчику.", show_alert=True
+        )
         return
 
     await callback.answer()
@@ -315,7 +321,9 @@ async def handle_climate_ph_start(
     user_id = callback.from_user.id if callback.from_user else 0
     me = await api_client.get_me(user_id)
     if not _can_control_role(me):
-        await callback.answer("Управление доступно Биологу и Разработчику.", show_alert=True)
+        await callback.answer(
+            "Управление доступно Биологу и Разработчику.", show_alert=True
+        )
         return
 
     await callback.answer()

@@ -5,7 +5,10 @@ def get_guest_reply_keyboard() -> ReplyKeyboardMarkup:
     """Нижнее меню для неавторизованного пользователя (Гость)."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🌱 Установки"), KeyboardButton(text="💧 Климат и полив")],
+            [
+                KeyboardButton(text="🌱 Установки"),
+                KeyboardButton(text="💧 Климат и полив"),
+            ],
             [KeyboardButton(text="🔑 Войти"), KeyboardButton(text="ℹ️ Справка")],
         ],
         resize_keyboard=True,

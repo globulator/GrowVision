@@ -157,3 +157,23 @@ def e2e_uvicorn_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         if media_route and orig_media_app:
             media_route.app = orig_media_app
         engine.dispose()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _disable_system_proxy_for_e2e():
+    """Убирает системные прокси-переменные на время локальных e2e-тестов."""
+    import os
+
+    keys = (
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+    )
+    saved = {k: os.environ.pop(k) for k in keys if k in os.environ}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
