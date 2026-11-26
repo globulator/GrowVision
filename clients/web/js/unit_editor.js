@@ -2,8 +2,16 @@
 // Единая модалка создания и редактирования установки (активной и архивной)
 
 import { api } from './api.js';
-import { showToast } from './dialogs.js';
+import { Modal, showToast } from './dialogs.js';
 import { getPlaceholderHTML, getUnitEditorPlaceholderHTML } from './placeholders.js';
+import {
+  ColorPicker,
+  hexToRgb,
+  hsvToRgb,
+  normalizeHexColor,
+  rgbToHex,
+  rgbToHsv,
+} from './components/color_picker.js';
 
 let currentRole = 'guest';
 let editingUnit = null;
@@ -12,18 +20,11 @@ let initialCameraIds = [];
 let onUnitSavedCallback = null;
 let isBusy = false;
 let unitEditorOpenSeq = 0;
+let unitEditorModalCtrl = null;
+let colorPicker = null;
 
 let activeColorChannel = null; // 'light' | 'flash' | null
 let colorDebounceTimer = null;
-const colorState = {
-  h: 0,
-  s: 0,
-  v: 100,
-  r: 255,
-  g: 255,
-  b: 255,
-  hex: '#FFFFFF',
-};
 
 export function parseGpioPinsInput(rawValue, label = 'GPIO пин') {
   const raw = String(rawValue ?? '').trim();
@@ -59,97 +60,7 @@ export function parseGpioPinsInput(rawValue, label = 'GPIO пин') {
   };
 }
 
-export function normalizeHexColor(raw) {
-  if (typeof raw !== 'string') return null;
-  let cleaned = raw.trim();
-  if (cleaned.startsWith('#')) {
-    cleaned = cleaned.slice(1);
-  }
-  if (!/^[0-9a-fA-F]{6}$/.test(cleaned)) {
-    return null;
-  }
-  return `#${cleaned.toUpperCase()}`;
-}
-
-export function hexToRgb(hex) {
-  const norm = normalizeHexColor(hex);
-  if (!norm) return null;
-  return {
-    r: parseInt(norm.slice(1, 3), 16),
-    g: parseInt(norm.slice(3, 5), 16),
-    b: parseInt(norm.slice(5, 7), 16),
-  };
-}
-
-export function rgbToHex(r, g, b) {
-  const clamp = (n) => Math.max(0, Math.min(255, Math.round(Number(n) || 0)));
-  const toHex = (n) => clamp(n).toString(16).padStart(2, '0').toUpperCase();
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-}
-
-export function rgbToHsv(r, g, b) {
-  const rn = Math.max(0, Math.min(255, Number(r) || 0)) / 255;
-  const gn = Math.max(0, Math.min(255, Number(g) || 0)) / 255;
-  const bn = Math.max(0, Math.min(255, Number(b) || 0)) / 255;
-  const max = Math.max(rn, gn, bn);
-  const min = Math.min(rn, gn, bn);
-  const d = max - min;
-  let h = 0;
-  if (d !== 0) {
-    if (max === rn) {
-      h = ((gn - bn) / d) % 6;
-    } else if (max === gn) {
-      h = (bn - rn) / d + 2;
-    } else {
-      h = (rn - gn) / d + 4;
-    }
-    h *= 60;
-    if (h < 0) h += 360;
-  }
-  const s = max === 0 ? 0 : (d / max) * 100;
-  const v = max * 100;
-  return {
-    h: Math.round(h),
-    s: Math.round(s),
-    v: Math.round(v),
-  };
-}
-
-export function hsvToRgb(h, s, v) {
-  const hh = ((Number(h) % 360) + 360) % 360;
-  const ss = Math.max(0, Math.min(100, Number(s) || 0)) / 100;
-  const vv = Math.max(0, Math.min(100, Number(v) || 0)) / 100;
-  const c = vv * ss;
-  const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
-  const m = vv - c;
-  let rp = 0;
-  let gp = 0;
-  let bp = 0;
-  if (hh < 60) {
-    rp = c;
-    gp = x;
-  } else if (hh < 120) {
-    rp = x;
-    gp = c;
-  } else if (hh < 180) {
-    gp = c;
-    bp = x;
-  } else if (hh < 240) {
-    gp = x;
-    bp = c;
-  } else if (hh < 300) {
-    rp = x;
-    bp = c;
-  } else {
-    rp = c;
-    bp = x;
-  }
-  return {
-    r: Math.round((rp + m) * 255),
-    g: Math.round((gp + m) * 255),
-    b: Math.round((bp + m) * 255),
-  };
-}
+export { normalizeHexColor, hexToRgb, rgbToHex, rgbToHsv, hsvToRgb };
 
 function isChannelRgb(unit, isFlash) {
   if (!unit) return false;
@@ -396,136 +307,52 @@ function updateChannelBadge(isFlash, unit) {
   }
 }
 
-function drawColorCanvases() {
-  const svCanvas = document.getElementById('unit-color-sv-canvas');
-  const hueCanvas = document.getElementById('unit-color-hue-canvas');
-  const svCursor = document.getElementById('unit-color-sv-cursor');
-  const hueCursor = document.getElementById('unit-color-hue-cursor');
-
-  if (hueCanvas && hueCanvas.getContext) {
-    const ctx = hueCanvas.getContext('2d');
-    if (ctx) {
-      const w = hueCanvas.width;
-      const h = hueCanvas.height;
-      const grad = ctx.createLinearGradient(0, 0, w, 0);
-      grad.addColorStop(0, '#FF0000');
-      grad.addColorStop(1 / 6, '#FFFF00');
-      grad.addColorStop(2 / 6, '#00FF00');
-      grad.addColorStop(3 / 6, '#00FFFF');
-      grad.addColorStop(4 / 6, '#0000FF');
-      grad.addColorStop(5 / 6, '#FF00FF');
-      grad.addColorStop(1, '#FF0000');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, w, h);
-    }
-  }
-
-  if (svCanvas && svCanvas.getContext) {
-    const ctx = svCanvas.getContext('2d');
-    if (ctx) {
-      const w = svCanvas.width;
-      const h = svCanvas.height;
-      const pure = hsvToRgb(colorState.h, 100, 100);
-      ctx.fillStyle = rgbToHex(pure.r, pure.g, pure.b);
-      ctx.fillRect(0, 0, w, h);
-
-      const whiteGrad = ctx.createLinearGradient(0, 0, w, 0);
-      whiteGrad.addColorStop(0, 'rgba(255,255,255,1)');
-      whiteGrad.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = whiteGrad;
-      ctx.fillRect(0, 0, w, h);
-
-      const blackGrad = ctx.createLinearGradient(0, 0, 0, h);
-      blackGrad.addColorStop(0, 'rgba(0,0,0,0)');
-      blackGrad.addColorStop(1, 'rgba(0,0,0,1)');
-      ctx.fillStyle = blackGrad;
-      ctx.fillRect(0, 0, w, h);
-    }
-  }
-
-  if (svCursor) {
-    svCursor.style.left = `${Math.max(0, Math.min(100, colorState.s))}%`;
-    svCursor.style.top = `${Math.max(0, Math.min(100, 100 - colorState.v))}%`;
-  }
-  if (hueCursor) {
-    hueCursor.style.left = `${(Math.max(0, Math.min(360, colorState.h)) / 360) * 100}%`;
-  }
-}
-
-function syncColorPanelUI({ skipHexInput = false } = {}) {
-  const rEl = document.getElementById('unit-color-r');
-  const gEl = document.getElementById('unit-color-g');
-  const bEl = document.getElementById('unit-color-b');
-  const vEl = document.getElementById('unit-color-v');
-  const sEl = document.getElementById('unit-color-s');
-  const rVal = document.getElementById('unit-color-r-val');
-  const gVal = document.getElementById('unit-color-g-val');
-  const bVal = document.getElementById('unit-color-b-val');
-  const vVal = document.getElementById('unit-color-v-val');
-  const sVal = document.getElementById('unit-color-s-val');
-  const hexInput = document.getElementById('unit-color-hex-input');
-  const preview = document.getElementById('unit-color-preview');
-  const nativePicker = document.getElementById('unit-color-native-picker');
-
-  if (rEl) rEl.value = String(colorState.r);
-  if (gEl) gEl.value = String(colorState.g);
-  if (bEl) bEl.value = String(colorState.b);
-  if (vEl) vEl.value = String(colorState.v);
-  if (sEl) sEl.value = String(colorState.s);
-
-  if (rVal) rVal.textContent = String(colorState.r);
-  if (gVal) gVal.textContent = String(colorState.g);
-  if (bVal) bVal.textContent = String(colorState.b);
-  if (vVal) vVal.textContent = `${colorState.v}%`;
-  if (sVal) sVal.textContent = `${colorState.s}%`;
-
-  if (hexInput && !skipHexInput) {
-    hexInput.value = colorState.hex;
-  }
-  if (preview) {
-    preview.style.backgroundColor = colorState.hex;
-  }
-  if (nativePicker) {
-    nativePicker.value = colorState.hex.toLowerCase();
-  }
-
+function applySelectedColorToUnit(hex) {
   if (editingUnit && activeColorChannel) {
     if (activeColorChannel === 'flash') {
-      editingUnit.flash_color = colorState.hex;
+      editingUnit.flash_color = hex;
     } else {
-      editingUnit.light_color = colorState.hex;
+      editingUnit.light_color = hex;
     }
     updateChannelBadge(activeColorChannel === 'flash', editingUnit);
   }
-
-  drawColorCanvases();
 }
 
-function setColorStateFromRgb(r, g, b, options = {}) {
-  const clamp255 = (n) => Math.max(0, Math.min(255, Math.round(Number(n) || 0)));
-  colorState.r = clamp255(r);
-  colorState.g = clamp255(g);
-  colorState.b = clamp255(b);
-  colorState.hex = rgbToHex(colorState.r, colorState.g, colorState.b);
-  const hsv = rgbToHsv(colorState.r, colorState.g, colorState.b);
-  if (hsv.s > 0 && hsv.v > 0) {
-    colorState.h = hsv.h;
+function getColorPicker() {
+  if (!colorPicker) {
+    colorPicker = new ColorPicker({
+      svCanvas: 'unit-color-sv-canvas',
+      hueCanvas: 'unit-color-hue-canvas',
+      svCursor: 'unit-color-sv-cursor',
+      hueCursor: 'unit-color-hue-cursor',
+      rInput: 'unit-color-r',
+      gInput: 'unit-color-g',
+      bInput: 'unit-color-b',
+      vInput: 'unit-color-v',
+      sInput: 'unit-color-s',
+      rVal: 'unit-color-r-val',
+      gVal: 'unit-color-g-val',
+      bVal: 'unit-color-b-val',
+      vVal: 'unit-color-v-val',
+      sVal: 'unit-color-s-val',
+      hexInput: 'unit-color-hex-input',
+      preview: 'unit-color-preview',
+      nativePicker: 'unit-color-native-picker',
+      onChange: (state) => {
+        applySelectedColorToUnit(state.hex);
+        if (activeColorChannel) {
+          scheduleColorApiSend(activeColorChannel, state.hex);
+        }
+      },
+      onCommit: (state) => {
+        applySelectedColorToUnit(state.hex);
+        if (activeColorChannel) {
+          scheduleColorApiSend(activeColorChannel, state.hex, { immediate: true });
+        }
+      },
+    });
   }
-  colorState.s = hsv.s;
-  colorState.v = hsv.v;
-  syncColorPanelUI(options);
-}
-
-function setColorStateFromHsv(h, s, v) {
-  colorState.h = Math.max(0, Math.min(360, Math.round(Number(h) || 0)));
-  colorState.s = Math.max(0, Math.min(100, Math.round(Number(s) || 0)));
-  colorState.v = Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
-  const rgb = hsvToRgb(colorState.h, colorState.s, colorState.v);
-  colorState.r = rgb.r;
-  colorState.g = rgb.g;
-  colorState.b = rgb.b;
-  colorState.hex = rgbToHex(rgb.r, rgb.g, rgb.b);
-  syncColorPanelUI();
+  return colorPicker;
 }
 
 function scheduleColorApiSend(channel, hex, { immediate = false } = {}) {
@@ -600,13 +427,15 @@ function openColorPanel(channel) {
       : 'Основной свет — настройка RGB-цвета';
   }
   const rgb = hexToRgb(getChannelColor(editingUnit, isFlash)) || { r: 255, g: 255, b: 255 };
-  setColorStateFromRgb(rgb.r, rgb.g, rgb.b);
+  const picker = getColorPicker();
+  picker.setRgb(rgb.r, rgb.g, rgb.b);
+  applySelectedColorToUnit(picker.getState().hex);
 
   if (panel) {
     panel.classList.remove('hidden');
     requestAnimationFrame(() => {
       panel.classList.add('is-open');
-      drawColorCanvases();
+      picker.drawCanvases();
     });
   }
   updateChannelBadge(false, editingUnit);
@@ -895,11 +724,31 @@ function setButtonsBusy(busy) {
   });
 }
 
+function getUnitEditorModalCtrl() {
+  if (!unitEditorModalCtrl) {
+    unitEditorModalCtrl = new Modal('modal-unit-editor', {
+      closeButtons: ['modal-unit-editor-close', 'unit-editor-cancel-btn'],
+      onClose: () => {
+        unitEditorOpenSeq += 1;
+        closeColorPanel();
+        editingUnit = null;
+        initialCameraIds = [];
+        isBusy = false;
+        showEditorError('');
+        hideDeleteConfirm();
+        syncUnitLightControls(null);
+      },
+    });
+  }
+  return unitEditorModalCtrl;
+}
+
 async function openUnitModal(unit = null) {
   if (currentRole === 'guest') return;
   if (!unit && currentRole !== 'developer') return;
 
-  const modal = document.getElementById('modal-unit-editor');
+  const modalCtrl = getUnitEditorModalCtrl();
+  const modal = modalCtrl.getElement();
   if (!modal) return;
 
   const openSeq = ++unitEditorOpenSeq;
@@ -970,8 +819,7 @@ async function openUnitModal(unit = null) {
 
   applyRoleAndStatusConstraints(editingUnit);
 
-  modal.classList.remove('hidden');
-  document.body.classList.add('modal-open');
+  modalCtrl.open();
 
   // Подгружаем настройки расписания, список камер и свежее состояние установки с сервера
   try {
@@ -1029,19 +877,7 @@ export function openUnitEditModal(unit) {
 }
 
 export function closeUnitEditorModal() {
-  unitEditorOpenSeq += 1;
-  closeColorPanel();
-  const modal = document.getElementById('modal-unit-editor');
-  if (modal) {
-    modal.classList.add('hidden');
-  }
-  document.body.classList.remove('modal-open');
-  editingUnit = null;
-  initialCameraIds = [];
-  isBusy = false;
-  showEditorError('');
-  hideDeleteConfirm();
-  syncUnitLightControls(null);
+  getUnitEditorModalCtrl().close();
 }
 
 function showWarningsIfAny(warnings) {
@@ -1270,138 +1106,16 @@ async function handleDeleteConfirmYes() {
 
 function initColorPickerEvents() {
   const closeBtn = document.getElementById('unit-color-panel-close');
-  const rEl = document.getElementById('unit-color-r');
-  const gEl = document.getElementById('unit-color-g');
-  const bEl = document.getElementById('unit-color-b');
-  const vEl = document.getElementById('unit-color-v');
-  const sEl = document.getElementById('unit-color-s');
-  const hexInput = document.getElementById('unit-color-hex-input');
-  const nativePicker = document.getElementById('unit-color-native-picker');
-  const svCanvas = document.getElementById('unit-color-sv-canvas');
-  const hueCanvas = document.getElementById('unit-color-hue-canvas');
-
   if (closeBtn) {
     closeBtn.addEventListener('click', closeColorPanel);
   }
-
-  const onRgbSlider = () => {
-    setColorStateFromRgb(
-      rEl ? rEl.value : colorState.r,
-      gEl ? gEl.value : colorState.g,
-      bEl ? bEl.value : colorState.b
-    );
-    if (activeColorChannel) {
-      scheduleColorApiSend(activeColorChannel, colorState.hex);
-    }
-  };
-  [rEl, gEl, bEl].forEach((el) => {
-    if (el) el.addEventListener('input', onRgbSlider);
-  });
-
-  const onHsvSlider = () => {
-    setColorStateFromHsv(
-      colorState.h,
-      sEl ? sEl.value : colorState.s,
-      vEl ? vEl.value : colorState.v
-    );
-    if (activeColorChannel) {
-      scheduleColorApiSend(activeColorChannel, colorState.hex);
-    }
-  };
-  [vEl, sEl].forEach((el) => {
-    if (el) el.addEventListener('input', onHsvSlider);
-  });
-
-  if (hexInput) {
-    const handleHexChange = (immediate) => {
-      const norm = normalizeHexColor(hexInput.value);
-      if (!norm) return;
-      const rgb = hexToRgb(norm);
-      if (!rgb) return;
-      setColorStateFromRgb(rgb.r, rgb.g, rgb.b, { skipHexInput: true });
-      if (immediate) {
-        hexInput.value = norm;
-      }
-      if (activeColorChannel) {
-        scheduleColorApiSend(activeColorChannel, norm, { immediate });
-      }
-    };
-    hexInput.addEventListener('input', () => handleHexChange(false));
-    hexInput.addEventListener('change', () => handleHexChange(true));
-  }
-
-  if (nativePicker) {
-    nativePicker.addEventListener('input', () => {
-      const norm = normalizeHexColor(nativePicker.value);
-      if (!norm) return;
-      const rgb = hexToRgb(norm);
-      if (!rgb) return;
-      setColorStateFromRgb(rgb.r, rgb.g, rgb.b);
-      if (activeColorChannel) {
-        scheduleColorApiSend(activeColorChannel, norm);
-      }
-    });
-  }
-
-  const bindDragCanvas = (canvasEl, handler) => {
-    if (!canvasEl) return;
-    let dragging = false;
-    const handlePointer = (ev) => {
-      const rect = canvasEl.getBoundingClientRect();
-      if (!rect.width || !rect.height) return;
-      const x = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
-      const y = Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height));
-      handler(x, y);
-      if (activeColorChannel) {
-        scheduleColorApiSend(activeColorChannel, colorState.hex);
-      }
-    };
-    canvasEl.addEventListener('mousedown', (ev) => {
-      dragging = true;
-      handlePointer(ev);
-    });
-    window.addEventListener('mousemove', (ev) => {
-      if (dragging) handlePointer(ev);
-    });
-    window.addEventListener('mouseup', () => {
-      dragging = false;
-    });
-    canvasEl.addEventListener(
-      'touchstart',
-      (ev) => {
-        if (ev.touches && ev.touches[0]) {
-          dragging = true;
-          handlePointer(ev.touches[0]);
-        }
-      },
-      { passive: true }
-    );
-    window.addEventListener(
-      'touchmove',
-      (ev) => {
-        if (dragging && ev.touches && ev.touches[0]) {
-          handlePointer(ev.touches[0]);
-        }
-      },
-      { passive: true }
-    );
-    window.addEventListener('touchend', () => {
-      dragging = false;
-    });
-  };
-
-  bindDragCanvas(svCanvas, (x, y) => {
-    setColorStateFromHsv(colorState.h, x * 100, (1 - y) * 100);
-  });
-  bindDragCanvas(hueCanvas, (x) => {
-    setColorStateFromHsv(x * 360, colorState.s, colorState.v);
-  });
+  getColorPicker().init();
 }
 
 export function initUnitEditor() {
-  const modal = document.getElementById('modal-unit-editor');
-  const closeBtn = document.getElementById('modal-unit-editor-close');
-  const cancelBtn = document.getElementById('unit-editor-cancel-btn');
+  const modalCtrl = getUnitEditorModalCtrl();
+  modalCtrl.bind();
+
   const form = document.getElementById('unit-editor-form');
   const archiveBtn = document.getElementById('unit-editor-archive-btn');
   const unarchiveBtn = document.getElementById('unit-editor-unarchive-btn');
@@ -1416,14 +1130,6 @@ export function initUnitEditor() {
   const dnToggle = document.getElementById('unit-editor-day-night-toggle');
   const dnStartInput = document.getElementById('unit-editor-day-night-start');
   const dnEndInput = document.getElementById('unit-editor-day-night-end');
-
-  if (closeBtn) closeBtn.addEventListener('click', closeUnitEditorModal);
-  if (cancelBtn) cancelBtn.addEventListener('click', closeUnitEditorModal);
-  if (modal) {
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) closeUnitEditorModal();
-    });
-  }
 
   if (form) form.addEventListener('submit', handleSaveSubmit);
   if (archiveBtn) archiveBtn.addEventListener('click', handleArchiveClick);
@@ -1472,11 +1178,4 @@ export function initUnitEditor() {
   });
 
   initColorPickerEvents();
-
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && modal && !modal.classList.contains('hidden')) {
-      e.preventDefault();
-      closeUnitEditorModal();
-    }
-  });
 }

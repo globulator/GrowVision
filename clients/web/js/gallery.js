@@ -2,12 +2,14 @@
 // Модальное окно «Галерея и таймлапс»: чистый плеер, клиентский GIF-экспорт, жесты и горячие клавиши
 
 import { api } from './api.js';
-import { showError, showToast } from './dialogs.js';
+import { Modal, showError, showToast } from './dialogs.js';
 import { encodeGifFromImages } from './gif_encoder.js';
 import { getPlaceholderHTML } from './placeholders.js';
+import { renderSvgLineChart } from './components/svg_chart.js';
 
 let currentUnit = null;
 let currentRole = 'guest';
+let galleryModalCtrl = null;
 
 // Загруженные метаданные кадров с сервера
 let allRawFrames = [];
@@ -39,6 +41,44 @@ let lastTapTime = 0;
 let touchStartX = 0;
 let touchStartY = 0;
 
+function resetGalleryModalState() {
+  // Отменяем воспроизведение и инкрементируем loadId для отмены параллельных загрузок
+  isPlaying = false;
+  playbackSessionId++;
+  clearTimeout(playTimer);
+  clearInterval(playTimer);
+  playTimer = null;
+  currentLoadId++;
+  renderRequestId++;
+  cancelActivePreloads();
+  galleryFrontImg = null;
+  galleryBackImg = null;
+  decodedFrameSrcs.clear();
+
+  // Очищаем кеш изображений для освобождения памяти
+  loadedImages.forEach((img) => {
+    img.src = '';
+  });
+  loadedImages = [];
+  allRawFrames = [];
+  currentCameraFrames = [];
+  isChartOpen = false;
+  chartMode = 'cm2';
+  updateChartPanelUi();
+  currentUnit = null;
+}
+
+function getGalleryModalCtrl() {
+  if (!galleryModalCtrl) {
+    galleryModalCtrl = new Modal('modal-gallery', {
+      closeBtn: 'modal-gallery-close',
+      ignoreEscapeWhenInput: true,
+      onClose: resetGalleryModalState,
+    });
+  }
+  return galleryModalCtrl;
+}
+
 export function setGalleryRole(role) {
   currentRole = role;
 }
@@ -57,7 +97,8 @@ export async function openGalleryModal(unit) {
   cancelActivePreloads();
   updateChartPanelUi();
 
-  const modal = document.getElementById('modal-gallery');
+  const modalCtrl = getGalleryModalCtrl();
+  const modal = modalCtrl.getElement();
   if (!modal) return;
 
   const titleEl = document.getElementById('gallery-title');
@@ -71,8 +112,7 @@ export async function openGalleryModal(unit) {
     layerContainer.classList.toggle('hidden', currentRole !== 'developer');
   }
 
-  modal.classList.remove('hidden');
-  document.body.classList.add('modal-open');
+  modalCtrl.open();
 
   // Блокируем управление на время первоначальной загрузки метаданных
   setControlsDisabled(true);
@@ -114,36 +154,7 @@ export async function openGalleryModal(unit) {
 }
 
 export function closeGalleryModal() {
-  const modal = document.getElementById('modal-gallery');
-  if (modal) {
-    modal.classList.add('hidden');
-    document.body.classList.remove('modal-open');
-  }
-
-  // Отменяем воспроизведение и инкрементируем loadId для отмены параллельных загрузок
-  isPlaying = false;
-  playbackSessionId++;
-  clearTimeout(playTimer);
-  clearInterval(playTimer);
-  playTimer = null;
-  currentLoadId++;
-  renderRequestId++;
-  cancelActivePreloads();
-  galleryFrontImg = null;
-  galleryBackImg = null;
-  decodedFrameSrcs.clear();
-
-  // Очищаем кеш изображений для освобождения памяти
-  loadedImages.forEach((img) => {
-    img.src = '';
-  });
-  loadedImages = [];
-  allRawFrames = [];
-  currentCameraFrames = [];
-  isChartOpen = false;
-  chartMode = 'cm2';
-  updateChartPanelUi();
-  currentUnit = null;
+  getGalleryModalCtrl().close();
 }
 
 // Определение камер с порогом 10 минут
@@ -707,19 +718,11 @@ async function handleDownload() {
   const timePart = `${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}`;
   const safeName = (currentUnit.name || 'unit').replace(/[^a-zA-Z0-9а-яА-Я_-]/g, '_');
 
-  // Если 1 кадр -> скачиваем PNG
+  // Если 1 кадр -> скачиваем PNG через централизованный api.downloadFile
   if (loadedImages.length === 1) {
     try {
       const img = loadedImages[0];
-      const res = await fetch(img.src);
-      const blob = await res.blob();
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `growvision_${safeName}_${datePart}_${timePart}.png`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      await api.downloadFile(img.src, `growvision_${safeName}_${datePart}_${timePart}.png`);
       showToast('Кадр успешно сохранён как PNG');
     } catch (err) {
       showError('Ошибка скачивания PNG: ' + err.message, 'Скачивание');
@@ -1017,138 +1020,102 @@ function renderGrowthChart() {
 
   const W = 760;
   const H = 230;
-  const padL = 62;
-  const padR = 20;
-  const padT = 16;
-  const padB = 34;
-  const plotW = W - padL - padR;
-  const plotH = H - padT - padB;
-
   const maxRaw = Math.max(
     1,
     ...points.map((p) => Math.max(p.total, p.avg))
   );
   const yMax = maxRaw * 1.12;
-
-  const getX = (i) =>
-    points.length === 1
-      ? padL + plotW / 2
-      : padL + (i / (points.length - 1)) * plotW;
-  const getY = (val) => padT + plotH - (val / yMax) * plotH;
-
-  const gridSteps = 4;
-  const svgParts = [];
-
-  // Сетка и подписи оси Y
-  for (let s = 0; s <= gridSteps; s++) {
-    const ratio = s / gridSteps;
-    const val = yMax * (1 - ratio);
-    const y = padT + ratio * plotH;
-    const fmtVal = unit === 'cm2' ? val.toFixed(1) : String(Math.round(val));
-    svgParts.push(
-      `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="rgba(148,163,184,0.22)" stroke-width="1"/>`
-    );
-    svgParts.push(
-      `<text x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" fill="#94a3b8" font-size="11" font-family="monospace">${fmtVal}</text>`
-    );
-  }
-
-  // Подписи оси X (первый, средний, последний)
   const labelIndices =
     points.length === 1
       ? [0]
       : points.length === 2
         ? [0, 1]
         : [0, Math.floor((points.length - 1) / 2), points.length - 1];
-  labelIndices.forEach((idx, pos) => {
-    const x = getX(idx);
-    const anchor =
-      points.length === 1
-        ? 'middle'
-        : pos === 0
-          ? 'start'
-          : pos === labelIndices.length - 1
-            ? 'end'
-            : 'middle';
-    svgParts.push(
-      `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="${anchor}" fill="#94a3b8" font-size="11">${formatChartShortTime(points[idx].capturedAt)}</text>`
-    );
-  });
 
-  // Линии: Общая площадь (#10b981) и Средняя площадь куста (#38bdf8)
-  const totalCoords = points.map((p, i) => `${getX(i).toFixed(1)},${getY(p.total).toFixed(1)}`);
-  const avgCoords = points.map((p, i) => `${getX(i).toFixed(1)},${getY(p.avg).toFixed(1)}`);
-
-  if (points.length >= 2) {
-    svgParts.push(
-      `<polyline fill="none" stroke="#10b981" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" points="${totalCoords.join(' ')}"/>`
-    );
-    svgParts.push(
-      `<polyline fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-dasharray="5 3" stroke-linejoin="round" stroke-linecap="round" points="${avgCoords.join(' ')}"/>`
-    );
-  }
-
-  // Точки для тултипов и перехода к кадру
-  points.forEach((p, i) => {
-    const cx = getX(i).toFixed(1);
-    const cyTot = getY(p.total).toFixed(1);
-    const cyAvg = getY(p.avg).toFixed(1);
-    svgParts.push(
-      `<circle class="chart-point chart-point-total" data-idx="${i}" cx="${cx}" cy="${cyTot}" r="4.5" fill="#10b981" stroke="#0f172a" stroke-width="1.5"/>`
-    );
-    svgParts.push(
-      `<circle class="chart-point chart-point-avg" data-idx="${i}" cx="${cx}" cy="${cyAvg}" r="4" fill="#38bdf8" stroke="#0f172a" stroke-width="1.5"/>`
-    );
-  });
-
-  svg.innerHTML = svgParts.join('');
-
-  svg.querySelectorAll('.chart-point').forEach((circle) => {
-    circle.addEventListener('mouseenter', () => {
-      const idx = parseInt(circle.dataset.idx, 10);
-      const p = points[idx];
-      if (!p || !tooltip) return;
-      const fmtTotal = unit === 'cm2' ? p.total.toFixed(2) : String(Math.round(p.total));
-      const fmtAvg = unit === 'cm2' ? p.avg.toFixed(2) : String(Math.round(p.avg));
-      tooltip.innerHTML = `
-        <div class="tooltip-time">${formatChartShortTime(p.capturedAt)}</div>
-        <div>Кустов: <strong>${p.plantsCount}</strong></div>
-        <div class="tooltip-total">Общая: <strong>${fmtTotal} ${unitLabel}</strong></div>
-        <div class="tooltip-avg">Средняя: <strong>${fmtAvg} ${unitLabel}</strong></div>
-      `;
-      const cxNum = parseFloat(circle.getAttribute('cx') || '0');
-      const cyNum = parseFloat(circle.getAttribute('cy') || '0');
-      tooltip.style.left = `${Math.min(82, Math.max(8, (cxNum / W) * 100))}%`;
-      tooltip.style.top = `${Math.max(6, (cyNum / H) * 100 - 16)}%`;
-      tooltip.classList.remove('hidden');
-    });
-    circle.addEventListener('mouseleave', () => {
-      if (tooltip) tooltip.classList.add('hidden');
-    });
-    circle.addEventListener('click', () => {
-      const idx = parseInt(circle.dataset.idx, 10);
-      const p = points[idx];
-      if (!p) return;
-      if (p.frameIndex >= 0 && p.frameIndex < loadedImages.length) {
-        pausePlayback();
-        currentFrameIndex = p.frameIndex;
-        renderCurrentFrame();
-      }
-    });
+  renderSvgLineChart(svg, {
+    width: W,
+    height: H,
+    padL: 62,
+    padR: 20,
+    padT: 16,
+    padB: 34,
+    yAxis: {
+      steps: 4,
+      minValue: 0,
+      maxValue: yMax,
+      paddingRatio: 0,
+      labelOffset: 8,
+      labelDy: 4,
+      fontSize: 11,
+      fontFamily: 'monospace',
+      gridStroke: 'rgba(148,163,184,0.22)',
+      formatLabel: (val) => (unit === 'cm2' ? val.toFixed(1) : String(Math.round(val))),
+    },
+    xAxis: {
+      indices: labelIndices,
+      totalCount: points.length,
+      bottomOffset: 8,
+      fontSize: 11,
+      formatLabel: (idx) => formatChartShortTime(points[idx].capturedAt),
+    },
+    series: [
+      {
+        color: '#10b981',
+        strokeWidth: 2.5,
+        pointRadius: 4.5,
+        pointClass: 'chart-point chart-point-total',
+        pointStroke: '#0f172a',
+        pointStrokeWidth: 1.5,
+        pointDatasetIdx: true,
+        points: points.map((p) => ({ ...p, y: p.total })),
+      },
+      {
+        color: '#38bdf8',
+        strokeWidth: 2.2,
+        dasharray: '5 3',
+        pointRadius: 4,
+        pointClass: 'chart-point chart-point-avg',
+        pointStroke: '#0f172a',
+        pointStrokeWidth: 1.5,
+        pointDatasetIdx: true,
+        points: points.map((p) => ({ ...p, y: p.avg })),
+      },
+    ],
+    onPointElement: (circle, { point, cx, cy }) => {
+      circle.addEventListener('mouseenter', () => {
+        if (!tooltip) return;
+        const fmtTotal = unit === 'cm2' ? point.total.toFixed(2) : String(Math.round(point.total));
+        const fmtAvg = unit === 'cm2' ? point.avg.toFixed(2) : String(Math.round(point.avg));
+        tooltip.innerHTML = `
+          <div class="tooltip-time">${formatChartShortTime(point.capturedAt)}</div>
+          <div>Кустов: <strong>${point.plantsCount}</strong></div>
+          <div class="tooltip-total">Общая: <strong>${fmtTotal} ${unitLabel}</strong></div>
+          <div class="tooltip-avg">Средняя: <strong>${fmtAvg} ${unitLabel}</strong></div>
+        `;
+        tooltip.style.left = `${Math.min(82, Math.max(8, (cx / W) * 100))}%`;
+        tooltip.style.top = `${Math.max(6, (cy / H) * 100 - 16)}%`;
+        tooltip.classList.remove('hidden');
+      });
+      circle.addEventListener('mouseleave', () => {
+        if (tooltip) tooltip.classList.add('hidden');
+      });
+      circle.addEventListener('click', () => {
+        if (point.frameIndex >= 0 && point.frameIndex < loadedImages.length) {
+          pausePlayback();
+          currentFrameIndex = point.frameIndex;
+          renderCurrentFrame();
+        }
+      });
+    },
   });
 }
 
 // Инициализация событий галереи
 export function initGallery() {
-  const modal = document.getElementById('modal-gallery');
+  const modalCtrl = getGalleryModalCtrl();
+  const modal = modalCtrl.getElement();
   if (!modal) return;
-
-  const closeBtn = document.getElementById('modal-gallery-close');
-  if (closeBtn) closeBtn.addEventListener('click', closeGalleryModal);
-
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) closeGalleryModal();
-  });
+  modalCtrl.bind();
 
   // 5 кнопок навигации
   const btnFirst = document.getElementById('gallery-btn-first');
@@ -1253,7 +1220,7 @@ export function initGallery() {
   // Жесты
   setupGestures();
 
-  // Горячие клавиши
+  // Горячие клавиши плеера (Escape обрабатывается в Modal)
   window.addEventListener('keydown', (e) => {
     if (modal.classList.contains('hidden')) return;
 
@@ -1262,10 +1229,7 @@ export function initGallery() {
       return;
     }
 
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      closeGalleryModal();
-    } else if (e.key === ' ' || e.code === 'Space') {
+    if (e.key === ' ' || e.code === 'Space') {
       e.preventDefault();
       togglePlayback();
     } else if (e.key === 'ArrowLeft') {

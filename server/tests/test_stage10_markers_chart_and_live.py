@@ -471,7 +471,12 @@ def test_web_ui_stage10_markup_and_chart_scale_consistency():
     """Проверяет отсутствие #btn-live-retry, предпросмотр автоцветокоррекции, кнопки SVG и режим см²/px графика."""
     web_dir = Path(__file__).resolve().parents[2] / "clients" / "web"
     html = (web_dir / "index.html").read_text(encoding="utf-8")
-    cameras_js = (web_dir / "js" / "cameras.js").read_text(encoding="utf-8")
+    cameras_js = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(
+            [web_dir / "js" / "cameras.js", *(web_dir / "js" / "cameras").glob("*.js")]
+        )
+    )
     gallery_js = (web_dir / "js" / "gallery.js").read_text(encoding="utf-8")
 
     # 1. Нет кнопки "Повторить"

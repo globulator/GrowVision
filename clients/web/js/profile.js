@@ -2,11 +2,37 @@
 // Модальные окна «Учётная запись» и «Активные сессии» (для разработчика)
 
 import { api } from './api.js';
-import { showConfirm, showToast } from './dialogs.js';
+import { Modal, showConfirm, showToast } from './dialogs.js';
 
 let currentUserData = null;
 let profileUpdatedCallback = null;
 let selfTerminatedCallback = null;
+let profileModalCtrl = null;
+let sessionsModalCtrl = null;
+
+function getProfileModalCtrl() {
+  if (!profileModalCtrl) {
+    profileModalCtrl = new Modal('modal-profile', {
+      closeBtn: 'modal-profile-close',
+      onClose: () => {
+        setInlineError('profile-form-error', '');
+      },
+    });
+  }
+  return profileModalCtrl;
+}
+
+function getSessionsModalCtrl() {
+  if (!sessionsModalCtrl) {
+    sessionsModalCtrl = new Modal('modal-sessions', {
+      closeBtn: 'modal-sessions-close',
+      onClose: () => {
+        setInlineError('sessions-error', '');
+      },
+    });
+  }
+  return sessionsModalCtrl;
+}
 
 export function setProfileUser(user) {
   currentUserData = user ? { ...user } : null;
@@ -126,14 +152,14 @@ export async function openProfileModal() {
   if (!currentUserData || !currentUserData.authenticated || currentUserData.role === 'guest') {
     return;
   }
-  const modal = document.getElementById('modal-profile');
+  const modalCtrl = getProfileModalCtrl();
+  const modal = modalCtrl.getElement();
   if (!modal) return;
 
   setInlineError('profile-form-error', '');
   fillProfileModal(currentUserData);
 
-  modal.classList.remove('hidden');
-  document.body.classList.add('modal-open');
+  modalCtrl.open();
 
   try {
     const fresh = await api.getProfile();
@@ -148,15 +174,7 @@ export async function openProfileModal() {
 }
 
 export function closeProfileModal() {
-  const modal = document.getElementById('modal-profile');
-  if (modal) {
-    modal.classList.add('hidden');
-  }
-  const sessionsModal = document.getElementById('modal-sessions');
-  if (!sessionsModal || sessionsModal.classList.contains('hidden')) {
-    document.body.classList.remove('modal-open');
-  }
-  setInlineError('profile-form-error', '');
+  getProfileModalCtrl().close();
 }
 
 async function handleProfileFormSubmit(e) {
@@ -196,25 +214,17 @@ export async function openSessionsModal() {
   if (!currentUserData || currentUserData.role !== 'developer') return;
   closeProfileModal();
 
-  const modal = document.getElementById('modal-sessions');
+  const modalCtrl = getSessionsModalCtrl();
+  const modal = modalCtrl.getElement();
   if (!modal) return;
 
-  modal.classList.remove('hidden');
-  document.body.classList.add('modal-open');
+  modalCtrl.open();
 
   await loadAndRenderSessions();
 }
 
 export function closeSessionsModal() {
-  const modal = document.getElementById('modal-sessions');
-  if (modal) {
-    modal.classList.add('hidden');
-  }
-  const profileModal = document.getElementById('modal-profile');
-  if (!profileModal || profileModal.classList.contains('hidden')) {
-    document.body.classList.remove('modal-open');
-  }
-  setInlineError('sessions-error', '');
+  getSessionsModalCtrl().close();
 }
 
 async function loadAndRenderSessions() {
@@ -365,10 +375,6 @@ async function handleTerminateSession(session, isSelf, btnEl) {
     : `Принудительно завершить сеанс «${session.login}» (${formatClientTypeLabel(session.client_type)})?`;
 
   const confirmed = await showConfirm(promptMsg, 'Завершение сеанса', 'Завершить', 'Отмена');
-  const modal = document.getElementById('modal-sessions');
-  if (modal && !modal.classList.contains('hidden')) {
-    document.body.classList.add('modal-open');
-  }
   if (!confirmed) return;
 
   if (btnEl) btnEl.disabled = true;
@@ -396,16 +402,8 @@ export function initProfile() {
     headerUserBtn.addEventListener('click', openProfileModal);
   }
 
-  const profileModal = document.getElementById('modal-profile');
-  const profileCloseBtn = document.getElementById('modal-profile-close');
-  if (profileCloseBtn) {
-    profileCloseBtn.addEventListener('click', closeProfileModal);
-  }
-  if (profileModal) {
-    profileModal.addEventListener('click', (e) => {
-      if (e.target === profileModal) closeProfileModal();
-    });
-  }
+  getProfileModalCtrl().bind();
+  getSessionsModalCtrl().bind();
 
   const profileForm = document.getElementById('profile-form');
   if (profileForm) {
@@ -417,27 +415,8 @@ export function initProfile() {
     sessionsBtn.addEventListener('click', openSessionsModal);
   }
 
-  const sessionsModal = document.getElementById('modal-sessions');
-  const sessionsCloseBtn = document.getElementById('modal-sessions-close');
   const sessionsRefreshBtn = document.getElementById('sessions-refresh-btn');
-  if (sessionsCloseBtn) {
-    sessionsCloseBtn.addEventListener('click', closeSessionsModal);
-  }
   if (sessionsRefreshBtn) {
     sessionsRefreshBtn.addEventListener('click', loadAndRenderSessions);
   }
-  if (sessionsModal) {
-    sessionsModal.addEventListener('click', (e) => {
-      if (e.target === sessionsModal) closeSessionsModal();
-    });
-  }
-
-  window.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    if (sessionsModal && !sessionsModal.classList.contains('hidden')) {
-      closeSessionsModal();
-    } else if (profileModal && !profileModal.classList.contains('hidden')) {
-      closeProfileModal();
-    }
-  });
 }

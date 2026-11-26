@@ -2,10 +2,24 @@
 // Модуль помощника подключения Raspberry Pi (только для разработчика)
 
 import { api } from './api.js';
-import { showError, showToast } from './dialogs.js';
+import { Modal, showError, showToast } from './dialogs.js';
+import { pollingCoordinator } from './components/polling.js';
 
-let pollTimer = null;
+const RPI_POLL_TASK_NAME = 'rpi-setup-status';
 let currentRole = 'guest';
+let rpiModalCtrl = null;
+
+function getRpiModalCtrl() {
+  if (!rpiModalCtrl) {
+    rpiModalCtrl = new Modal('modal-rpi-setup', {
+      closeBtn: 'modal-rpi-setup-close',
+      onClose: () => {
+        pollingCoordinator.stop(RPI_POLL_TASK_NAME);
+      },
+    });
+  }
+  return rpiModalCtrl;
+}
 
 // DOM-элементы
 let btnRpiSetup = null;
@@ -73,20 +87,10 @@ export function initRpiSetup() {
   copyBtn = document.getElementById('rpi-copy-btn');
   copyText = document.getElementById('rpi-copy-text');
 
+  getRpiModalCtrl().bind();
+
   if (btnRpiSetup) {
     btnRpiSetup.addEventListener('click', openRpiModal);
-  }
-
-  if (modalCloseBtn) {
-    modalCloseBtn.addEventListener('click', closeRpiModal);
-  }
-
-  if (modalRpiSetup) {
-    modalRpiSetup.addEventListener('click', (e) => {
-      if (e.target === modalRpiSetup) {
-        closeRpiModal();
-      }
-    });
   }
 
   if (toggleNetbirdKeyBtn && netbirdKeyInput) {
@@ -100,13 +104,6 @@ export function initRpiSetup() {
   if (copyBtn) {
     copyBtn.addEventListener('click', handleCopyCommand);
   }
-
-  // Закрытие по клавише Esc
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && modalRpiSetup && !modalRpiSetup.classList.contains('hidden')) {
-      closeRpiModal();
-    }
-  });
 }
 
 export function updateRpiRole(role) {
@@ -314,10 +311,10 @@ function applyStatusData(statusData) {
 
 async function openRpiModal() {
   if (currentRole !== 'developer') return;
-  if (!modalRpiSetup) return;
+  const modalCtrl = getRpiModalCtrl();
+  if (!modalCtrl.getElement()) return;
 
-  modalRpiSetup.classList.remove('hidden');
-  document.body.classList.add('modal-open');
+  modalCtrl.open();
 
   // Предзаполнение адреса сервера, если пусто
   if (serverUrlInput && !serverUrlInput.value.trim()) {
@@ -333,21 +330,19 @@ async function openRpiModal() {
     }
   }
 
-  // Обновление статуса сразу и запуск таймера автообновления раз в 3 сек
+  // Обновление статуса сразу и запуск таймера автообновления раз в 3 сек через PollingCoordinator
   await updateStatusSilent();
-  clearInterval(pollTimer);
-  pollTimer = setInterval(updateStatusSilent, 3000);
+  if (modalCtrl.isOpen()) {
+    pollingCoordinator.register(RPI_POLL_TASK_NAME, updateStatusSilent, 3000, {
+      pauseWhenModalOpen: false,
+      pauseWhenHidden: true,
+    });
+    pollingCoordinator.start(RPI_POLL_TASK_NAME);
+  }
 }
 
 function closeRpiModal() {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-  if (modalRpiSetup) {
-    modalRpiSetup.classList.add('hidden');
-  }
-  document.body.classList.remove('modal-open');
+  getRpiModalCtrl().close();
 }
 
 function toggleNetbirdKeyVisibility() {

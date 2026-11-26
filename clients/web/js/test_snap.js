@@ -1,14 +1,28 @@
 // clients/web/js/test_snap.js
-// Модальное окно тестового снимка с фиксом передачи target и слоями
+// Модальное окно тестового снимка с фиксом передачи target, слоями и единым механизмом съёмки/скачивания
 
-import { api } from './api.js';
-import { showError, showToast } from './dialogs.js';
+import { Modal, showError, showToast } from './dialogs.js';
 import { getLoadingSpinnerHTML, getPlaceholderHTML } from './placeholders.js';
+import { downloadSnapImage, executeQuickSnap } from './cameras.js';
 
 let currentUnit = null;
 let currentRole = 'guest';
 let currentSnapData = null;
 let currentLayer = 'raw'; // 'raw' или 'ann'
+let testSnapModalCtrl = null;
+
+function getTestSnapModalCtrl() {
+  if (!testSnapModalCtrl) {
+    testSnapModalCtrl = new Modal('modal-test-snap', {
+      closeBtn: 'modal-test-snap-close',
+      onClose: () => {
+        currentUnit = null;
+        currentSnapData = null;
+      },
+    });
+  }
+  return testSnapModalCtrl;
+}
 
 export function setTestSnapRole(role) {
   currentRole = role;
@@ -19,7 +33,8 @@ export function openTestSnapModal(unit) {
   currentSnapData = null;
   currentLayer = 'raw';
 
-  const modal = document.getElementById('modal-test-snap');
+  const modalCtrl = getTestSnapModalCtrl();
+  const modal = modalCtrl.getElement();
   if (!modal) return;
 
   const titleEl = document.getElementById('test-snap-title');
@@ -39,21 +54,14 @@ export function openTestSnapModal(unit) {
     layerAnnBtn.classList.remove('active');
   }
 
-  modal.classList.remove('hidden');
-  document.body.classList.add('modal-open');
+  modalCtrl.open();
 
   // Сразу запускаем съемку
   triggerSnap();
 }
 
 export function closeTestSnapModal() {
-  const modal = document.getElementById('modal-test-snap');
-  if (modal) {
-    modal.classList.add('hidden');
-    document.body.classList.remove('modal-open');
-  }
-  currentUnit = null;
-  currentSnapData = null;
+  getTestSnapModalCtrl().close();
 }
 
 async function triggerSnap() {
@@ -73,22 +81,10 @@ async function triggerSnap() {
   if (metaBox) metaBox.textContent = 'Ожидание ответа от камеры...';
 
   try {
-    // Внимание: target передается строго как целое число Number(unit.id)
-    const res = await api.snap(Number(currentUnit.id));
-    if (res.status === 'error') {
-      throw new Error(res.result_message || 'Ошибка выполнения снимка Edge-агентом');
-    }
-
-    const cap = res.captures && res.captures[0] ? res.captures[0] : res;
-    currentSnapData = {
-      ...res,
-      ...cap,
-      raw_image_url: cap.raw_url || cap.raw_image_url || res.raw_url || res.raw_image_url,
-      annotated_image_url:
-        cap.annotated_url || cap.annotated_image_url || res.annotated_url || res.annotated_image_url,
-      captured_at: cap.captured_at || res.captured_at,
-      area_display: cap.area_display || res.area_display,
-    };
+    // Внимание: target передается строго как целое число Number(unit.id) через общий механизм в cameras.js
+    const snapData = await executeQuickSnap(currentUnit.id);
+    if (!currentUnit) return;
+    currentSnapData = snapData;
 
     renderSnapImage();
     if (resnapBtn) resnapBtn.disabled = false;
@@ -145,7 +141,7 @@ function renderSnapImage() {
   }
 }
 
-// Скачивание тестового снимка (оригинал или разметка) из эфемерного кэша
+// Скачивание тестового снимка (оригинал или разметка) из эфемерного кэша через api.downloadFile
 async function downloadSnapPng() {
   if (!currentSnapData || !currentUnit) return;
 
@@ -156,35 +152,8 @@ async function downloadSnapPng() {
   if (!url) return;
 
   try {
-    const dlUrl = `${url}${url.includes('?') ? '&' : '?'}download=1`;
-    const res = await fetch(dlUrl, { credentials: 'same-origin' });
-    if (!res.ok) {
-      let detail = `Ошибка HTTP ${res.status}`;
-      try {
-        const errJson = await res.json();
-        if (errJson && errJson.detail) {
-          detail = errJson.detail;
-        }
-      } catch (_) {
-        // не JSON
-      }
-      throw new Error(detail);
-    }
-    const blob = await res.blob();
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-
-    const now = new Date();
-    const datePart = now.toISOString().slice(0, 10);
-    const timePart = `${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}`;
-    const safeName = (currentUnit.name || 'unit').replace(/[^a-zA-Z0-9а-яА-Я_-]/g, '_');
     const layerTag = currentLayer === 'ann' ? 'ann' : 'raw';
-    link.download = `growvision_${safeName}_snap_${layerTag}_${datePart}_${timePart}.jpg`;
-
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    await downloadSnapImage(url, currentUnit.name, layerTag);
     showToast('Снимок успешно скачан');
   } catch (err) {
     showError('Не удалось скачать снимок: ' + err.message, 'Ошибка скачивания');
@@ -192,15 +161,10 @@ async function downloadSnapPng() {
 }
 
 export function initTestSnap() {
-  const modal = document.getElementById('modal-test-snap');
+  const modalCtrl = getTestSnapModalCtrl();
+  const modal = modalCtrl.getElement();
   if (!modal) return;
-
-  const closeBtn = document.getElementById('modal-test-snap-close');
-  if (closeBtn) closeBtn.addEventListener('click', closeTestSnapModal);
-
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) closeTestSnapModal();
-  });
+  modalCtrl.bind();
 
   const resnapBtn = document.getElementById('test-snap-resnap-btn');
   if (resnapBtn) resnapBtn.addEventListener('click', triggerSnap);
@@ -227,10 +191,4 @@ export function initTestSnap() {
       renderSnapImage();
     });
   }
-
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
-      closeTestSnapModal();
-    }
-  });
 }

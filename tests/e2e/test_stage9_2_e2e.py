@@ -13,7 +13,12 @@ def test_stage9_2_web_markup_and_invariants():
     web_dir = Path(__file__).resolve().parent.parent.parent / "clients" / "web"
     index_html = (web_dir / "index.html").read_text(encoding="utf-8")
     style_css = (web_dir / "style.css").read_text(encoding="utf-8")
-    cameras_js = (web_dir / "js" / "cameras.js").read_text(encoding="utf-8")
+    cameras_js = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(
+            [web_dir / "js" / "cameras.js", *(web_dir / "js" / "cameras").glob("*.js")]
+        )
+    )
 
     # 1. Проверка кнопки меню камер в шапке
     assert 'id="btn-cameras-menu"' in index_html
@@ -38,7 +43,9 @@ def test_stage9_2_web_markup_and_invariants():
     assert "id: 'color'" in cameras_js
     assert "id: 'focus'" in cameras_js
     assert "Фиксированный фокус" in cameras_js
-    assert "URL.createObjectURL" in cameras_js
+    api_js = (web_dir / "js" / "api.js").read_text(encoding="utf-8")
+    assert "api.downloadFile" in cameras_js
+    assert "URL.createObjectURL" in api_js
 
     # 5. Проверка ползунков RGB и телеметрии
     assert "slider-rgb-" in cameras_js

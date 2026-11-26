@@ -7,15 +7,7 @@ export function setUnauthorizedHandler(fn) {
   onUnauthorizedCallback = fn;
 }
 
-async function request(url, options = {}) {
-  const defaultHeaders = {
-    'Accept': 'application/json',
-  };
-
-  if (options.body && typeof options.body === 'string') {
-    defaultHeaders['Content-Type'] = 'application/json';
-  }
-
+async function requestRaw(url, options = {}, defaultHeaders = {}) {
   const mergedOptions = {
     ...options,
     credentials: 'same-origin',
@@ -64,11 +56,7 @@ async function request(url, options = {}) {
       throw error;
     }
 
-    if (response.status === 204) {
-      return null;
-    }
-
-    return await response.json();
+    return response;
   } catch (err) {
     if (
       err.name === 'TypeError' ||
@@ -87,7 +75,49 @@ async function request(url, options = {}) {
   }
 }
 
+async function request(url, options = {}) {
+  const defaultHeaders = {
+    'Accept': 'application/json',
+  };
+
+  if (options.body && typeof options.body === 'string') {
+    defaultHeaders['Content-Type'] = 'application/json';
+  }
+
+  const response = await requestRaw(url, options, defaultHeaders);
+
+  if (response.status === 204) {
+    return null;
+  }
+
+  return await response.json();
+}
+
+async function fetchBlob(url, options = {}) {
+  const response = await requestRaw(url, options, {
+    'Accept': '*/*',
+  });
+  return await response.blob();
+}
+
+async function downloadFile(url, filename, options = {}) {
+  const blob = await fetchBlob(url, options);
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = filename || 'download';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+  return blob;
+}
+
 export const api = {
+  // Скачивание файлов с централизованной обработкой 401/ошибок/credentials
+  fetchBlob,
+  downloadFile,
+
   // Информация о сессии и профиле
   getMe: () => request('/api/auth/web/me'),
   getProfile: () => request('/api/auth/me'),

@@ -2,9 +2,22 @@
 // Панель глобального управления светом (3-позиционный режим), вспышкой, тестом реле и задержкой прогрева
 
 import { api } from './api.js';
-import { showToast } from './dialogs.js';
+import { Modal, showToast } from './dialogs.js';
 
 let currentRole = 'guest';
+let lightModalCtrl = null;
+
+function getLightModalCtrl() {
+  if (!lightModalCtrl) {
+    lightModalCtrl = new Modal('modal-light-control', {
+      closeBtn: 'modal-light-control-close',
+      onClose: () => {
+        showLightError('');
+      },
+    });
+  }
+  return lightModalCtrl;
+}
 let activeInstallationsCount = 0;
 let lastMainMode = 'default';
 let lastFlashMode = 'default';
@@ -217,23 +230,18 @@ async function refreshRelaysState() {
 
 export async function openLightControlModal() {
   if (currentRole !== 'developer') return;
-  const modal = document.getElementById('modal-light-control');
+  const modalCtrl = getLightModalCtrl();
+  const modal = modalCtrl.getElement();
   if (!modal) return;
 
   showLightError('');
-  modal.classList.remove('hidden');
-  document.body.classList.add('modal-open');
+  modalCtrl.open();
 
   await refreshRelaysState();
 }
 
 export function closeLightControlModal() {
-  const modal = document.getElementById('modal-light-control');
-  if (modal) {
-    modal.classList.add('hidden');
-  }
-  document.body.classList.remove('modal-open');
-  showLightError('');
+  getLightModalCtrl().close();
 }
 
 async function handleGlobalModeSelect(modeRaw, isFlash) {
@@ -384,8 +392,6 @@ async function applyDelayChange(rawVal) {
 
 export function initLightControl() {
   const btnOpen = document.getElementById('btn-light-menu');
-  const modal = document.getElementById('modal-light-control');
-  const closeBtn = document.getElementById('modal-light-control-close');
   const mainControl = document.getElementById('light-mode-main');
   const flashControl = document.getElementById('light-mode-flash');
   const testBtn = document.getElementById('btn-light-relay-test');
@@ -394,13 +400,8 @@ export function initLightControl() {
   const dnStartInput = document.getElementById('light-day-night-start');
   const dnEndInput = document.getElementById('light-day-night-end');
 
+  getLightModalCtrl().bind();
   if (btnOpen) btnOpen.addEventListener('click', openLightControlModal);
-  if (closeBtn) closeBtn.addEventListener('click', closeLightControlModal);
-  if (modal) {
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) closeLightControlModal();
-    });
-  }
 
   if (mainControl) {
     mainControl.querySelectorAll('.seg-btn').forEach((btn) => {
@@ -439,12 +440,5 @@ export function initLightControl() {
     presetBtn.addEventListener('click', () => {
       applyDelayChange(presetBtn.dataset.delay);
     });
-  });
-
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && modal && !modal.classList.contains('hidden')) {
-      e.preventDefault();
-      closeLightControlModal();
-    }
   });
 }

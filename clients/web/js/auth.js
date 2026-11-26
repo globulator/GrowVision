@@ -2,9 +2,11 @@
 // Модальные окна «Вход» и пошаговой «Регистрации» через Telegram
 
 import { api } from './api.js';
-import { showToast } from './dialogs.js';
+import { Modal, showToast } from './dialogs.js';
 
 let authSuccessCallback = null;
+let loginModalCtrl = null;
+let registerModalCtrl = null;
 
 // Состояние пошаговой регистрации
 const registerState = {
@@ -93,18 +95,53 @@ export function updateBotLinks(botUsername) {
   }
 }
 
+function getLoginModalCtrl() {
+  if (!loginModalCtrl) {
+    loginModalCtrl = new Modal('modal-login', {
+      closeBtn: 'modal-login-close',
+      onClose: () => {
+        setInlineError('login-form-error', '');
+      },
+    });
+  }
+  return loginModalCtrl;
+}
+
+function getRegisterModalCtrl() {
+  if (!registerModalCtrl) {
+    registerModalCtrl = new Modal('modal-register', {
+      closeBtn: 'modal-register-close',
+      onClose: () => {
+        clearInterval(registerState.timerInterval);
+        registerState.timerInterval = null;
+        stopPollingCodeDelivery();
+        registerState.step = 1;
+        registerState.telegram = '';
+        registerState.telegram_id = null;
+        registerState.recommended_name = '';
+        registerState.code = '';
+        registerState.access_code = '';
+        setInlineError('reg-error-step1', '');
+        setInlineError('reg-error-step2', '');
+        setInlineError('reg-error-step3', '');
+      },
+    });
+  }
+  return registerModalCtrl;
+}
+
 // Открытие модалки входа
 export function openLoginModal() {
   closeRegisterModal();
-  const modal = document.getElementById('modal-login');
+  const modalCtrl = getLoginModalCtrl();
+  const modal = modalCtrl.getElement();
   if (!modal) return;
 
   const form = document.getElementById('login-form');
   if (form) form.reset();
   setInlineError('login-form-error', '');
 
-  modal.classList.remove('hidden');
-  document.body.classList.add('modal-open');
+  modalCtrl.open();
 
   const firstInput = document.getElementById('login-telegram');
   if (firstInput) {
@@ -113,18 +150,14 @@ export function openLoginModal() {
 }
 
 export function closeLoginModal() {
-  const modal = document.getElementById('modal-login');
-  if (modal) {
-    modal.classList.add('hidden');
-    document.body.classList.remove('modal-open');
-  }
-  setInlineError('login-form-error', '');
+  getLoginModalCtrl().close();
 }
 
 // Открытие модалки регистрации
 export function openRegisterModal(initialTelegram = '', initialStep = 1) {
   closeLoginModal();
-  const modal = document.getElementById('modal-register');
+  const modalCtrl = getRegisterModalCtrl();
+  const modal = modalCtrl.getElement();
   if (!modal) return;
 
   setInlineError('reg-error-step1', '');
@@ -132,8 +165,7 @@ export function openRegisterModal(initialTelegram = '', initialStep = 1) {
   setInlineError('reg-error-step3', '');
 
   setRegisterStep(initialStep);
-  modal.classList.remove('hidden');
-  document.body.classList.add('modal-open');
+  modalCtrl.open();
 
   const firstInput = document.getElementById('reg-telegram');
   if (firstInput && initialTelegram) {
@@ -142,23 +174,7 @@ export function openRegisterModal(initialTelegram = '', initialStep = 1) {
 }
 
 export function closeRegisterModal() {
-  const modal = document.getElementById('modal-register');
-  if (modal) {
-    modal.classList.add('hidden');
-    document.body.classList.remove('modal-open');
-  }
-  clearInterval(registerState.timerInterval);
-  registerState.timerInterval = null;
-  stopPollingCodeDelivery();
-  registerState.step = 1;
-  registerState.telegram = '';
-  registerState.telegram_id = null;
-  registerState.recommended_name = '';
-  registerState.code = '';
-  registerState.access_code = '';
-  setInlineError('reg-error-step1', '');
-  setInlineError('reg-error-step2', '');
-  setInlineError('reg-error-step3', '');
+  getRegisterModalCtrl().close();
 }
 
 // Переключение шага регистрации
@@ -409,26 +425,8 @@ export function initAuth() {
     });
   }
 
-  // Кнопки закрытия
-  const closeLoginBtn = document.getElementById('modal-login-close');
-  if (closeLoginBtn) closeLoginBtn.addEventListener('click', closeLoginModal);
-
-  const closeRegBtn = document.getElementById('modal-register-close');
-  if (closeRegBtn) closeRegBtn.addEventListener('click', closeRegisterModal);
-
-  // Клик по фону (backdrop)
-  const modalLogin = document.getElementById('modal-login');
-  if (modalLogin) {
-    modalLogin.addEventListener('click', (e) => {
-      if (e.target === modalLogin) closeLoginModal();
-    });
-  }
-  const modalReg = document.getElementById('modal-register');
-  if (modalReg) {
-    modalReg.addEventListener('click', (e) => {
-      if (e.target === modalReg) closeRegisterModal();
-    });
-  }
+  getLoginModalCtrl().bind();
+  getRegisterModalCtrl().bind();
 
   // Форма входа
   const loginForm = document.getElementById('login-form');
@@ -477,15 +475,4 @@ export function initAuth() {
       togglePasswordVisibility(loginPwdInput, toggleLoginPwd)
     );
   }
-
-  // Закрытие по Escape
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      if (modalLogin && !modalLogin.classList.contains('hidden')) {
-        closeLoginModal();
-      } else if (modalReg && !modalReg.classList.contains('hidden')) {
-        closeRegisterModal();
-      }
-    }
-  });
 }

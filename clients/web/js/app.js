@@ -2,6 +2,7 @@
 // Главная точка входа Web SPA GrowVision
 
 import { api, setUnauthorizedHandler } from './api.js';
+import { PollingCoordinator, pollingCoordinator } from './components/polling.js';
 import {
   initAuth,
   openLoginModal,
@@ -62,7 +63,7 @@ import {
 } from './unit_editor.js';
 
 let currentUser = null; // { authenticated: bool, role: 'guest'|'biologist'|'developer', login: string|null }
-let backgroundPollingTimer = null;
+const BACKGROUND_POLL_TASK = 'app-background-sync';
 
 // Обновление отображения роли, имени и кнопок в шапке
 function updateHeaderUi() {
@@ -236,7 +237,7 @@ async function initSession() {
   applyRole(currentUser.role);
 }
 
-// Фоновый опрос каждые 5 с (с проверкой document.hidden)
+// Фоновый опрос каждые 5 с через PollingCoordinator (с паузой при открытых модалках и скрытой вкладке)
 async function pollBackground() {
   if (document.hidden) return;
 
@@ -272,8 +273,12 @@ async function pollBackground() {
 }
 
 function startBackgroundPolling() {
-  if (backgroundPollingTimer) clearInterval(backgroundPollingTimer);
-  backgroundPollingTimer = setInterval(pollBackground, 5000);
+  pollingCoordinator.register(BACKGROUND_POLL_TASK, pollBackground, 5000, {
+    pauseWhenModalOpen: true,
+    pauseWhenHidden: true,
+    runOnResume: true,
+  });
+  pollingCoordinator.start(BACKGROUND_POLL_TASK);
 }
 
 // Запуск приложения
@@ -360,3 +365,5 @@ async function bootstrap() {
 }
 
 window.addEventListener('DOMContentLoaded', bootstrap);
+
+export { PollingCoordinator, pollingCoordinator };

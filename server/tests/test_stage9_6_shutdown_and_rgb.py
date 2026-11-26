@@ -393,7 +393,12 @@ def test_lifespan_signal_handler_calls_original_uvicorn_handler(
 def test_web_ui_stage9_6_live_rgb_grace_and_gallery_double_buffer():
     """Проверяет Web UI 9.6: отключение feColorMatrix в Разметке, стартовое окно Live и double-buffer галереи."""
     web_dir = Path(__file__).resolve().parents[2] / "clients" / "web"
-    cameras_js = (web_dir / "js" / "cameras.js").read_text(encoding="utf-8")
+    cameras_js = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(
+            [web_dir / "js" / "cameras.js", *(web_dir / "js" / "cameras").glob("*.js")]
+        )
+    )
     gallery_js = (web_dir / "js" / "gallery.js").read_text(encoding="utf-8")
     style_css = (web_dir / "style.css").read_text(encoding="utf-8")
 

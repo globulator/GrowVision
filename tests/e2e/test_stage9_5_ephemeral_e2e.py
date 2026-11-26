@@ -226,11 +226,15 @@ def test_stage9_5_ephemeral_snap_web_and_bot_e2e(e2e_uvicorn_server):
             stop_ev.set()
             th.join(timeout=3.0)
 
-    # 4. Проверяем клиентский JS-код test_snap.js
-    test_snap_js = (ROOT_DIR / "clients" / "web" / "js" / "test_snap.js").read_text(
+    # 4. Проверяем клиентский JS-код test_snap.js + camera_live.js + api.js
+    web_js_dir = ROOT_DIR / "clients" / "web" / "js"
+    test_snap_js = (web_js_dir / "test_snap.js").read_text(encoding="utf-8")
+    camera_live_js = (web_js_dir / "cameras" / "camera_live.js").read_text(
         encoding="utf-8"
     )
+    api_js = (web_js_dir / "api.js").read_text(encoding="utf-8")
     assert "showError" in test_snap_js
-    assert "download=1" in test_snap_js
-    assert "credentials: 'same-origin'" in test_snap_js
-    assert "if (!res.ok)" in test_snap_js
+    assert "downloadSnapImage" in test_snap_js
+    assert "download=1" in camera_live_js
+    assert "credentials: 'same-origin'" in api_js
+    assert "if (!response.ok)" in api_js

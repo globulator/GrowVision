@@ -242,7 +242,12 @@ def test_web_ui_stage10_2_seg_mode_live_polish_and_gallery_pause():
     web_dir = Path(__file__).resolve().parents[2] / "clients" / "web"
     html = (web_dir / "index.html").read_text(encoding="utf-8")
     css = (web_dir / "style.css").read_text(encoding="utf-8")
-    cameras_js = (web_dir / "js" / "cameras.js").read_text(encoding="utf-8")
+    cameras_js = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(
+            [web_dir / "js" / "cameras.js", *(web_dir / "js" / "cameras").glob("*.js")]
+        )
+    )
     gallery_js = (web_dir / "js" / "gallery.js").read_text(encoding="utf-8")
 
     # 1. Segmented control Авто / ONNX / HSV в Live-окне

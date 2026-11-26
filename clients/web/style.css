@@ -158,10 +158,6 @@ body.modal-open {
   border-color: rgba(16, 185, 129, 0.45);
 }
 
-.user-name-btn.hidden {
-  display: none !important;
-}
-
 /* Кнопки */
 button {
   font-family: inherit;
@@ -218,12 +214,6 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-}
-
-.dev-slot.hidden,
-.btn-icon.hidden,
-.segmented-control.hidden {
-  display: none !important;
 }
 
 .btn:disabled, .btn-icon:disabled {
@@ -351,24 +341,9 @@ button {
   display: block;
 }
 
-.card-empty-placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  color: var(--text-muted);
-  text-align: center;
-  padding: 20px;
-}
-
 .placeholder-text {
   font-size: 0.85rem;
   color: var(--text-muted);
-}
-
-.placeholder-text.error-text {
-  color: var(--danger-color);
 }
 
 .unit-info {
@@ -451,10 +426,6 @@ button {
   align-items: center;
   justify-content: center;
   padding: 16px;
-}
-
-.modal-backdrop.hidden {
-  display: none !important;
 }
 
 .modal-window {
@@ -565,14 +536,6 @@ button {
 
 .reg-step {
   display: block;
-}
-
-.reg-step.hidden {
-  display: none !important;
-}
-
-#modal-register.hidden {
-  display: none !important;
 }
 
 .modal-actions {
@@ -869,18 +832,20 @@ button {
   animation: spin 1s linear infinite;
 }
 
-@keyframes pulse {
-  0% { opacity: 0.4; }
-  50% { opacity: 0.8; }
-  100% { opacity: 0.4; }
-}
-
-.pulse-anim {
-  animation: pulse 2s ease-in-out infinite;
-}
-
 /* Вспомогательные классы */
-.hidden {
+.hidden,
+.user-name-btn.hidden,
+.dev-slot.hidden,
+.btn-icon.hidden,
+.segmented-control.hidden,
+.modal-backdrop.hidden,
+.reg-step.hidden,
+#modal-register.hidden,
+.server-offline-banner.hidden,
+.logout-confirm-inline.hidden,
+.form-error-inline.hidden,
+.fps-warning.hidden,
+.profile-dev-actions.hidden {
   display: none !important;
 }
 
@@ -989,23 +954,6 @@ button {
   margin-bottom: 12px;
 }
 
-.rpi-status-card {
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  padding: 12px 16px;
-  margin-bottom: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.rpi-status-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .rpi-status-indicator {
   display: flex;
   align-items: center;
@@ -1044,28 +992,6 @@ button {
   flex-direction: column;
   gap: 16px;
   margin-bottom: 20px;
-}
-
-.radio-group {
-  display: flex;
-  gap: 20px;
-  margin-top: 6px;
-}
-
-.radio-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  color: var(--text-main);
-}
-
-.radio-label input[type="radio"] {
-  accent-color: var(--primary-accent);
-  cursor: pointer;
-  width: 16px;
-  height: 16px;
 }
 
 .rpi-result-block {
@@ -1183,37 +1109,6 @@ button {
   font-family: monospace;
 }
 
-/* Адаптивность от 360 px */
-@media (max-width: 600px) {
-  .app-header {
-    padding: 10px 14px;
-  }
-  .header-logo {
-    gap: 8px;
-  }
-  .brand-logo {
-    width: 28px;
-    height: 28px;
-    aspect-ratio: 1 / 1;
-  }
-  .logo-title {
-    font-size: 1.1rem;
-  }
-  .sub-toolbar {
-    padding: 10px 14px;
-  }
-  .units-grid {
-    grid-template-columns: 1fr;
-  }
-  .gallery-controls-bar {
-    justify-content: center;
-  }
-  .gallery-extra-controls {
-    width: 100%;
-    justify-content: space-between;
-  }
-}
-
 /* ================== Плашка сетевой недоступности сервера ================== */
 .server-offline-banner {
   max-width: 1200px;
@@ -1234,10 +1129,6 @@ button {
   width: calc(100% - 32px);
 }
 
-.server-offline-banner.hidden {
-  display: none !important;
-}
-
 .offline-icon {
   flex-shrink: 0;
   color: #ef4444;
@@ -1252,10 +1143,6 @@ button {
   border: 1px solid rgba(239, 68, 68, 0.4);
   padding: 4px 10px;
   border-radius: 8px;
-}
-
-.logout-confirm-inline.hidden {
-  display: none !important;
 }
 
 .logout-confirm-text {
@@ -1276,10 +1163,6 @@ button {
   font-size: 0.85rem;
   margin-top: 6px;
   line-height: 1.3;
-}
-
-.form-error-inline.hidden {
-  display: none !important;
 }
 
 /* ================== Подсказки со ссылками на Telegram ================== */
@@ -1342,10 +1225,6 @@ button {
   font-size: 0.75rem;
   line-height: 1.2;
   white-space: nowrap;
-}
-
-.fps-warning.hidden {
-  display: none !important;
 }
 
 .duration-control .form-error-inline {
@@ -1527,7 +1406,6 @@ button {
   }
 }
 
-
 /* ==========================================================================
    Этап 9.2: Стили Live-стрима, меню камер и ручных настроек V4L2/RGB
    ========================================================================== */
@@ -1544,19 +1422,6 @@ button {
 
 .unit-next-capture .icon-svg {
   color: var(--primary-accent);
-}
-
-.unit-next-capture-val {
-  color: var(--text-main);
-  font-weight: 500;
-}
-
-.unit-actions-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  flex-wrap: wrap;
 }
 
 /* Модальное окно списка камер */
@@ -2394,14 +2259,6 @@ button {
   flex-shrink: 0;
 }
 
-@media (max-width: 640px) {
-  .live-auto-color-preview {
-    flex-wrap: wrap;
-    justify-content: center;
-    padding: 8px 10px;
-  }
-}
-
 /* ==================== КАРТОЧКА СОЗДАНИЯ, МОДАЛКА УСТАНОВКИ И СВЕТ ==================== */
 
 .unit-card-clickable {
@@ -2729,26 +2586,6 @@ button {
   color: var(--text-muted);
 }
 
-@media (max-width: 640px) {
-  .unit-editor-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .profile-info-grid,
-  .session-meta-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .profile-login-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .rpi-telemetry-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 /* Нижняя панель графика роста (экспорт CSV) */
 .gallery-chart-footer {
   display: flex;
@@ -2827,10 +2664,6 @@ button {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid rgba(148, 163, 184, 0.16);
-}
-
-.profile-dev-actions.hidden {
-  display: none !important;
 }
 
 /* Модалка: Активные сессии */
@@ -3250,17 +3083,6 @@ button {
   flex-shrink: 0;
 }
 
-@media (max-width: 640px) {
-  .unit-color-panel-body {
-    grid-template-columns: 1fr;
-  }
-
-  .unit-color-sv-wrap,
-  .unit-color-hue-wrap {
-    width: 100%;
-  }
-}
-
 .light-mode-segmented {
   flex-shrink: 0;
 }
@@ -3275,12 +3097,6 @@ button {
 .light-mode-segmented .seg-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-}
-
-@media (max-width: 640px) {
-  .light-control-row {
-    flex-wrap: wrap;
-  }
 }
 
 .light-control-title-row {
@@ -3444,7 +3260,6 @@ button {
   font-size: 0.82rem;
   color: var(--text-muted);
 }
-
 
 /* ==================== КЛИМАТ И ПОЛИВ (ESP) ==================== */
 .btn-climate-badge {
@@ -3667,11 +3482,72 @@ button {
   display: block;
 }
 
+/* Адаптивность от 360 px */
 @media (max-width: 720px) {
   .climate-metrics-grid,
   .climate-devices-grid,
   .climate-forms-grid,
   .climate-charts-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .live-auto-color-preview {
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 8px 10px;
+  }
+
+  .unit-editor-grid,
+  .profile-info-grid,
+  .session-meta-grid,
+  .rpi-telemetry-grid,
+  .unit-color-panel-body {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-login-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .unit-color-sv-wrap,
+  .unit-color-hue-wrap {
+    width: 100%;
+  }
+
+  .light-control-row {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 600px) {
+  .app-header {
+    padding: 10px 14px;
+  }
+  .header-logo {
+    gap: 8px;
+  }
+  .brand-logo {
+    width: 28px;
+    height: 28px;
+    aspect-ratio: 1 / 1;
+  }
+  .logo-title {
+    font-size: 1.1rem;
+  }
+  .sub-toolbar {
+    padding: 10px 14px;
+  }
+  .units-grid {
+    grid-template-columns: 1fr;
+  }
+  .gallery-controls-bar {
+    justify-content: center;
+  }
+  .gallery-extra-controls {
+    width: 100%;
+    justify-content: space-between;
   }
 }
