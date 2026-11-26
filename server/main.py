@@ -1,4 +1,5 @@
 import asyncio
+import json
 import signal
 import threading
 from collections.abc import AsyncGenerator
@@ -19,6 +20,7 @@ from server.api.edge import router as edge_router
 from server.api.edge_setup import router as edge_setup_router
 from server.api.installations import router as installations_router
 from server.api.system import router as system_router
+from server.api.climate import climate_router, esp_router
 from server.api.timelapse import router as timelapse_router
 from server.core.light_state import (
     compute_active_pin_states,
@@ -26,8 +28,17 @@ from server.core.light_state import (
     sync_day_night_phases_step,
 )
 from server.core.live_manager import live_manager
+from server.config import get_settings
+from server.core.climate import (
+    confirm_esp_command,
+    esp_queue,
+    record_sensor_reading,
+    run_climate_scheduler_step,
+    touch_esp_seen,
+)
 from server.core.timeouts import expire_stale_commands
 from server.db.database import SessionLocal, init_db
+from shared.esp_bridge import EspTcpBridge
 from shared.logger import get_logger
 from shared.version import get_app_version
 
@@ -64,6 +75,58 @@ async def day_night_sync_task() -> None:
             break
         except Exception as e:  # noqa: BLE001
             logger.warning("Ошибка фоновой синхронизации цикла День/Ночь: %s", e)
+
+
+async def climate_scheduler_task() -> None:
+    """Фоновый планировщик полива и вентиляции ESP раз в 5 секунд."""
+    while True:
+        try:
+            await asyncio.sleep(5)
+            db = SessionLocal()
+            try:
+                run_climate_scheduler_step(db)
+            finally:
+                db.close()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Ошибка фонового планировщика климата: %s", e)
+
+
+def _handle_esp_adapter_request_sync(
+    method: str, path: str, body: bytes
+) -> tuple[int, bytes]:
+    """Обрабатывает запрос от встроенного ESP TCP-адаптера напрямую через БД."""
+    db = SessionLocal()
+    try:
+        if method == "GET" and path == "/ping":
+            touch_esp_seen(db)
+            db.commit()
+            return 200, b""
+
+        if method == "GET" and path == "/api/esp/command":
+            touch_esp_seen(db)
+            db.commit()
+            payload = json.dumps(esp_queue.peek_payload()).encode("utf-8")
+            return 200, payload
+
+        if method == "POST" and path == "/api/esp/sensors":
+            data = json.loads(body.decode("utf-8"))
+            record_sensor_reading(
+                db, float(data["temperature"]), float(data["humidity"])
+            )
+            return 200, b""
+
+        if method == "POST" and path == "/api/esp/command":
+            data = json.loads(body.decode("utf-8"))
+            cmd = confirm_esp_command(db, int(data["id"]))
+            return (200, b"") if cmd is not None else (409, b"")
+
+        return 404, b""
+    except Exception:  # noqa: BLE001
+        return 400, b""
+    finally:
+        db.close()
 
 
 @asynccontextmanager
@@ -104,6 +167,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     task = asyncio.create_task(cleanup_timeouts_task())
     day_night_task = asyncio.create_task(day_night_sync_task())
+    climate_task = asyncio.create_task(climate_scheduler_task())
+    esp_adapter: EspTcpBridge | None = None
+    server_settings = get_settings()
+    if server_settings.esp_adapter_enabled:
+        async def _adapter_forward(
+            method: str, path: str, body: bytes
+        ) -> tuple[int, bytes]:
+            return await asyncio.to_thread(
+                _handle_esp_adapter_request_sync, method, path, body
+            )
+        esp_adapter = EspTcpBridge(
+            host=server_settings.esp_adapter_host,
+            port=server_settings.esp_adapter_port,
+            forward_fn=_adapter_forward,
+        )
+        await esp_adapter.start()
+        logger.info("Встроенный ESP TCP-адаптер запущен на %s:%s", server_settings.esp_adapter_host, esp_adapter.bound_port)
     try:
         yield
     finally:
@@ -112,7 +192,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             for sig, handler in orig_handlers.items():
                 if signal.getsignal(sig) is _shutdown_signal_handler:
                     signal.signal(sig, handler)
-        for bg_task in (task, day_night_task):
+        if esp_adapter is not None:
+            await esp_adapter.stop()
+        for bg_task in (task, day_night_task, climate_task):
             bg_task.cancel()
             try:
                 await bg_task
@@ -135,6 +217,8 @@ app.include_router(cameras_router)
 app.include_router(control_router)
 app.include_router(timelapse_router)
 app.include_router(system_router)
+app.include_router(esp_router)
+app.include_router(climate_router)
 
 # Раздача статики строго после всех API-роутеров
 media_dir = Path(__file__).resolve().parent / "media"

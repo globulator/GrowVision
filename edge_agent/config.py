@@ -85,6 +85,11 @@ class EdgeConfig(BaseModel):
     v4l_by_id_dir: Path = Field(default=DEFAULT_V4L_BY_ID_DIR)
     sys_dir: Path = Field(default=DEFAULT_SYS_DIR)
 
+    # Опциональный локальный ESP-мост (порт 8080 для ESP8266)
+    esp_bridge_enabled: bool = Field(default=False)
+    esp_bridge_host: str = Field(default="0.0.0.0")
+    esp_bridge_port: int = Field(default=8080, ge=1, le=65535)
+
     @property
     def claim_poll_interval_sec(self) -> float:
         """Алиас для обратной совместимости."""
@@ -226,6 +231,14 @@ def load_config(env_path: Path | str | None = None) -> EdgeConfig:
     sys_raw = get_val("SYS_DIR")
     sys_dir = Path(sys_raw) if sys_raw else DEFAULT_SYS_DIR
 
+    esp_bridge_enabled_raw = (get_val("ESP_BRIDGE_ENABLED", "false") or "false").lower()
+    esp_bridge_enabled = esp_bridge_enabled_raw in ("true", "1", "yes")
+    esp_bridge_host = get_val("ESP_BRIDGE_HOST", "0.0.0.0") or "0.0.0.0"
+    try:
+        esp_bridge_port = int(get_val("ESP_BRIDGE_PORT", "8080") or 8080)
+    except ValueError:
+        esp_bridge_port = 8080
+
     return EdgeConfig(
         server_url=server_url.rstrip("/"),
         edge_api_key=edge_api_key,
@@ -245,4 +258,7 @@ def load_config(env_path: Path | str | None = None) -> EdgeConfig:
         upload_timeout_sec=upload_timeout_sec,
         v4l_by_id_dir=v4l_by_id_dir,
         sys_dir=sys_dir,
+        esp_bridge_enabled=esp_bridge_enabled,
+        esp_bridge_host=esp_bridge_host,
+        esp_bridge_port=esp_bridge_port,
     )

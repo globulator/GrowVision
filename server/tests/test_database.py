@@ -28,6 +28,9 @@ EXPECTED_TABLES = {
     "telegram_contacts",
     "users",
     "web_verification_codes",
+    "climate_sensors",
+    "ph_readings",
+    "peripheral_logs",
 }
 
 
