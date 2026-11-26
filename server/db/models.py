@@ -335,29 +335,6 @@ class TelegramContact(Base):
     )
 
 
-class WebVerificationCode(Base):
-    """3.10. web_verification_codes — Очередь кодов подтверждения регистрации Web SPA через Telegram."""
-
-    __tablename__ = "web_verification_codes"
-    __table_args__ = ({"sqlite_autoincrement": True},)
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    telegram_id = Column(BigInteger, nullable=False, index=True)
-    code = Column(String(6), nullable=False)
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=utc_now,
-        server_default=func.now(),
-    )
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-    is_verified = Column(Boolean, nullable=False, default=False)
-    verified_at = Column(DateTime(timezone=True), nullable=True)
-    is_delivered = Column(Boolean, nullable=False, default=False)
-    delivered_at = Column(DateTime(timezone=True), nullable=True)
-    delivery_error = Column(String(255), nullable=True)
-
-
 class ClimateSensorReading(Base):
     """3.11. climate_sensors — Показания датчика температуры и влажности (ESP SHT31)."""
 

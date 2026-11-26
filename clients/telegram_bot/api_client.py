@@ -721,37 +721,6 @@ class GrowVisionApiClient:
             timeout=10.0,
         )
 
-    async def get_pending_verification_codes(self) -> list[dict[str, Any]]:
-        """Получение очереди кодов подтверждения Web SPA для отправки в Telegram."""
-        res = await self._request(
-            "GET",
-            "/api/auth/web/pending-codes",
-            user_id=0,
-            timeout=10.0,
-        )
-        return res if isinstance(res, list) else []
-
-    async def ack_verification_code(self, code_id: int) -> dict[str, bool]:
-        """Подтверждение отправки кода пользователю."""
-        return await self._request(
-            "POST",
-            f"/api/auth/web/pending-codes/{code_id}/ack",
-            user_id=0,
-            timeout=10.0,
-        )
-
-    async def fail_verification_code(
-        self, code_id: int, error_message: str | None = None
-    ) -> dict[str, bool]:
-        """Подтверждение ошибки отправки кода подтверждения пользователю."""
-        return await self._request(
-            "POST",
-            f"/api/auth/web/pending-codes/{code_id}/fail",
-            json_data={"error": error_message},
-            user_id=0,
-            timeout=10.0,
-        )
-
     # ------------------ 9. Климат, полив и вентиляция (ESP) ------------------
 
     async def get_climate_summary(self, user_id: int) -> dict[str, Any]:

@@ -1,5 +1,5 @@
 // clients/web/js/auth.js
-// Модальные окна «Вход» и пошаговой «Регистрации» через Telegram
+// Модальные окна «Вход» и «Регистрация» (автономно, без Telegram-кодов)
 
 import { api } from './api.js';
 import { Modal, showToast } from './dialogs.js';
@@ -7,22 +7,16 @@ import { Modal, showToast } from './dialogs.js';
 let authSuccessCallback = null;
 let loginModalCtrl = null;
 let registerModalCtrl = null;
-
-// Состояние пошаговой регистрации
-const registerState = {
-  step: 1,
-  telegram: '',
-  telegram_id: null,
-  recommended_name: '',
-  code: '',
-  access_code: '',
-  timerInterval: null,
-  timerSeconds: 0,
-  pollInterval: null,
-};
+let lookupDebounceTimer = null;
+let lastLookedUpValue = '';
+let nameEditedManually = false;
 
 export function setAuthSuccessHandler(fn) {
   authSuccessCallback = fn;
+}
+
+export function updateBotLinks(_botUsername) {
+  // Оставлено для обратной совместимости с app.js; ссылки на бота в модалках входа/регистрации больше не требуются.
 }
 
 function setInlineError(elementId, msg) {
@@ -37,61 +31,15 @@ function setInlineError(elementId, msg) {
   }
 }
 
-function stopPollingCodeDelivery() {
-  if (registerState.pollInterval) {
-    clearInterval(registerState.pollInterval);
-    registerState.pollInterval = null;
-  }
-}
-
-function startPollingCodeDelivery(telegramId) {
-  stopPollingCodeDelivery();
-  if (!telegramId) return;
-
-  let attempts = 0;
-  const maxAttempts = 10;
-
-  registerState.pollInterval = setInterval(async () => {
-    attempts++;
-    if (attempts > maxAttempts || registerState.step !== 2) {
-      stopPollingCodeDelivery();
-      return;
-    }
-
-    try {
-      const res = await api.getCodeStatus(telegramId);
-      if (registerState.step !== 2) {
-        stopPollingCodeDelivery();
-        return;
-      }
-
-      if (res && res.status === 'delivery_error') {
-        stopPollingCodeDelivery();
-        const errDetail = res.error || 'ошибка доставки';
-        setInlineError(
-          'reg-error-step2',
-          `Не удалось доставить код в Telegram (${errDetail}). Убедитесь, что бот запущен (@GrowVisionBot) и не заблокирован.`
-        );
-      } else if (res && res.status === 'delivered') {
-        stopPollingCodeDelivery();
-      }
-    } catch (_) {
-      // Игнорируем сетевые ошибки фонового опроса
-    }
-  }, 2000);
-}
-
-export function updateBotLinks(botUsername) {
-  const cleanName = (botUsername || 'GrowVisionBot').replace(/^@/, '');
-  const loginLink = document.getElementById('login-tg-bot-link');
-  if (loginLink) {
-    loginLink.href = `https://t.me/${cleanName}`;
-    loginLink.textContent = `@${cleanName}`;
-  }
-  const regLink = document.getElementById('reg-tg-bot-link');
-  if (regLink) {
-    regLink.href = `https://t.me/${cleanName}`;
-    regLink.textContent = `@${cleanName}`;
+function setLookupHint(msg) {
+  const el = document.getElementById('reg-tg-lookup-hint');
+  if (!el) return;
+  if (msg) {
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  } else {
+    el.textContent = '';
+    el.classList.add('hidden');
   }
 }
 
@@ -112,25 +60,18 @@ function getRegisterModalCtrl() {
     registerModalCtrl = new Modal('modal-register', {
       closeBtn: 'modal-register-close',
       onClose: () => {
-        clearInterval(registerState.timerInterval);
-        registerState.timerInterval = null;
-        stopPollingCodeDelivery();
-        registerState.step = 1;
-        registerState.telegram = '';
-        registerState.telegram_id = null;
-        registerState.recommended_name = '';
-        registerState.code = '';
-        registerState.access_code = '';
-        setInlineError('reg-error-step1', '');
-        setInlineError('reg-error-step2', '');
-        setInlineError('reg-error-step3', '');
+        clearTimeout(lookupDebounceTimer);
+        lookupDebounceTimer = null;
+        lastLookedUpValue = '';
+        nameEditedManually = false;
+        setInlineError('reg-form-error', '');
+        setLookupHint('');
       },
     });
   }
   return registerModalCtrl;
 }
 
-// Открытие модалки входа
 export function openLoginModal() {
   closeRegisterModal();
   const modalCtrl = getLoginModalCtrl();
@@ -153,23 +94,28 @@ export function closeLoginModal() {
   getLoginModalCtrl().close();
 }
 
-// Открытие модалки регистрации
-export function openRegisterModal(initialTelegram = '', initialStep = 1) {
+export function openRegisterModal(initialTelegram = '') {
   closeLoginModal();
   const modalCtrl = getRegisterModalCtrl();
   const modal = modalCtrl.getElement();
   if (!modal) return;
 
-  setInlineError('reg-error-step1', '');
-  setInlineError('reg-error-step2', '');
-  setInlineError('reg-error-step3', '');
+  const form = document.getElementById('register-form');
+  if (form) form.reset();
+  lastLookedUpValue = '';
+  nameEditedManually = false;
+  setInlineError('reg-form-error', '');
+  setLookupHint('');
 
-  setRegisterStep(initialStep);
   modalCtrl.open();
 
-  const firstInput = document.getElementById('reg-telegram');
-  if (firstInput && initialTelegram) {
-    firstInput.value = initialTelegram;
+  const tgInput = document.getElementById('reg-telegram');
+  if (tgInput) {
+    if (initialTelegram) {
+      tgInput.value = initialTelegram;
+      lookupTelegramAndSuggest(initialTelegram);
+    }
+    setTimeout(() => tgInput.focus(), 50);
   }
 }
 
@@ -177,140 +123,88 @@ export function closeRegisterModal() {
   getRegisterModalCtrl().close();
 }
 
-// Переключение шага регистрации
-function setRegisterStep(step) {
-  registerState.step = step;
-  const s1 = document.getElementById('reg-step-1');
-  const s2 = document.getElementById('reg-step-2');
-  const s3 = document.getElementById('reg-step-3');
-
-  if (s1) s1.classList.toggle('hidden', step !== 1);
-  if (s2) s2.classList.toggle('hidden', step !== 2);
-  if (s3) s3.classList.toggle('hidden', step !== 3);
-
-  if (step === 1) {
-    const el = document.getElementById('reg-telegram');
-    if (el) setTimeout(() => el.focus(), 50);
-  } else if (step === 2) {
-    const el = document.getElementById('reg-code');
-    if (el) setTimeout(() => el.focus(), 50);
-  } else if (step === 3) {
-    const el = document.getElementById('reg-fullname');
-    if (el) {
-      if (registerState.recommended_name) {
-        el.value = registerState.recommended_name;
-      }
-      setTimeout(() => el.focus(), 50);
-    }
-    const accessEl = document.getElementById('reg-access-code');
-    if (accessEl && registerState.access_code) {
-      accessEl.value = registerState.access_code;
-    }
-  }
+function splitRecommendedName(recommended) {
+  const cleaned = (recommended || '').trim();
+  if (!cleaned) return { first: '', last: '' };
+  const idx = cleaned.indexOf(' ');
+  if (idx === -1) return { first: cleaned, last: '' };
+  return {
+    first: cleaned.slice(0, idx).trim(),
+    last: cleaned.slice(idx + 1).trim(),
+  };
 }
 
-// Запуск таймера на повторную отправку кода (60 секунд)
-function startResendTimer() {
-  clearInterval(registerState.timerInterval);
-  registerState.timerSeconds = 60;
-  const btn = document.getElementById('reg-resend-btn');
-  const timerSpan = document.getElementById('reg-resend-timer');
-
-  if (btn) btn.disabled = true;
-  if (timerSpan) timerSpan.textContent = `(${registerState.timerSeconds} с)`;
-
-  registerState.timerInterval = setInterval(() => {
-    registerState.timerSeconds--;
-    if (registerState.timerSeconds <= 0) {
-      clearInterval(registerState.timerInterval);
-      registerState.timerInterval = null;
-      if (btn) btn.disabled = false;
-      if (timerSpan) timerSpan.textContent = '';
-    } else {
-      if (timerSpan) timerSpan.textContent = `(${registerState.timerSeconds} с)`;
-    }
-  }, 1000);
-}
-
-// Обработка отправки кода (Шаг 1)
-async function handleRegisterStep1() {
-  setInlineError('reg-error-step1', '');
-  const input = document.getElementById('reg-telegram');
-  const btn = document.getElementById('reg-btn-step1');
-  const val = input ? input.value.trim() : '';
-
+async function lookupTelegramAndSuggest(rawValue) {
+  const val = (rawValue || '').trim();
   if (!val) {
-    setInlineError('reg-error-step1', 'Введите ваш Telegram (@username или числовой ID)');
+    lastLookedUpValue = '';
+    setLookupHint('');
     return;
   }
+  if (val === lastLookedUpValue) return;
+  lastLookedUpValue = val;
 
-  if (btn) btn.disabled = true;
   try {
-    const res = await api.registerStart(val);
-    registerState.telegram = val;
-    registerState.telegram_id = res.telegram_id;
-    registerState.recommended_name = res.recommended_name || '';
-    showToast('Код подтверждения отправлен в Telegram');
-    setRegisterStep(2);
-    startResendTimer();
-    startPollingCodeDelivery(res.telegram_id);
-  } catch (err) {
-    setInlineError('reg-error-step1', err.message || 'Ошибка отправки кода');
-  } finally {
-    if (btn) btn.disabled = false;
+    const res = await api.telegramLookup(val);
+    const currentTg = (document.getElementById('reg-telegram')?.value || '').trim();
+    if (currentTg !== val) return;
+
+    if (res && res.found) {
+      const fnInput = document.getElementById('reg-first-name');
+      const lnInput = document.getElementById('reg-last-name');
+      const fallback = splitRecommendedName(res.recommended_name);
+      const suggestedFirst = (res.first_name || fallback.first || '').trim();
+      const suggestedLast = (res.last_name || fallback.last || '').trim();
+
+      const canOverwrite =
+        !nameEditedManually ||
+        (!(fnInput?.value || '').trim() && !(lnInput?.value || '').trim());
+
+      if (canOverwrite) {
+        if (fnInput && suggestedFirst) fnInput.value = suggestedFirst;
+        if (lnInput && suggestedLast) lnInput.value = suggestedLast;
+      }
+      setLookupHint('Найдено в базе: имя и фамилия подставлены (можно изменить)');
+    } else {
+      setLookupHint('');
+    }
+  } catch (_) {
+    // При сетевой ошибке не мешаем ручному вводу
   }
 }
 
-// Обработка проверки кода (Шаг 2)
-async function handleRegisterStep2() {
-  setInlineError('reg-error-step2', '');
-  const input = document.getElementById('reg-code');
-  const btn = document.getElementById('reg-btn-step2');
-  const codeVal = input ? input.value.trim() : '';
+async function handleRegisterFormSubmit(e) {
+  if (e) e.preventDefault();
+  setInlineError('reg-form-error', '');
 
-  if (!codeVal || codeVal.length < 6) {
-    setInlineError('reg-error-step2', 'Введите 6-значный код подтверждения');
-    return;
-  }
-
-  if (btn) btn.disabled = true;
-  try {
-    await api.registerVerify(registerState.telegram_id, codeVal);
-    registerState.code = codeVal;
-    stopPollingCodeDelivery();
-    showToast('Код успешно подтверждён');
-    setRegisterStep(3);
-  } catch (err) {
-    setInlineError('reg-error-step2', err.message || 'Неверный код подтверждения');
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-// Завершение регистрации (Шаг 3)
-async function handleRegisterStep3() {
-  setInlineError('reg-error-step3', '');
-  const fnInput = document.getElementById('reg-fullname');
+  const tgInput = document.getElementById('reg-telegram');
+  const fnInput = document.getElementById('reg-first-name');
+  const lnInput = document.getElementById('reg-last-name');
   const codeInput = document.getElementById('reg-access-code');
-  const btn = document.getElementById('reg-btn-step3');
+  const btn = document.getElementById('reg-submit-btn');
 
-  const fullName = fnInput ? fnInput.value.trim() : '';
+  const telegram = tgInput ? tgInput.value.trim() : '';
+  const firstName = fnInput ? fnInput.value.trim() : '';
+  const lastName = lnInput ? lnInput.value.trim() : '';
   const accessCode = codeInput ? codeInput.value.trim() : '';
 
-  if (!fullName) {
-    setInlineError('reg-error-step3', 'Введите ваши Имя и Фамилию');
+  if (!firstName) {
+    setInlineError('reg-form-error', 'Введите ваше Имя');
     return;
   }
   if (!accessCode) {
-    setInlineError('reg-error-step3', 'Введите код приглашения биолога или пароль разработчика');
+    setInlineError('reg-form-error', 'Введите код приглашения биолога или пароль доступа');
     return;
   }
+
+  const fullName = [firstName, lastName].filter(Boolean).join(' ');
 
   if (btn) btn.disabled = true;
   try {
     const res = await api.registerComplete({
-      telegram_id: registerState.telegram_id,
-      verification_code: registerState.code,
+      telegram: telegram || null,
+      first_name: firstName,
+      last_name: lastName || null,
       full_name: fullName,
       access_code: accessCode,
     });
@@ -321,13 +215,12 @@ async function handleRegisterStep3() {
       authSuccessCallback(res);
     }
   } catch (err) {
-    setInlineError('reg-error-step3', err.message || 'Ошибка завершения регистрации');
+    setInlineError('reg-form-error', err.message || 'Ошибка завершения регистрации');
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
-// Обработка формы входа
 async function handleLoginFormSubmit(e) {
   if (e) e.preventDefault();
   setInlineError('login-form-error', '');
@@ -353,40 +246,12 @@ async function handleLoginFormSubmit(e) {
       authSuccessCallback(res);
     }
   } catch (err) {
-    // Если пользователь не зарегистрирован в системе — бесшовный переход на верификацию и шаг 2
-    if (
-      err.status === 403 ||
-      (typeof err.message === 'string' &&
-        (err.message.includes('telegram_verification_required') ||
-          err.message.includes('not_registered')))
-    ) {
-      try {
-        const startRes = await api.registerStart(telegram);
-        closeLoginModal();
-        registerState.telegram = telegram;
-        registerState.telegram_id = startRes.telegram_id;
-        registerState.recommended_name = startRes.recommended_name || '';
-        registerState.access_code = accessCode;
-
-        openRegisterModal(telegram, 2);
-        showToast('Код подтверждения отправлен в Telegram');
-        startResendTimer();
-        startPollingCodeDelivery(startRes.telegram_id);
-      } catch (startErr) {
-        setInlineError(
-          'login-form-error',
-          startErr.message || 'Ошибка отправки кода подтверждения в Telegram'
-        );
-      }
-      return;
-    }
     setInlineError('login-form-error', err.message || 'Ошибка входа');
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
-// Переключение видимости паролей
 function togglePasswordVisibility(inputEl, btnEl) {
   if (!inputEl) return;
   const isPass = inputEl.type === 'password';
@@ -396,15 +261,12 @@ function togglePasswordVisibility(inputEl, btnEl) {
   }
 }
 
-// Инициализация событий модалок авторизации
 export function initAuth() {
-  // Кнопка входа в шапке
   const headerLoginBtn = document.getElementById('header-btn-login');
   if (headerLoginBtn) {
     headerLoginBtn.addEventListener('click', openLoginModal);
   }
 
-  // Переход на регистрацию из модалки входа
   const switchRegBtn = document.getElementById('login-switch-to-reg');
   if (switchRegBtn) {
     switchRegBtn.addEventListener('click', (e) => {
@@ -415,7 +277,6 @@ export function initAuth() {
     });
   }
 
-  // Переход на вход из модалки регистрации
   const linkToLogin = document.getElementById('link-to-login');
   if (linkToLogin) {
     linkToLogin.addEventListener('click', (e) => {
@@ -428,46 +289,46 @@ export function initAuth() {
   getLoginModalCtrl().bind();
   getRegisterModalCtrl().bind();
 
-  // Форма входа
   const loginForm = document.getElementById('login-form');
   if (loginForm) {
     loginForm.addEventListener('submit', handleLoginFormSubmit);
   }
 
-  // Кнопки шагов регистрации
-  const btnStep1 = document.getElementById('reg-btn-step1');
-  if (btnStep1) btnStep1.addEventListener('click', handleRegisterStep1);
-
-  const btnStep2 = document.getElementById('reg-btn-step2');
-  if (btnStep2) btnStep2.addEventListener('click', handleRegisterStep2);
-
-  const btnStep3 = document.getElementById('reg-btn-step3');
-  if (btnStep3) btnStep3.addEventListener('click', handleRegisterStep3);
-
-  const btnResend = document.getElementById('reg-resend-btn');
-  if (btnResend) btnResend.addEventListener('click', handleRegisterStep1);
-
-  // Поддержка Enter на полях регистрации
-  const regTg = document.getElementById('reg-telegram');
-  if (regTg) {
-    regTg.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        handleRegisterStep1();
-      }
-    });
+  const registerForm = document.getElementById('register-form');
+  if (registerForm) {
+    registerForm.addEventListener('submit', handleRegisterFormSubmit);
   }
-  const regCode = document.getElementById('reg-code');
-  if (regCode) {
-    regCode.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        handleRegisterStep2();
+
+  const regTgInput = document.getElementById('reg-telegram');
+  if (regTgInput) {
+    regTgInput.addEventListener('blur', () => {
+      clearTimeout(lookupDebounceTimer);
+      lookupTelegramAndSuggest(regTgInput.value);
+    });
+    regTgInput.addEventListener('input', () => {
+      clearTimeout(lookupDebounceTimer);
+      const val = regTgInput.value.trim();
+      if (!val) {
+        lastLookedUpValue = '';
+        setLookupHint('');
+        return;
       }
+      lookupDebounceTimer = setTimeout(() => {
+        lookupTelegramAndSuggest(val);
+      }, 350);
     });
   }
 
-  // SVG-кнопки переключения видимости пароля
+  const regFirstInput = document.getElementById('reg-first-name');
+  const regLastInput = document.getElementById('reg-last-name');
+  for (const el of [regFirstInput, regLastInput]) {
+    if (el) {
+      el.addEventListener('input', () => {
+        nameEditedManually = true;
+      });
+    }
+  }
+
   const toggleLoginPwd = document.getElementById('toggle-login-password');
   const loginPwdInput = document.getElementById('login-password');
   if (toggleLoginPwd && loginPwdInput) {

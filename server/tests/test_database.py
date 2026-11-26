@@ -27,7 +27,6 @@ EXPECTED_TABLES = {
     "system_settings",
     "telegram_contacts",
     "users",
-    "web_verification_codes",
     "climate_sensors",
     "ph_readings",
     "peripheral_logs",
@@ -59,6 +58,26 @@ def test_db_tables_and_pragmas(test_db):
         f"Ожидались таблицы {EXPECTED_TABLES}, получены {tables}"
     )
     assert len(tables) == len(EXPECTED_TABLES)
+
+
+def test_init_db_ignores_legacy_web_verification_codes_table(tmp_path: Path):
+    """Старая SQLite-база с таблицей web_verification_codes не ломает init_db()."""
+    db_file = tmp_path / "legacy_growvision.db"
+    engine = create_engine(
+        f"sqlite:///{db_file}", connect_args={"check_same_thread": False}
+    )
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE web_verification_codes (id INTEGER PRIMARY KEY, telegram_id INTEGER, code VARCHAR(6));"
+            )
+        )
+        conn.commit()
+    init_db(engine)
+    tables = set(inspect(engine).get_table_names())
+    assert "users" in tables
+    assert "web_verification_codes" in tables
+    engine.dispose()
 
     with engine.connect() as conn:
         fk = conn.execute(text("PRAGMA foreign_keys;")).scalar()

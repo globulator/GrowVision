@@ -48,70 +48,57 @@ class TelegramContactSync(BaseModel):
     last_name: str | None = None
 
 
-class PendingCodeItem(BaseModel):
-    """Элемент очереди кодов подтверждения для доставки ботом."""
+class TelegramLookupResponse(BaseModel):
+    """Ответ на GET /api/auth/web/telegram-lookup."""
 
-    id: int
-    telegram_id: int
-    code: str
-
-
-class WebRegisterStartRequest(BaseModel):
-    """Тело запроса POST /api/auth/web/register/start."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    telegram: str
-
-    @field_validator("telegram")
-    @classmethod
-    def validate_telegram(cls, v: str) -> str:
-        if not isinstance(v, str) or not v.strip():
-            raise ValueError("Поле telegram не может быть пустым")
-        return v.strip()
-
-
-class WebRegisterVerifyRequest(BaseModel):
-    """Тело запроса POST /api/auth/web/register/verify."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    telegram_id: int
-    code: str
-
-    @field_validator("code")
-    @classmethod
-    def validate_code(cls, v: str) -> str:
-        if not isinstance(v, str) or not v.strip():
-            raise ValueError("Код подтверждения не может быть пустым")
-        return v.strip()
-
-
-class FailVerificationCodeRequest(BaseModel):
-    """Тело запроса POST /api/auth/web/pending-codes/{code_id}/fail."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    error: str | None = None
+    found: bool
+    telegram_id: int | None = None
+    username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    recommended_name: str | None = None
+    telegram_url: str | None = None
 
 
 class WebRegisterCompleteRequest(BaseModel):
-    """Тело запроса POST /api/auth/web/register/complete."""
+    """Тело запроса POST /api/auth/web/register/complete (и /api/auth/web/register)."""
 
     model_config = ConfigDict(extra="ignore")
 
-    telegram_id: int
-    verification_code: str
-    full_name: str
+    telegram: str | None = None
+    telegram_id: int | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    full_name: str | None = None
     access_code: str
     password: str | None = None
 
-    @field_validator("full_name", "access_code", "verification_code")
+    @field_validator("access_code")
     @classmethod
-    def validate_non_empty(cls, v: str, info: ValidationInfo) -> str:
+    def validate_access_code(cls, v: str, info: ValidationInfo) -> str:
         if not isinstance(v, str) or not v.strip():
             raise ValueError(f"Поле {info.field_name} не может быть пустым")
         return v.strip()
+
+    @model_validator(mode="after")
+    def validate_full_name_fields(self) -> "WebRegisterCompleteRequest":
+        fn = (self.first_name or "").strip()
+        ln = (self.last_name or "").strip()
+        full = (self.full_name or "").strip()
+        if not full:
+            parts = [p for p in (fn, ln) if p]
+            full = " ".join(parts)
+        if not full:
+            raise ValueError("Имя и Фамилия не могут быть пустыми")
+        if len(full) > 64:
+            raise ValueError("Длина имени не должна превышать 64 символа")
+        self.full_name = full
+        self.first_name = fn or None
+        self.last_name = ln or None
+        if self.telegram is not None:
+            tg = self.telegram.strip()
+            self.telegram = tg or None
+        return self
 
 
 class WebLoginRequest(BaseModel):
@@ -157,6 +144,7 @@ class WebMeResponse(BaseModel):
     client_type: str | None = None
     external_id: str | None = None
     telegram_username: str | None = None
+    telegram_url: str | None = None
     authorized_at: str | None = None
     last_active_at: str | None = None
     bot_username: str | None = None
@@ -171,26 +159,37 @@ class MeResponse(BaseModel):
     client_type: str
     external_id: str
     telegram_username: str | None = None
+    telegram_url: str | None = None
     authorized_at: str
     last_active_at: str
 
 
 class UpdateLoginRequest(BaseModel):
-    """Тело запроса на изменение отображаемого имени пользователя."""
+    """Тело запроса на изменение отображаемого имени и/или Telegram пользователя."""
 
     model_config = ConfigDict(extra="ignore")
 
-    login: str
+    login: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    full_name: str | None = None
+    telegram: str | None = None
 
-    @field_validator("login")
-    @classmethod
-    def validate_login(cls, v: str) -> str:
-        if not isinstance(v, str) or not v.strip():
+    @model_validator(mode="after")
+    def validate_profile_fields(self) -> "UpdateLoginRequest":
+        raw_login = (self.login or self.full_name or "").strip()
+        if not raw_login:
+            fn = (self.first_name or "").strip()
+            ln = (self.last_name or "").strip()
+            raw_login = " ".join(p for p in (fn, ln) if p)
+        if not raw_login:
             raise ValueError("Имя пользователя не может быть пустым")
-        val = v.strip()
-        if len(val) > 64:
+        if len(raw_login) > 64:
             raise ValueError("Длина имени не должна превышать 64 символа")
-        return val
+        self.login = raw_login
+        if self.telegram is not None:
+            self.telegram = self.telegram.strip()
+        return self
 
 
 class InviteCreateResponse(BaseModel):
@@ -216,23 +215,21 @@ class SessionInfo(BaseModel):
     last_active_at: str
     logged_out_at: str | None = None
     telegram_username: str | None = None
+    telegram_url: str | None = None
     is_current: bool = False
 
 
 __all__ = [
-    "FailVerificationCodeRequest",
     "InviteCreateResponse",
     "LoginRequest",
     "LoginResponse",
     "MeResponse",
-    "PendingCodeItem",
     "SessionInfo",
     "TelegramContactSync",
+    "TelegramLookupResponse",
     "UpdateLoginRequest",
     "WebLoginRequest",
     "WebLoginResponse",
     "WebMeResponse",
     "WebRegisterCompleteRequest",
-    "WebRegisterStartRequest",
-    "WebRegisterVerifyRequest",
 ]

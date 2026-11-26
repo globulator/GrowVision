@@ -203,10 +203,6 @@
             </button>
           </div>
         </div>
-        <div class="form-hint tg-bot-hint">
-          <span>Бот для получения кода:</span>
-          <a id="login-tg-bot-link" href="https://t.me/GrowVisionBot" target="_blank" rel="noopener" class="tg-bot-link">@GrowVisionBot</a>
-        </div>
         <div id="login-form-error" class="form-error-inline hidden"></div>
 
         <div class="modal-actions">
@@ -217,7 +213,7 @@
     </div>
   </div>
 
-  <!-- Модалка: Пошаговая регистрация через Telegram -->
+  <!-- Модалка: Регистрация (в 1 шаг, без кодов Telegram) -->
   <div id="modal-register" class="modal-backdrop hidden">
     <div class="modal-window glass-panel">
       <div class="modal-header">
@@ -230,62 +226,39 @@
         </button>
       </div>
 
-      <div class="modal-body">
-        <!-- Шаг 1: Telegram -->
-        <div id="reg-step-1" class="reg-step">
-          <p class="reg-hint">Введите ваш Telegram для получения одноразового кода подтверждения:</p>
-          <div class="form-hint tg-bot-hint">
-            <span>Сначала запустите бота:</span>
-            <a id="reg-tg-bot-link" href="https://t.me/GrowVisionBot" target="_blank" rel="noopener" class="tg-bot-link">@GrowVisionBot</a>
-          </div>
-          <div class="form-group">
-            <label for="reg-telegram">Telegram (@username или ID)</label>
-            <input type="text" id="reg-telegram" class="form-input" placeholder="@biologist или 12345678" required>
-            <div id="reg-error-step1" class="form-error-inline hidden"></div>
-          </div>
-          <div class="modal-actions">
-            <button type="button" id="reg-btn-step1" class="btn btn-primary btn-block">Отправить код</button>
-          </div>
+      <form id="register-form" class="modal-body">
+        <div class="form-group">
+          <label for="reg-telegram">Telegram (@username или ID, необязательно)</label>
+          <input type="text" id="reg-telegram" class="form-input" placeholder="@biologist или 12345678" autocomplete="username">
+          <span class="form-hint hidden" id="reg-tg-lookup-hint"></span>
         </div>
 
-        <!-- Шаг 2: Код подтверждения -->
-        <div id="reg-step-2" class="reg-step hidden">
-          <p class="reg-hint">Бот отправил вам 6-значный код подтверждения в Telegram:</p>
-          <div class="form-group">
-            <label for="reg-code">Код подтверждения</label>
-            <input type="text" id="reg-code" class="form-input code-input" placeholder="000000" maxlength="6" required>
-            <div id="reg-error-step2" class="form-error-inline hidden"></div>
-          </div>
-          <div class="modal-actions">
-            <button type="button" id="reg-btn-step2" class="btn btn-primary btn-block">Подтвердить код</button>
-            <button type="button" id="reg-resend-btn" class="btn btn-secondary btn-block" disabled>
-              <span>Отправить повторно</span> <span id="reg-resend-timer"></span>
-            </button>
-          </div>
+        <div class="form-group">
+          <label for="reg-first-name">Имя</label>
+          <input type="text" id="reg-first-name" class="form-input" placeholder="Иван" maxlength="64" required>
         </div>
 
-        <!-- Шаг 3: Профиль и доступ -->
-        <div id="reg-step-3" class="reg-step hidden">
-          <div class="form-group">
-            <label for="reg-fullname">Имя и Фамилия</label>
-            <input type="text" id="reg-fullname" class="form-input" placeholder="Иван Иванов" required>
-            <span class="form-hint" id="reg-fullname-hint">Рекомендуемое имя из Telegram (можно изменить)</span>
-          </div>
-          <div class="form-group">
-            <label for="reg-access-code">Код приглашения / пароль доступа</label>
-            <input type="text" id="reg-access-code" class="form-input" placeholder="Инвайт-код или мастер-пароль" required>
-          </div>
-          <div id="reg-error-step3" class="form-error-inline hidden"></div>
-          <div class="modal-actions">
-            <button type="button" id="reg-btn-step3" class="btn btn-primary btn-block">Завершить регистрацию</button>
-          </div>
+        <div class="form-group">
+          <label for="reg-last-name">Фамилия</label>
+          <input type="text" id="reg-last-name" class="form-input" placeholder="Иванов" maxlength="64">
+        </div>
+
+        <div class="form-group">
+          <label for="reg-access-code">Код приглашения / пароль доступа</label>
+          <input type="text" id="reg-access-code" class="form-input" placeholder="Инвайт-код или мастер-пароль" required>
+        </div>
+
+        <div id="reg-form-error" class="form-error-inline hidden"></div>
+
+        <div class="modal-actions">
+          <button type="submit" id="reg-submit-btn" class="btn btn-primary btn-block">Завершить регистрацию</button>
         </div>
 
         <div class="modal-switch-link">
           <span>Уже зарегистрированы? </span>
           <a href="#" id="link-to-login">Войти</a>
         </div>
-      </div>
+      </form>
     </div>
   </div>
 
@@ -1251,13 +1224,19 @@
 
         <form id="profile-form" class="profile-edit-form">
           <div class="form-group">
-            <label for="profile-login-input" class="form-label">Имя пользователя</label>
-            <div class="profile-login-row">
-              <input type="text" id="profile-login-input" class="form-input" maxlength="64" required placeholder="Введите имя">
-              <button type="submit" id="profile-save-btn" class="btn btn-primary">Сохранить</button>
-            </div>
-            <div id="profile-form-error" class="form-error-inline hidden"></div>
+            <label for="profile-first-name-input" class="form-label">Имя</label>
+            <input type="text" id="profile-first-name-input" class="form-input" maxlength="64" required placeholder="Введите имя">
           </div>
+          <div class="form-group">
+            <label for="profile-last-name-input" class="form-label">Фамилия</label>
+            <input type="text" id="profile-last-name-input" class="form-input" maxlength="64" placeholder="Введите фамилию">
+          </div>
+          <div class="form-group">
+            <label for="profile-telegram-input" class="form-label">Telegram (@username или ID, необязательно)</label>
+            <input type="text" id="profile-telegram-input" class="form-input" maxlength="100" placeholder="@username или 12345678">
+          </div>
+          <div id="profile-form-error" class="form-error-inline hidden"></div>
+          <button type="submit" id="profile-save-btn" class="btn btn-primary btn-block">Сохранить</button>
         </form>
 
         <div id="profile-dev-actions" class="profile-dev-actions hidden">

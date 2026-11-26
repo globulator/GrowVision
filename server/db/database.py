@@ -98,19 +98,6 @@ def init_db(target_engine: Engine | None = None) -> None:
 
         with contextlib.suppress(Exception):
             res = conn.execute(
-                text("PRAGMA table_info(web_verification_codes);")
-            ).fetchall()
-            wvc_cols = {row[1] for row in res}
-            if "delivery_error" not in wvc_cols:
-                conn.execute(
-                    text(
-                        "ALTER TABLE web_verification_codes ADD COLUMN delivery_error VARCHAR(255);"
-                    )
-                )
-                conn.commit()
-
-        with contextlib.suppress(Exception):
-            res = conn.execute(
                 text("PRAGMA table_info(plant_measurements);")
             ).fetchall()
             pm_cols = {row[1] for row in res}

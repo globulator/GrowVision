@@ -86,31 +86,65 @@ function setInlineError(elementId, msg) {
   }
 }
 
-function renderTelegramValue(container, externalId, telegramUsername) {
+function splitFullName(fullName) {
+  const cleaned = (fullName || '').trim();
+  if (!cleaned) return { first: '', last: '' };
+  const idx = cleaned.indexOf(' ');
+  if (idx === -1) return { first: cleaned, last: '' };
+  return {
+    first: cleaned.slice(0, idx).trim(),
+    last: cleaned.slice(idx + 1).trim(),
+  };
+}
+
+function resolveTelegramUrl(externalId, telegramUsername, telegramUrl) {
+  if (telegramUrl) return String(telegramUrl);
+  const cleanUsername = telegramUsername
+    ? String(telegramUsername).replace(/^@/, '').trim()
+    : '';
+  if (cleanUsername) {
+    return `https://t.me/${encodeURIComponent(cleanUsername)}`;
+  }
+  const ext = externalId ? String(externalId).trim() : '';
+  if (/^-?\d+$/.test(ext)) {
+    return `tg://user?id=${ext}`;
+  }
+  return null;
+}
+
+function renderTelegramValue(container, externalId, telegramUsername, telegramUrl) {
   if (!container) return;
   container.textContent = '';
 
   const cleanUsername = telegramUsername
     ? String(telegramUsername).replace(/^@/, '').trim()
     : '';
-  if (cleanUsername) {
+  const url = resolveTelegramUrl(externalId, cleanUsername, telegramUrl);
+  const extStr = externalId ? String(externalId).trim() : '';
+
+  if (url) {
     const link = document.createElement('a');
-    link.href = `https://t.me/${encodeURIComponent(cleanUsername)}`;
+    link.href = url;
     link.target = '_blank';
-    link.rel = 'noopener';
+    link.rel = 'noopener noreferrer';
     link.className = 'profile-tg-link';
-    link.textContent = `@${cleanUsername}`;
+    link.textContent = cleanUsername ? `@${cleanUsername}` : `ID: ${extStr}`;
     container.appendChild(link);
-    if (externalId) {
+    if (cleanUsername && extStr && !extStr.startsWith('@') && !extStr.startsWith('web:')) {
       const idSpan = document.createElement('span');
       idSpan.className = 'profile-ext-id';
-      idSpan.textContent = ` (ID: ${externalId})`;
+      idSpan.textContent = ` (ID: ${extStr})`;
       container.appendChild(idSpan);
     }
     return;
   }
 
-  container.textContent = externalId ? String(externalId) : '—';
+  if (extStr.startsWith('web:')) {
+    container.textContent = 'Не указан';
+    return;
+  }
+
+  container.textContent = extStr || '—';
 }
 
 function fillProfileModal(data) {
@@ -120,7 +154,9 @@ function fillProfileModal(data) {
   const tgEl = document.getElementById('profile-telegram-val');
   const authAtEl = document.getElementById('profile-authorized-at-val');
   const lastActEl = document.getElementById('profile-last-active-at-val');
-  const loginInput = document.getElementById('profile-login-input');
+  const firstNameInput = document.getElementById('profile-first-name-input');
+  const lastNameInput = document.getElementById('profile-last-name-input');
+  const tgInput = document.getElementById('profile-telegram-input');
   const devActions = document.getElementById('profile-dev-actions');
 
   if (roleEl) {
@@ -133,15 +169,31 @@ function fillProfileModal(data) {
   if (clientTypeEl) {
     clientTypeEl.textContent = formatClientTypeLabel(data.client_type || 'web');
   }
-  renderTelegramValue(tgEl, data.external_id, data.telegram_username);
+  renderTelegramValue(tgEl, data.external_id, data.telegram_username, data.telegram_url);
   if (authAtEl) {
     authAtEl.textContent = formatDateTimeRu(data.authorized_at);
   }
   if (lastActEl) {
     lastActEl.textContent = formatDateTimeRu(data.last_active_at);
   }
-  if (loginInput && typeof data.login === 'string') {
-    loginInput.value = data.login;
+  if (typeof data.login === 'string') {
+    const { first, last } = splitFullName(data.login);
+    if (firstNameInput) firstNameInput.value = first;
+    if (lastNameInput) lastNameInput.value = last;
+  }
+  if (tgInput) {
+    const cleanUsername = data.telegram_username
+      ? String(data.telegram_username).replace(/^@/, '').trim()
+      : '';
+    const extStr = data.external_id ? String(data.external_id).trim() : '';
+    if (cleanUsername) {
+      tgInput.value = `@${cleanUsername}`;
+    } else if (extStr && !extStr.startsWith('web:')) {
+      tgInput.value = extStr;
+    } else {
+      tgInput.value = '';
+    }
+    tgInput.disabled = data.client_type && data.client_type !== 'web';
   }
   if (devActions) {
     devActions.classList.toggle('hidden', data.role !== 'developer');
@@ -181,30 +233,45 @@ async function handleProfileFormSubmit(e) {
   e.preventDefault();
   setInlineError('profile-form-error', '');
 
-  const input = document.getElementById('profile-login-input');
+  const fnInput = document.getElementById('profile-first-name-input');
+  const lnInput = document.getElementById('profile-last-name-input');
+  const tgInput = document.getElementById('profile-telegram-input');
   const saveBtn = document.getElementById('profile-save-btn');
-  const newLogin = input ? input.value.trim() : '';
 
-  if (!newLogin) {
+  const firstName = fnInput ? fnInput.value.trim() : '';
+  const lastName = lnInput ? lnInput.value.trim() : '';
+  const telegram = tgInput ? tgInput.value.trim() : '';
+  const fullName = [firstName, lastName].filter(Boolean).join(' ');
+
+  if (!fullName) {
     setInlineError('profile-form-error', 'Имя пользователя не может быть пустым');
     return;
   }
-  if (newLogin.length > 64) {
+  if (fullName.length > 64) {
     setInlineError('profile-form-error', 'Длина имени не должна превышать 64 символа');
     return;
   }
 
+  const payload = {
+    login: fullName,
+    first_name: firstName,
+    last_name: lastName || null,
+  };
+  if (tgInput && !tgInput.disabled) {
+    payload.telegram = telegram;
+  }
+
   if (saveBtn) saveBtn.disabled = true;
   try {
-    const updated = await api.updateProfile(newLogin);
+    const updated = await api.updateProfile(payload);
     currentUserData = { ...(currentUserData || {}), ...updated, authenticated: true };
     fillProfileModal(currentUserData);
     if (typeof profileUpdatedCallback === 'function') {
       profileUpdatedCallback(currentUserData);
     }
-    showToast('Имя пользователя обновлено');
+    showToast('Профиль обновлён');
   } catch (err) {
-    setInlineError('profile-form-error', err.message || 'Не удалось сохранить имя пользователя');
+    setInlineError('profile-form-error', err.message || 'Не удалось сохранить профиль');
   } finally {
     if (saveBtn) saveBtn.disabled = false;
   }
@@ -271,13 +338,14 @@ function renderSessionsList(container, sessions) {
     const cleanUsername = s.telegram_username
       ? String(s.telegram_username).replace(/^@/, '').trim()
       : '';
-    if (cleanUsername) {
+    const tgUrl = resolveTelegramUrl(s.external_id, cleanUsername, s.telegram_url);
+    if (tgUrl) {
       const userLink = document.createElement('a');
-      userLink.href = `https://t.me/${encodeURIComponent(cleanUsername)}`;
+      userLink.href = tgUrl;
       userLink.target = '_blank';
-      userLink.rel = 'noopener';
+      userLink.rel = 'noopener noreferrer';
       userLink.className = 'session-user-link';
-      userLink.textContent = s.login || `@${cleanUsername}`;
+      userLink.textContent = s.login || (cleanUsername ? `@${cleanUsername}` : `ID: ${s.external_id}`);
       whoWrap.appendChild(userLink);
     } else {
       const userSpan = document.createElement('span');
@@ -318,8 +386,10 @@ function renderSessionsList(container, sessions) {
     whereLabel.textContent = 'Где';
     const whereVal = document.createElement('span');
     whereVal.className = 'session-meta-val';
+    const extStr = s.external_id ? String(s.external_id) : '';
+    const idPart = extStr.startsWith('web:') ? 'Без Telegram' : `ID: ${extStr}`;
     const tgPart = cleanUsername ? ` · @${cleanUsername}` : '';
-    whereVal.textContent = `${formatClientTypeLabel(s.client_type)} · ID: ${s.external_id}${tgPart}`;
+    whereVal.textContent = `${formatClientTypeLabel(s.client_type)} · ${idPart}${tgPart}`;
     whereItem.appendChild(whereLabel);
     whereItem.appendChild(whereVal);
 
