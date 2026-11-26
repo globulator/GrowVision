@@ -15,66 +15,56 @@ from server.api.deps import (
     verify_session_cookie,
 )
 from server.config import get_settings
+from server.core.auth_service import (
+    AuthService,
+    auth_service,
+    generate_invite_code,
+)
 from server.core.bot_info import get_telegram_bot_username
 from server.core.rate_limit import login_limiter
-from server.core.verification import (
-    VerificationService,
-    generate_invite_code,
-    resolve_telegram_contact,
-    resolve_telegram_id,
-    verification_service,
-)
 from server.db.models import User
 from server.schemas.auth import (
-    FailVerificationCodeRequest,
     InviteCreateResponse,
     LoginRequest,
     LoginResponse,
     MeResponse,
-    PendingCodeItem,
     SessionInfo,
     TelegramContactSync,
+    TelegramLookupResponse,
     UpdateLoginRequest,
     WebLoginRequest,
     WebLoginResponse,
     WebMeResponse,
     WebRegisterCompleteRequest,
-    WebRegisterStartRequest,
-    WebRegisterVerifyRequest,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-_extract_numeric_tg_id = VerificationService.extract_numeric_tg_id
-_get_telegram_username_map = VerificationService.get_telegram_username_map
-_get_telegram_username = VerificationService.get_telegram_username
-_build_me_response = VerificationService.build_me_response
-_build_session_info = VerificationService.build_session_info
+_extract_numeric_tg_id = AuthService.extract_numeric_tg_id
+_get_telegram_username_map = AuthService.get_telegram_username_map
+_get_telegram_username = AuthService.get_telegram_username
+_build_me_response = AuthService.build_me_response
+_build_session_info = AuthService.build_session_info
 
 __all__ = [
-    "FailVerificationCodeRequest",
     "InviteCreateResponse",
     "LoginRequest",
     "LoginResponse",
     "MeResponse",
-    "PendingCodeItem",
     "SessionInfo",
     "TelegramContactSync",
+    "TelegramLookupResponse",
     "UpdateLoginRequest",
     "WebLoginRequest",
     "WebLoginResponse",
     "WebMeResponse",
     "WebRegisterCompleteRequest",
-    "WebRegisterStartRequest",
-    "WebRegisterVerifyRequest",
     "_build_me_response",
     "_build_session_info",
     "_extract_numeric_tg_id",
     "_get_telegram_username",
     "_get_telegram_username_map",
     "generate_invite_code",
-    "resolve_telegram_contact",
-    "resolve_telegram_id",
     "router",
 ]
 
@@ -104,7 +94,7 @@ def auth_login(
             headers={"Retry-After": str(retry_after)},
         )
 
-    result = verification_service.authenticate_client_login(
+    result = auth_service.authenticate_client_login(
         db=db,
         client_type=body.client_type,
         external_id=body.external_id,
@@ -150,20 +140,38 @@ def auth_me(
 @router.patch("/me", response_model=MeResponse)
 def update_me(
     body: UpdateLoginRequest,
+    response: Response,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> MeResponse:
     """4.1. PATCH /api/auth/me.
 
-    Изменение отображаемого имени текущего пользователя.
+    Изменение отображаемого имени и (опционально) Telegram текущего пользователя.
     """
-    current_user.login = body.login
-    db.commit()
-    db.refresh(current_user)
-    return _build_me_response(current_user, db)
+    old_external_id = current_user.external_id
+    updated_user = auth_service.update_me_profile(
+        db=db,
+        user=current_user,
+        new_login=body.login or "",
+        telegram_provided="telegram" in body.model_fields_set,
+        telegram_raw=body.telegram,
+    )
+    if (
+        updated_user.client_type == "web"
+        and updated_user.external_id != old_external_id
+    ):
+        cookie_val = create_session_cookie(updated_user)
+        response.set_cookie(
+            key="gv_session",
+            value=cookie_val,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+    return _build_me_response(updated_user, db)
 
 
-# ================== Telegram синхронизация и доставка кодов ==================
+# ================== Telegram синхронизация контактов ==================
 
 
 @router.post(
@@ -176,7 +184,7 @@ def sync_telegram_contact(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, bool]:
     """Синхронизация связки username -> telegram_id от Telegram-бота."""
-    verification_service.sync_telegram_contact(
+    auth_service.sync_telegram_contact(
         db=db,
         telegram_id=body.telegram_id,
         username=body.username,
@@ -186,91 +194,31 @@ def sync_telegram_contact(
     return {"ok": True}
 
 
-@router.get(
-    "/web/pending-codes",
-    response_model=list[PendingCodeItem],
-    dependencies=[Depends(verify_client_key)],
-)
-def get_pending_verification_codes(
-    db: Annotated[Session, Depends(get_db)],
-) -> list[PendingCodeItem]:
-    """Очередь неотправленных кодов подтверждения регистрации для Telegram-бота."""
-    return verification_service.get_pending_codes(db)
-
-
-@router.post(
-    "/web/pending-codes/{code_id}/ack",
-    response_model=dict[str, bool],
-    dependencies=[Depends(verify_client_key)],
-)
-def ack_verification_code(
-    code_id: int,
-    db: Annotated[Session, Depends(get_db)],
-) -> dict[str, bool]:
-    """Подтверждение доставки кода пользователю в Telegram."""
-    verification_service.ack_code_delivery(db, code_id)
-    return {"ok": True}
-
-
-@router.post(
-    "/web/pending-codes/{code_id}/fail",
-    response_model=dict[str, bool],
-    dependencies=[Depends(verify_client_key)],
-)
-def fail_verification_code(
-    code_id: int,
-    body: FailVerificationCodeRequest,
-    db: Annotated[Session, Depends(get_db)],
-) -> dict[str, bool]:
-    """Подтверждение ошибки отправки кода подтверждения Telegram-ботом."""
-    verification_service.fail_code_delivery(db, code_id, body.error)
-    return {"ok": True}
-
-
 # ================== Веб-регистрация и авторизация (Web SPA) ==================
 
 
-@router.get("/web/register/code-status")
-def get_verification_code_status(
-    telegram_id: int,
+@router.get("/web/telegram-lookup", response_model=TelegramLookupResponse)
+def auth_web_telegram_lookup(
+    telegram: str,
     db: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
-    """Проверка статуса доставки кода подтверждения для указанного пользователя."""
-    return verification_service.get_code_status(db, telegram_id)
-
-
-@router.post("/web/register/start")
-def auth_web_register_start(
-    body: WebRegisterStartRequest,
-    db: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
-    """Шаг 1 регистрации: валидация Telegram пользователя и отправка 6-значного кода."""
-    return verification_service.start_web_registration(db, body.telegram)
-
-
-@router.post("/web/register/verify")
-def auth_web_register_verify(
-    body: WebRegisterVerifyRequest,
-    db: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
-    """Шаг 2 регистрации: проверка введённого 6-значного кода."""
-    return verification_service.verify_web_registration_code(
-        db, body.telegram_id, body.code
-    )
+) -> TelegramLookupResponse:
+    """Поиск контакта Telegram в БД для автоподстановки имени и фамилии."""
+    return auth_service.lookup_telegram_contact(db, telegram)
 
 
 @router.post("/web/register/complete", response_model=WebLoginResponse)
+@router.post("/web/register", response_model=WebLoginResponse)
 def auth_web_register_complete(
     body: WebRegisterCompleteRequest,
     response: Response,
     db: Annotated[Session, Depends(get_db)],
 ) -> WebLoginResponse:
-    """Шаг 3 регистрации: профиль, инвайт/пароль разработчика, личный пароль."""
-    user, role, full_name = verification_service.complete_web_registration(
+    """Регистрация web-пользователя в 1 шаг без подтверждения кодом через Telegram."""
+    user, role, full_name = auth_service.complete_web_registration(
         db=db,
+        telegram_raw=body.telegram,
         telegram_id=body.telegram_id,
-        verification_code=body.verification_code,
-        full_name_raw=body.full_name,
+        full_name_raw=body.full_name or "",
         access_code_raw=body.access_code,
         settings=get_settings(),
     )
@@ -307,7 +255,7 @@ def auth_web_login(
             headers={"Retry-After": str(retry_after)},
         )
 
-    user = verification_service.authenticate_web_login(
+    user = auth_service.authenticate_web_login(
         db=db,
         telegram_input_raw=body.telegram,
         access_code_raw=body.code or body.password or "",
@@ -367,6 +315,7 @@ def auth_web_me(
                 client_type=user.client_type,
                 external_id=user.external_id,
                 telegram_username=_get_telegram_username(user, db),
+                telegram_url=auth_service.get_telegram_url(user, db),
                 authorized_at=format_utc_z(user.authorized_at),
                 last_active_at=format_utc_z(user.last_active_at),
                 bot_username=bot_username,
@@ -385,7 +334,7 @@ def create_invite_code(
     db: Annotated[Session, Depends(get_db)],
 ) -> InviteCreateResponse:
     """Генерация одноразового инвайт-кода для биолога (срок действия 10 минут)."""
-    return verification_service.create_invite(db, current_user.id)
+    return auth_service.create_invite(db, current_user.id)
 
 
 @router.get("/invites", response_model=list[InviteCreateResponse])
@@ -394,7 +343,7 @@ def list_active_invites(
     db: Annotated[Session, Depends(get_db)],
 ) -> list[InviteCreateResponse]:
     """Список активных неиспользованных инвайт-кодов."""
-    return verification_service.list_active_invites(db)
+    return auth_service.list_active_invites(db)
 
 
 @router.delete("/invites/{invite_id}", response_model=dict[str, bool])
@@ -404,7 +353,7 @@ def revoke_invite(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, bool]:
     """Отзыв неиспользованного инвайт-кода."""
-    verification_service.revoke_invite(db, invite_id)
+    auth_service.revoke_invite(db, invite_id)
     return {"ok": True}
 
 
@@ -417,7 +366,7 @@ def list_sessions(
     db: Annotated[Session, Depends(get_db)],
 ) -> list[SessionInfo]:
     """Список всех сессий пользователей (активных и неактивных)."""
-    return verification_service.list_sessions(db, current_user.id)
+    return auth_service.list_sessions(db, current_user.id)
 
 
 @router.post("/sessions/{session_id}/terminate", response_model=dict[str, bool])
@@ -427,7 +376,7 @@ def terminate_session(
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, bool]:
     """Принудительное завершение активной сессии пользователя (кик)."""
-    verification_service.terminate_session(db, session_id)
+    auth_service.terminate_session(db, session_id)
     return {"ok": True}
 
 
@@ -439,9 +388,9 @@ def rename_session_user(
     db: Annotated[Session, Depends(get_db)],
 ) -> SessionInfo:
     """Изменение отображаемого имени пользователя любой сессии (Developer)."""
-    return verification_service.rename_session_user(
+    return auth_service.rename_session_user(
         db=db,
         session_id=session_id,
-        new_login=body.login,
+        new_login=body.login or "",
         current_user_id=current_user.id,
     )

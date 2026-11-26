@@ -118,47 +118,20 @@ def test_stage8_e2e_web_spa_flow(e2e_uvicorn_server):
         assert r_me_guest.json()["role"] == "guest"
         assert r_me_guest.json()["authenticated"] is False
 
-        # Шаг 1: старт регистрации по @username
-        r_step1 = web_client.post(
-            "/api/auth/web/register/start",
-            json={"telegram": "@bio_anna_tg"},
-        )
-        assert r_step1.status_code == 200
-        assert r_step1.json()["telegram_id"] == tg_user_id
+        # Поиск контакта через telegram-lookup
+        r_lookup = web_client.get("/api/auth/web/telegram-lookup?telegram=@bio_anna_tg")
+        assert r_lookup.status_code == 200
+        assert r_lookup.json()["found"] is True
+        assert r_lookup.json()["telegram_id"] == tg_user_id
 
-        # Бот забирает код из очереди и подтверждает
-        with httpx.Client(base_url=base_url) as bot_client:
-            r_codes = bot_client.get("/api/auth/web/pending-codes", headers=headers_bot)
-            assert r_codes.status_code == 200
-            codes = r_codes.json()
-            assert len(codes) >= 1
-            matching_code = next(c for c in codes if c["telegram_id"] == tg_user_id)
-            code_id = matching_code["id"]
-            code_val = matching_code["code"]
-
-            r_ack = bot_client.post(
-                f"/api/auth/web/pending-codes/{code_id}/ack",
-                headers=headers_bot,
-            )
-            assert r_ack.status_code == 200
-
-        # Шаг 2: подтверждение 6-значного кода
-        r_step2 = web_client.post(
-            "/api/auth/web/register/verify",
-            json={"telegram_id": tg_user_id, "code": code_val},
-        )
-        assert r_step2.status_code == 200
-        assert r_step2.json()["status"] == "verified"
-
-        # Шаг 3: завершение регистрации с инвайтом биолога и паролем
+        # Регистрация в 1 шаг с инвайтом биолога (без кодов верификации)
         r_step3 = web_client.post(
             "/api/auth/web/register/complete",
             json={
-                "telegram_id": tg_user_id,
-                "verification_code": code_val,
-                "full_name": "Анна Лабораторная",
+                "telegram": "@bio_anna_tg",
+                "first_name": "Анна",
+                "last_name": "Лабораторная",
                 "access_code": invite_code,
-                "password": "my_secure_password_123",
             },
         )
         assert r_step3.status_code == 200
@@ -407,7 +380,7 @@ def test_stage8_7_ux_polish_and_realtime_verification(e2e_uvicorn_server):
         assert r_me.status_code == 200
         assert "bot_username" in r_me.json()
 
-        # 2. Попытка входа незарегистрированного пользователя -> 403 telegram_verification_required
+        # 2. Попытка входа незарегистрированного пользователя -> 401 (без telegram_verification_required)
         r_sync = client.post(
             "/api/auth/telegram/contact",
             headers={"X-Client-Key": client_key},
@@ -427,16 +400,16 @@ def test_stage8_7_ux_polish_and_realtime_verification(e2e_uvicorn_server):
                 "code": dev_pass,
             },
         )
-        assert r_login_unreg.status_code == 403
-        assert "telegram_verification_required" in r_login_unreg.json()["detail"]
+        assert r_login_unreg.status_code == 401
+        assert "telegram_verification_required" not in r_login_unreg.json()["detail"]
 
-        # 3. Старт регистрации возвращает recommended_name
-        r_reg_start = client.post(
-            "/api/auth/web/register/start",
-            json={"telegram": "@unregistered_test_user"},
+        # 3. Lookup возвращает recommended_name
+        r_lookup = client.get(
+            "/api/auth/web/telegram-lookup?telegram=@unregistered_test_user"
         )
-        assert r_reg_start.status_code == 200
-        reg_data = r_reg_start.json()
+        assert r_lookup.status_code == 200
+        reg_data = r_lookup.json()
+        assert reg_data["found"] is True
         assert reg_data["telegram_id"] == 1234567890
         assert reg_data["recommended_name"] == "Иван Петров"
 
@@ -469,9 +442,7 @@ def test_stage8_7_ux_polish_and_realtime_verification(e2e_uvicorn_server):
 
     # Инлайн-ошибки форм
     assert 'id="login-form-error"' in index_html
-    assert 'id="reg-error-step1"' in index_html
-    assert 'id="reg-error-step2"' in index_html
-    assert 'id="reg-error-step3"' in index_html
+    assert 'id="reg-form-error"' in index_html
 
     # Стили: flex и min-height: 100vh для body, flex: 1 для main
     assert "min-height: 100vh" in style_css
@@ -519,21 +490,19 @@ def test_stage8_8_fix_web_tg_auth_flow(e2e_uvicorn_server):
         assert r_me.status_code == 200
         assert r_me.json()["bot_username"]
 
-        # 2. Неизвестный числовой TG ID -> 400 с требованием запустить /start
+        # 2. Неизвестный числовой TG ID: lookup -> found=false, вход -> 401
         unknown_tid = 9988776655
-        r_fail_reg = client.post(
-            "/api/auth/web/register/start",
-            json={"telegram": str(unknown_tid)},
+        r_lu_unknown = client.get(
+            f"/api/auth/web/telegram-lookup?telegram={unknown_tid}"
         )
-        assert r_fail_reg.status_code == 400
-        assert "/start" in r_fail_reg.json()["detail"]
+        assert r_lu_unknown.status_code == 200
+        assert r_lu_unknown.json()["found"] is False
 
         r_fail_login = client.post(
             "/api/auth/web/login",
             json={"telegram": str(unknown_tid), "code": dev_pass},
         )
-        assert r_fail_login.status_code == 400
-        assert "/start" in r_fail_login.json()["detail"]
+        assert r_fail_login.status_code == 401
 
         # 3. Синхронизация контакта от бота (пользователь нажал /start)
         valid_tid = 7711223344
@@ -549,70 +518,21 @@ def test_stage8_8_fix_web_tg_auth_flow(e2e_uvicorn_server):
         )
         assert r_sync.status_code == 200
 
-        # 4. Старт регистрации: создается код подтверждения
-        r_start = client.post(
-            "/api/auth/web/register/start",
-            json={"telegram": str(valid_tid)},
-        )
-        assert r_start.status_code == 200
-        start_data = r_start.json()
-        assert start_data["telegram_id"] == valid_tid
-        assert start_data["recommended_name"] == "Анна Смирнова"
+        # 4. Lookup возвращает предложенные имя и фамилию
+        r_lu_valid = client.get(f"/api/auth/web/telegram-lookup?telegram={valid_tid}")
+        assert r_lu_valid.status_code == 200
+        lu_data = r_lu_valid.json()
+        assert lu_data["found"] is True
+        assert lu_data["telegram_id"] == valid_tid
+        assert lu_data["recommended_name"] == "Анна Смирнова"
 
-        # 5. Проверка статуса доставки: изначально pending
-        r_status_pending = client.get(
-            f"/api/auth/web/register/code-status?telegram_id={valid_tid}"
-        )
-        assert r_status_pending.status_code == 200
-        assert r_status_pending.json()["status"] == "pending"
-
-        # Получаем очередь кодов от лица бота
-        r_pending = client.get(
-            "/api/auth/web/pending-codes",
-            headers={"X-Client-Key": client_key},
-        )
-        assert r_pending.status_code == 200
-        codes_list = r_pending.json()
-        target_code_item = next(
-            (c for c in codes_list if c["telegram_id"] == valid_tid), None
-        )
-        assert target_code_item is not None
-        code_id = target_code_item["id"]
-        code_val = target_code_item["code"]
-
-        # 6. Имитация ошибки отправки ботом (например, бот заблокирован пользователем)
-        r_fail_delivery = client.post(
-            f"/api/auth/web/pending-codes/{code_id}/fail",
-            headers={"X-Client-Key": client_key},
-            json={"error": "Forbidden: bot was blocked by the user"},
-        )
-        assert r_fail_delivery.status_code == 200
-        assert r_fail_delivery.json()["ok"] is True
-
-        # Проверяем, что эндпоинт статуса сообщает об ошибке доставки
-        r_status_err = client.get(
-            f"/api/auth/web/register/code-status?telegram_id={valid_tid}"
-        )
-        assert r_status_err.status_code == 200
-        err_data = r_status_err.json()
-        assert err_data["status"] == "delivery_error"
-        assert "Forbidden: bot was blocked by the user" in err_data["error"]
-
-        # 7. Подтверждаем код
-        r_verify = client.post(
-            "/api/auth/web/register/verify",
-            json={"telegram_id": valid_tid, "code": code_val},
-        )
-        assert r_verify.status_code == 200
-        assert r_verify.json()["status"] == "verified"
-
-        # 8. Завершаем регистрацию БЕЗ пароля (password=None / отсутствует)
+        # 5. Завершаем регистрацию в 1 шаг БЕЗ пароля и БЕЗ кода подтверждения
         r_complete = client.post(
             "/api/auth/web/register/complete",
             json={
-                "telegram_id": valid_tid,
-                "verification_code": code_val,
-                "full_name": "Анна Смирнова",
+                "telegram": str(valid_tid),
+                "first_name": "Анна",
+                "last_name": "Смирнова",
                 "access_code": dev_pass,
             },
         )
@@ -622,12 +542,13 @@ def test_stage8_8_fix_web_tg_auth_flow(e2e_uvicorn_server):
         assert complete_data["role"] == "developer"
         assert "gv_session" in client.cookies
 
-        # 9. Проверяем /api/auth/web/me после авторизации
+        # 6. Проверяем /api/auth/web/me после авторизации
         r_me_auth = client.get("/api/auth/web/me")
         assert r_me_auth.status_code == 200
         me_data = r_me_auth.json()
         assert me_data["authenticated"] is True
         assert me_data["login"] == "Анна Смирнова"
+        assert me_data["telegram_url"] == "https://t.me/bio_seamless_user"
         assert me_data["role"] == "developer"
 
     # 10. Проверка структуры Web SPA файлов
@@ -639,24 +560,18 @@ def test_stage8_8_fix_web_tg_auth_flow(e2e_uvicorn_server):
         encoding="utf-8"
     )
 
-    # Проверка закрытия password-group в index.html
+    # Проверка формы входа и регистрации в index.html (без пошаговых кодов верификации)
     assert 'class="form-group password-group">' in index_html
-    pw_group_idx = index_html.find('class="form-group password-group">')
-    hint_idx = index_html.find('class="form-hint tg-bot-hint">')
-    assert pw_group_idx != -1 and hint_idx != -1
-    pw_snippet = index_html[pw_group_idx:hint_idx]
-    assert pw_snippet.count("</div>") >= 2, (
-        "Блок password-group должен быть закрыт до form-hint tg-bot-hint"
-    )
-
-    # Проверка стилей шагов регистрации в style.css
-    assert ".reg-step" in style_css
-    assert ".reg-step.hidden" in style_css
+    assert 'id="register-form"' in index_html
+    assert 'id="reg-telegram"' in index_html
+    assert 'id="reg-first-name"' in index_html
+    assert 'id="reg-last-name"' in index_html
     assert "#modal-register.hidden" in style_css
 
-    # Проверка бесшовного перехода и поллинга в auth.js
-    assert "startPollingCodeDelivery" in auth_js
-    assert "getCodeStatus" in auth_js
+    # Проверка lookup и отсутствия поллинга кодов в auth.js
+    assert "telegramLookup" in auth_js
+    assert "startPollingCodeDelivery" not in auth_js
+    assert "getCodeStatus" not in auth_js
     assert "link-to-login" in auth_js
 
 

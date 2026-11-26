@@ -555,7 +555,9 @@ def test_web_ui_stage11_2_markup_and_modules():
     # 2. Модалка учётной записи (#modal-profile) и кнопка «Активные сессии»
     assert 'id="modal-profile"' in html
     assert 'id="modal-profile-close"' in html
-    assert 'id="profile-login-input"' in html
+    assert 'id="profile-first-name-input"' in html
+    assert 'id="profile-last-name-input"' in html
+    assert 'id="profile-telegram-input"' in html
     assert 'id="profile-save-btn"' in html
     assert 'id="profile-btn-sessions"' in html
 
@@ -579,7 +581,7 @@ def test_web_ui_stage11_2_markup_and_modules():
     assert "setProfileUpdatedHandler" in app_js
     assert "setSelfSessionTerminatedHandler" in app_js
     assert "https://t.me/" in profile_js
-    assert "rel = 'noopener'" in profile_js or 'rel="noopener"' in profile_js
+    assert "noopener noreferrer" in profile_js
     assert "updateProfile" in profile_js
     assert "terminateSession" in profile_js
 

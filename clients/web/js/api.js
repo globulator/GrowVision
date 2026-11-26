@@ -121,10 +121,10 @@ export const api = {
   // Информация о сессии и профиле
   getMe: () => request('/api/auth/web/me'),
   getProfile: () => request('/api/auth/me'),
-  updateProfile: (login) =>
+  updateProfile: (payload) =>
     request('/api/auth/me', {
       method: 'PATCH',
-      body: JSON.stringify({ login }),
+      body: JSON.stringify(typeof payload === 'string' ? { login: payload } : payload),
     }),
   getSessions: () => request('/api/auth/sessions'),
   terminateSession: (sessionId) =>
@@ -132,29 +132,18 @@ export const api = {
       method: 'POST',
     }),
 
-  // Регистрация в Web SPA через Telegram
-  registerStart: (telegram) =>
-    request('/api/auth/web/register/start', {
-      method: 'POST',
-      body: JSON.stringify({ telegram }),
-    }),
+  // Регистрация в Web SPA (без кодов подтверждения)
+  telegramLookup: (telegram) =>
+    request(`/api/auth/web/telegram-lookup?telegram=${encodeURIComponent(telegram)}`),
 
-  getCodeStatus: (telegramId) =>
-    request(`/api/auth/web/register/code-status?telegram_id=${encodeURIComponent(telegramId)}`),
-
-  registerVerify: (telegram_id, code) =>
-    request('/api/auth/web/register/verify', {
-      method: 'POST',
-      body: JSON.stringify({ telegram_id: Number(telegram_id), code }),
-    }),
-
-  registerComplete: ({ telegram_id, verification_code, full_name, access_code, password }) =>
+  registerComplete: ({ telegram, first_name, last_name, full_name, access_code, password }) =>
     request('/api/auth/web/register/complete', {
       method: 'POST',
       body: JSON.stringify({
-        telegram_id: Number(telegram_id),
-        verification_code,
-        full_name,
+        telegram: telegram || null,
+        first_name: first_name || null,
+        last_name: last_name || null,
+        full_name: full_name || null,
         access_code,
         password,
       }),

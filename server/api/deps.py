@@ -47,12 +47,12 @@ def create_session_cookie(user: User) -> str:
 
 def verify_session_cookie(cookie_val: str | None, db: Session) -> User | None:
     """Проверяет куку сессии и возвращает активного пользователя User или None."""
-    if not cookie_val:
+    if not cookie_val or ":" not in cookie_val:
         return None
-    parts = cookie_val.split(":")
-    if len(parts) != 3:
+    data_part, sig = cookie_val.rsplit(":", 1)
+    if ":" not in data_part:
         return None
-    raw_uid, ext_id, sig = parts
+    raw_uid, ext_id = data_part.split(":", 1)
     try:
         user_id = int(raw_uid)
     except ValueError:
